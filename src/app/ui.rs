@@ -1712,13 +1712,20 @@ fn name_field(ui: &mut Ui, title: &str, name: &mut String, focus: &mut bool, sel
 fn dialog_buttons(ui: &mut Ui, ok: &str, danger: bool, confirm: &mut bool, cancel: &mut bool) {
     ui.add_space(14.0);
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        // Key hints, so it's clear Enter confirms and Esc cancels.
+        let hint = |key: &str, color: Color32| RichText::new(key).size(11.0).color(color);
         let ok_button = egui::Button::new(RichText::new(ok).color(Color32::WHITE))
+            .shortcut_text(hint("Enter", Color32::from_white_alpha(170)))
             .fill(if danger { pal().danger } else { pal().accent_strong })
             .min_size(vec2(84.0, 28.0));
         if ui.add(ok_button).clicked() {
             *confirm = true;
         }
-        if ui.add(egui::Button::new("Cancel").fill(pal().surface).min_size(vec2(84.0, 28.0))).clicked() {
+        let cancel_button = egui::Button::new("Cancel")
+            .shortcut_text(hint("Esc", pal().faint))
+            .fill(pal().surface)
+            .min_size(vec2(84.0, 28.0));
+        if ui.add(cancel_button).clicked() {
             *cancel = true;
         }
     });
