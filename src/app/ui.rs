@@ -1333,7 +1333,7 @@ impl App {
                 Some(Dialog::Rename { path, name, .. }) => self.rename(&path, &name),
                 Some(Dialog::Create { dir, name, folder, .. }) => self.create(&dir, &name, folder),
                 Some(Dialog::ConfirmDelete { paths }) => {
-                    self.ops.submit(crate::ops::Job { kind: crate::ops::JobKind::Delete, srcs: paths, dest: None })
+                    self.ops.submit(crate::ops::Job::new(crate::ops::JobKind::Delete, paths, None))
                 }
                 None => {}
             }

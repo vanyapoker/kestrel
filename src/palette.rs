@@ -36,6 +36,7 @@ pub enum Cmd {
     SortModified,
     SortType,
     CancelJob,
+    Undo,
 }
 
 pub const COMMANDS: &[(Cmd, &str, &str)] = &[
@@ -52,6 +53,7 @@ pub const COMMANDS: &[(Cmd, &str, &str)] = &[
     (Cmd::ToggleHidden, "Toggle hidden files", "Ctrl+H"),
     (Cmd::NewFolder, "New folder", "Ctrl+Shift+N"),
     (Cmd::NewFile, "New empty file", ""),
+    (Cmd::Undo, "Undo", "Ctrl+Z"),
     (Cmd::Rename, "Rename", "F2"),
     (Cmd::Copy, "Copy", "Ctrl+C"),
     (Cmd::Cut, "Cut", "Ctrl+X"),

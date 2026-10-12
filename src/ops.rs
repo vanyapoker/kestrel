@@ -19,6 +19,10 @@ pub enum JobKind {
     Move,
     Trash,
     Delete,
+    /// Undo: move each item in `pairs` from its current path back to its original one.
+    MoveBack,
+    /// Undo: restore `srcs` (original paths) from the trash.
+    Untrash,
 }
 
 pub struct Job {
@@ -26,6 +30,51 @@ pub struct Job {
     pub srcs: Vec<PathBuf>,
     /// Destination folder for copy/move.
     pub dest: Option<PathBuf>,
+    /// (original, current) paths for `MoveBack`.
+    pub pairs: Vec<(PathBuf, PathBuf)>,
+    /// This job reverses an earlier one, so it isn't itself undoable.
+    pub undoing: bool,
+}
+
+impl Job {
+    pub fn new(kind: JobKind, srcs: Vec<PathBuf>, dest: Option<PathBuf>) -> Self {
+        Self { kind, srcs, dest, pairs: Vec::new(), undoing: false }
+    }
+
+    /// The job that reverses `undo`.
+    pub fn undo(undo: Undo) -> Self {
+        let job = match undo {
+            Undo::MoveBack(pairs) => Self { srcs: pairs.iter().map(|(_, cur)| cur.clone()).collect(), pairs, ..Self::new(JobKind::MoveBack, Vec::new(), None) },
+            Undo::TrashCreated(paths) => Self::new(JobKind::Trash, paths, None),
+            Undo::Untrash(paths) => Self::new(JobKind::Untrash, paths, None),
+        };
+        Self { undoing: true, ..job }
+    }
+}
+
+/// How to reverse a finished operation.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Undo {
+    /// Items that were moved or renamed: (original, current).
+    MoveBack(Vec<(PathBuf, PathBuf)>),
+    /// Items that were created (copies, new folders): undoing trashes them.
+    TrashCreated(Vec<PathBuf>),
+    /// Items that were trashed, by original path.
+    Untrash(Vec<PathBuf>),
+}
+
+impl Undo {
+    /// "the rename of \"x\"", "moving 3 items", … for the undo toast.
+    pub fn describe(&self) -> String {
+        let what = |paths: Vec<&Path>| {
+            if paths.len() == 1 { format!("\"{}\"", file_name(paths[0])) } else { format!("{} items", paths.len()) }
+        };
+        match self {
+            Undo::MoveBack(p) => format!("Moved back {}", what(p.iter().map(|(o, _)| o.as_path()).collect())),
+            Undo::TrashCreated(p) => format!("Moved {} to trash", what(p.iter().map(PathBuf::as_path).collect())),
+            Undo::Untrash(p) => format!("Restored {} from trash", what(p.iter().map(PathBuf::as_path).collect())),
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -47,6 +96,9 @@ pub struct Done {
     pub errors: Vec<String>,
     pub cancelled: bool,
     pub summary: String,
+    /// How to reverse what this job did, if anything.
+    pub undo: Option<Undo>,
+    pub undoing: bool,
 }
 
 pub struct Ops {
@@ -136,6 +188,8 @@ impl Worker {
             JobKind::Move => format!("Moving {what}"),
             JobKind::Trash => format!("Moving {what} to trash"),
             JobKind::Delete => format!("Deleting {what}"),
+            JobKind::MoveBack => format!("Moving back {what}"),
+            JobKind::Untrash => format!("Restoring {what}"),
         };
         *self.progress.lock().unwrap() = Some(Progress { title, ..Default::default() });
         self.ctx.request_repaint();
@@ -147,6 +201,8 @@ impl Worker {
             errors: Vec::new(),
             cancelled: false,
             summary: String::new(),
+            undo: None,
+            undoing: job.undoing,
         };
         for src in &job.srcs {
             if let Some(parent) = src.parent() {
@@ -156,13 +212,32 @@ impl Worker {
         if let Some(dest) = &job.dest {
             push_unique(&mut done.dirs, dest.clone());
         }
+        for (orig, _) in &job.pairs {
+            if let Some(parent) = orig.parent() {
+                push_unique(&mut done.dirs, parent.to_path_buf());
+            }
+        }
 
         match job.kind {
             JobKind::Trash => {
                 if let Err(e) = trash::delete_all(&job.srcs) {
                     done.errors.push(format!("Trash failed: {e}"));
                 }
+                let gone: Vec<PathBuf> = job.srcs.iter().filter(|p| fs::symlink_metadata(p).is_err()).cloned().collect();
+                if !gone.is_empty() {
+                    done.undo = Some(Undo::Untrash(gone));
+                }
                 done.summary = format!("Moved {what} to trash");
+            }
+            JobKind::MoveBack => {
+                for (orig, cur) in &job.pairs {
+                    self.move_back(orig, cur, &mut done);
+                }
+                done.summary = format!("Moved back {what}");
+            }
+            JobKind::Untrash => {
+                untrash(&job.srcs, &mut done);
+                done.summary = format!("Restored {what}");
             }
             JobKind::Delete => {
                 for src in &job.srcs {
@@ -179,7 +254,12 @@ impl Worker {
             }
             JobKind::Copy | JobKind::Move => {
                 let dest = job.dest.clone().expect("copy/move needs a destination");
-                self.transfer(job.kind, &job.srcs, &dest, &mut done);
+                let moved = self.transfer(job.kind, &job.srcs, &dest, &mut done);
+                done.undo = match job.kind {
+                    JobKind::Move if !moved.is_empty() => Some(Undo::MoveBack(moved)),
+                    JobKind::Copy if !done.created.is_empty() => Some(Undo::TrashCreated(done.created.clone())),
+                    _ => None,
+                };
                 let verb = if job.kind == JobKind::Copy { "Copied" } else { "Moved" };
                 done.summary = format!("{verb} {what} to {}", file_name(&dest));
             }
@@ -188,7 +268,9 @@ impl Worker {
         done
     }
 
-    fn transfer(&mut self, kind: JobKind, srcs: &[PathBuf], dest: &Path, done: &mut Done) {
+    /// Copies or moves `srcs` into `dest`. Returns (source, new path) for each item moved.
+    fn transfer(&mut self, kind: JobKind, srcs: &[PathBuf], dest: &Path, done: &mut Done) -> Vec<(PathBuf, PathBuf)> {
+        let mut moved = Vec::new();
         // Same-filesystem moves are renames and need no byte counting.
         let dest_dev = fs::metadata(dest).map(|m| m.dev()).ok();
         let mut need_copy = Vec::new();
@@ -204,7 +286,10 @@ impl Worker {
             if kind == JobKind::Move && same_dev {
                 let target = unique_dest(dest, &file_name(src));
                 match fs::rename(src, &target) {
-                    Ok(()) => done.created.push(target),
+                    Ok(()) => {
+                        moved.push((src.clone(), target.clone()));
+                        done.created.push(target);
+                    }
                     Err(e) => done.errors.push(format!("{}: {e}", src.display())),
                 }
             } else {
@@ -212,7 +297,7 @@ impl Worker {
             }
         }
         if need_copy.is_empty() {
-            return;
+            return moved;
         }
 
         let (mut bytes, mut files) = (0, 0);
@@ -236,7 +321,7 @@ impl Worker {
             if self.cancelled() {
                 break;
             }
-            done.created.push(target);
+            done.created.push(target.clone());
             // A cross-device move removes the source only if every file copied.
             if kind == JobKind::Move && done.errors.len() == errors_before {
                 let res = if src.is_dir() && !src.is_symlink() {
@@ -244,10 +329,40 @@ impl Worker {
                 } else {
                     fs::remove_file(src)
                 };
-                if let Err(e) = res {
-                    done.errors.push(format!("{}: {e}", src.display()));
+                match res {
+                    Ok(()) => moved.push((src.clone(), target.clone())),
+                    Err(e) => done.errors.push(format!("{}: {e}", src.display())),
                 }
             }
+        }
+        moved
+    }
+
+    /// Moves `cur` back to exactly `orig`, never replacing something already there.
+    fn move_back(&mut self, orig: &Path, cur: &Path, done: &mut Done) {
+        if fs::symlink_metadata(orig).is_ok() {
+            return done.errors.push(format!("Can't undo: \"{}\" already exists", file_name(orig)));
+        }
+        if fs::symlink_metadata(cur).is_err() {
+            return done.errors.push(format!("Can't undo: \"{}\" is gone", file_name(cur)));
+        }
+        if !orig.parent().is_some_and(Path::is_dir) {
+            return done.errors.push(format!("Can't undo: the folder of \"{}\" is gone", file_name(orig)));
+        }
+        match fs::rename(cur, orig) {
+            Ok(()) => done.created.push(orig.to_path_buf()),
+            Err(e) if e.kind() == io::ErrorKind::CrossesDevices => {
+                let before = done.errors.len();
+                self.copy_tree(cur, orig, &mut done.errors);
+                if done.errors.len() == before && !self.cancelled() {
+                    let res = if cur.is_dir() && !cur.is_symlink() { fs::remove_dir_all(cur) } else { fs::remove_file(cur) };
+                    if let Err(e) = res {
+                        done.errors.push(format!("{}: {e}", cur.display()));
+                    }
+                    done.created.push(orig.to_path_buf());
+                }
+            }
+            Err(e) => done.errors.push(format!("{}: {e}", cur.display())),
         }
     }
 
@@ -399,6 +514,31 @@ fn push_unique(v: &mut Vec<PathBuf>, p: PathBuf) {
     }
 }
 
+/// Restores each of `paths` (original locations) from the trash, taking the
+/// most recently trashed item when the trash holds several from one path.
+fn untrash(paths: &[PathBuf], done: &mut Done) {
+    let items = match trash::os_limited::list() {
+        Ok(items) => items,
+        Err(e) => return done.errors.push(format!("Can't read the trash: {e}")),
+    };
+    let mut restore = Vec::new();
+    for p in paths {
+        if fs::symlink_metadata(p).is_ok() {
+            done.errors.push(format!("Can't undo: \"{}\" already exists", file_name(p)));
+            continue;
+        }
+        match items.iter().filter(|i| i.original_path() == *p).max_by_key(|i| i.time_deleted) {
+            Some(item) => restore.push(item.clone()),
+            None => done.errors.push(format!("\"{}\" is no longer in the trash", file_name(p))),
+        }
+    }
+    let restored: Vec<PathBuf> = restore.iter().map(|i| i.original_path()).collect();
+    if let Err(e) = trash::os_limited::restore_all(restore) {
+        done.errors.push(format!("Restore failed: {e}"));
+    }
+    done.created.extend(restored.into_iter().filter(|p| fs::symlink_metadata(p).is_ok()));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -438,23 +578,53 @@ mod tests {
         let dst = d.join("dst");
         fs::create_dir(&dst).unwrap();
 
-        let done = run(Job { kind: JobKind::Copy, srcs: vec![src.clone()], dest: Some(dst.clone()) });
+        let done = run(Job::new(JobKind::Copy, vec![src.clone()], Some(dst.clone())));
         assert!(done.errors.is_empty(), "{:?}", done.errors);
         assert_eq!(fs::read_to_string(dst.join("src/sub/f.txt")).unwrap(), "hello");
         assert!(dst.join("src/link").is_symlink());
 
         // Copying again must not overwrite.
-        let done = run(Job { kind: JobKind::Copy, srcs: vec![src.clone()], dest: Some(dst.clone()) });
+        let done = run(Job::new(JobKind::Copy, vec![src.clone()], Some(dst.clone())));
         assert_eq!(done.created, vec![dst.join("src (2)")]);
 
         // Into itself is refused.
-        let done = run(Job { kind: JobKind::Copy, srcs: vec![src.clone()], dest: Some(src.join("sub")) });
+        let done = run(Job::new(JobKind::Copy, vec![src.clone()], Some(src.join("sub"))));
         assert_eq!(done.errors.len(), 1);
 
-        let done = run(Job { kind: JobKind::Move, srcs: vec![src.clone()], dest: Some(dst.clone()) });
+        let done = run(Job::new(JobKind::Move, vec![src.clone()], Some(dst.clone())));
         assert!(done.errors.is_empty());
         assert!(!src.exists());
         assert!(dst.join("src (3)/sub/f.txt").exists());
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn undo_records_and_reverses() {
+        let d = tmpdir("undo");
+        let (a, b) = (d.join("a"), d.join("b"));
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        fs::write(a.join("f.txt"), "hi").unwrap();
+
+        let done = run(Job::new(JobKind::Copy, vec![a.join("f.txt")], Some(b.clone())));
+        assert_eq!(done.undo, Some(Undo::TrashCreated(vec![b.join("f.txt")])));
+
+        let done = run(Job::new(JobKind::Move, vec![a.join("f.txt")], Some(b.clone())));
+        let undo = done.undo.unwrap();
+        assert_eq!(undo, Undo::MoveBack(vec![(a.join("f.txt"), b.join("f (2).txt"))]));
+
+        let done = run(Job::undo(undo.clone()));
+        assert!(done.undoing && done.undo.is_none());
+        assert!(done.errors.is_empty(), "{:?}", done.errors);
+        assert_eq!(fs::read_to_string(a.join("f.txt")).unwrap(), "hi");
+        assert!(!b.join("f (2).txt").exists());
+
+        // Undo never replaces: put the file back where the original now lives.
+        fs::write(b.join("f (2).txt"), "new").unwrap();
+        let done = run(Job::undo(undo));
+        assert_eq!(done.errors.len(), 1);
+        assert_eq!(fs::read_to_string(a.join("f.txt")).unwrap(), "hi");
+        assert!(b.join("f (2).txt").exists());
         fs::remove_dir_all(d).unwrap();
     }
 }

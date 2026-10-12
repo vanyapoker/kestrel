@@ -48,7 +48,7 @@ If you installed from your own clone, run `./install.sh --uninstall` there inste
 - **Find anything.** Type to filter the current folder, or press Ctrl+F to search all its subfolders.
 - **Command palette.** Ctrl+P reaches every action.
 - **Several views.** Switch between details, list and icon views, and zoom with Ctrl+scroll.
-- **Safe file operations.** Copy and move run in the background with progress. Deleted files go to the trash, and files are never overwritten: a copy with the same name gets a " (2)" suffix.
+- **Safe file operations.** Copy and move run in the background with progress. Deleted files go to the trash, files are never overwritten (a copy with the same name gets a " (2)" suffix), and Ctrl+Z undoes renames, moves, copies and trashing.
 - **Instant copies on btrfs and xfs.** Large files copy in no time.
 - **Drag and drop** within Kestrel and to or from other apps. Copy and paste files to and from other file managers too.
 - **Matches your Omarchy theme.** Kestrel uses your current theme's colors, light or dark, and updates live when you switch themes.
@@ -68,6 +68,7 @@ If you installed from your own clone, run `./install.sh --uninstall` there inste
 | <kbd>Alt</kbd>+<kbd>←</kbd> / <kbd>Alt</kbd>+<kbd>→</kbd> | Back / forward |
 | <kbd>Ctrl</kbd>+<kbd>L</kbd> | Type a path (<kbd>Tab</kbd> completes folder names) |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> / <kbd>X</kbd> / <kbd>V</kbd> | Copy / cut / paste |
+| <kbd>Ctrl</kbd>+<kbd>Z</kbd> | Undo (rename, move, copy, new folder, move to trash) |
 | <kbd>Ctrl</kbd>+<kbd>D</kbd> | Duplicate |
 | <kbd>F2</kbd> | Rename |
 | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd> | New folder |

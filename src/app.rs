@@ -148,6 +148,8 @@ pub struct App {
     /// The session text last written, to skip identical saves.
     saved_session: String,
     next_session_check: Instant,
+    /// Reversible operations, most recent last.
+    undo: Vec<ops::Undo>,
     /// Panel widths to restore, and the last widths seen while shown.
     sidebar_width: f32,
     preview_width: f32,
@@ -215,6 +217,7 @@ impl App {
             #[cfg(test)]
             row_rects: HashMap::new(),
             session_file: None,
+            undo: Vec::new(),
             saved_session: String::new(),
             next_session_check: Instant::now(),
             sidebar_width: 190.0,
@@ -755,6 +758,12 @@ impl App {
                 start_listing(tab, list_tx, ctx, true);
             }
         }
+        if let Some(u) = done.undo.clone().filter(|_| !done.undoing) {
+            self.push_undo(u);
+        }
+        if done.undoing && done.errors.is_empty() && !done.cancelled {
+            return; // `undo` already announced it
+        }
         if done.cancelled {
             self.toast("Operation cancelled", false);
         } else if let Some(first) = done.errors.first() {
@@ -766,6 +775,22 @@ impl App {
     }
 
     // ------------------------------------------------------------ file operations
+
+    fn push_undo(&mut self, u: ops::Undo) {
+        const MAX_UNDO: usize = 50;
+        self.undo.push(u);
+        if self.undo.len() > MAX_UNDO {
+            self.undo.remove(0);
+        }
+    }
+
+    fn undo(&mut self) {
+        let Some(u) = self.undo.pop() else {
+            return self.toast("Nothing to undo", false);
+        };
+        self.toast(u.describe(), false);
+        self.ops.submit(Job::undo(u));
+    }
 
     fn copy_to_clipboard(&mut self, cut: bool) {
         let paths = self.tab().targets();
@@ -797,7 +822,7 @@ impl App {
                 crate::wl_dnd::ClipRead::Ours => {}
                 crate::wl_dnd::ClipRead::Files { paths, cut } => {
                     let kind = if cut { JobKind::Move } else { JobKind::Copy };
-                    self.ops.submit(Job { kind, srcs: paths, dest: Some(dest) });
+                    self.ops.submit(Job::new(kind, paths, Some(dest)));
                     return;
                 }
                 crate::wl_dnd::ClipRead::Nothing => {
@@ -813,7 +838,7 @@ impl App {
                 if !clip.cut {
                     self.clip = Some(Clip { paths: clip.paths.clone(), cut: false, text: clip.text });
                 }
-                self.ops.submit(Job { kind, srcs: clip.paths, dest: Some(dest) });
+                self.ops.submit(Job::new(kind, clip.paths, Some(dest)));
             }
             return;
         }
@@ -828,7 +853,7 @@ impl App {
             if !clip.cut {
                 self.clip = Some(Clip { paths: clip.paths.clone(), cut: false, text: clip.text });
             }
-            self.ops.submit(Job { kind, srcs: clip.paths, dest: Some(dest) });
+            self.ops.submit(Job::new(kind, clip.paths, Some(dest)));
             return;
         }
         // Files copied in another app: plain paths, file:// URIs, or a uri-list.
@@ -839,7 +864,7 @@ impl App {
         if paths.is_empty() {
             self.toast("Clipboard has no files to paste", false);
         } else {
-            self.ops.submit(Job { kind: JobKind::Copy, srcs: paths, dest: Some(dest) });
+            self.ops.submit(Job::new(JobKind::Copy, paths, Some(dest)));
         }
     }
 
@@ -863,7 +888,7 @@ impl App {
         if kind == JobKind::Move && paths.iter().all(|p| p.parent() == Some(dest.as_path())) {
             return;
         }
-        self.ops.submit(Job { kind, srcs: paths, dest: Some(dest) });
+        self.ops.submit(Job::new(kind, paths, Some(dest)));
     }
 
     fn rename(&mut self, path: &Path, name: &str) {
@@ -880,6 +905,7 @@ impl App {
         }
         match std::fs::rename(path, &target) {
             Ok(()) => {
+                self.push_undo(ops::Undo::MoveBack(vec![(path.to_path_buf(), target.clone())]));
                 if let Some(s) = self.sizes.remove(path) {
                     self.sizes.insert(target.clone(), s);
                 }
@@ -907,6 +933,7 @@ impl App {
         };
         match res {
             Ok(()) => {
+                self.push_undo(ops::Undo::TrashCreated(vec![target.clone()]));
                 let tab = self.tab_mut();
                 tab.marked.clear();
                 tab.select_after_load = Some(target);
@@ -947,7 +974,7 @@ impl App {
             }
             Cmd::Trash => {
                 let srcs = self.tab().targets();
-                self.ops.submit(Job { kind: JobKind::Trash, srcs, dest: None });
+                self.ops.submit(Job::new(JobKind::Trash, srcs, None));
             }
             Cmd::DeletePermanently => {
                 let paths = self.tab().targets();
@@ -955,6 +982,7 @@ impl App {
                     self.dialog = Some(Dialog::ConfirmDelete { paths });
                 }
             }
+            Cmd::Undo => self.undo(),
             Cmd::Copy => self.copy_to_clipboard(false),
             Cmd::Cut => self.copy_to_clipboard(true),
             Cmd::Paste => self.paste(None),
@@ -962,7 +990,7 @@ impl App {
                 let srcs = self.tab().targets();
                 if let Some(dest) = srcs.first().and_then(|p| p.parent()).map(Path::to_path_buf) {
                     let srcs = srcs.into_iter().filter(|p| p.parent() == Some(&dest)).collect();
-                    self.ops.submit(Job { kind: JobKind::Copy, srcs, dest: Some(dest) });
+                    self.ops.submit(Job::new(JobKind::Copy, srcs, Some(dest)));
                 }
             }
             Cmd::SelectAll => self.tab_mut().select_all(),
@@ -1234,6 +1262,7 @@ impl App {
                 (none, Key::Delete, Trash),
                 (cs, Key::N, NewFolder),
                 (ctrl, Key::A, SelectAll),
+                (ctrl, Key::Z, Cmd::Undo),
                 (ctrl, Key::D, Duplicate),
                 (ctrl, Key::F, Cmd::Search),
                 (ctrl, Key::B, ToggleSidebar),
