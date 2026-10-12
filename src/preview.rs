@@ -3,7 +3,7 @@ use crate::thumbs::{self, Renderer};
 use eframe::egui::{self, text::LayoutJob, Color32, ColorImage, FontId, TextFormat};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Theme, ThemeSet};
@@ -208,13 +208,9 @@ fn load_text(path: &Path) -> Payload {
     let text = String::from_utf8_lossy(&buf).replace('\t', "    ");
     let mut truncated = file_len as usize > buf.len();
 
-    static SYNTAX: OnceLock<(SyntaxSet, Theme)> = OnceLock::new();
-    let (ss, theme) = SYNTAX.get_or_init(|| {
-        let ss = SyntaxSet::load_defaults_newlines();
-        let mut ts = ThemeSet::load_defaults();
-        let theme = ts.themes.remove("base16-ocean.dark").expect("bundled theme");
-        (ss, theme)
-    });
+    static SYNTAX: OnceLock<SyntaxSet> = OnceLock::new();
+    let ss = SYNTAX.get_or_init(SyntaxSet::load_defaults_newlines);
+    let theme = &*syntax_theme();
     let syntax = ss
         .find_syntax_for_file(path)
         .ok()
@@ -225,7 +221,7 @@ fn load_text(path: &Path) -> Payload {
 
     let font = FontId::monospace(12.5);
     let mut job = LayoutJob::default();
-    let gutter = TextFormat { font_id: font.clone(), color: theme::FAINT, ..Default::default() };
+    let gutter = TextFormat { font_id: font.clone(), color: theme::pal().faint, ..Default::default() };
     let mut lines = 0;
     for (n, line) in LinesWithEndings::from(&text).enumerate() {
         if n >= MAX_TEXT_LINES {
@@ -258,9 +254,49 @@ fn load_text(path: &Path) -> Payload {
             Err(_) => job.append(
                 &line,
                 0.0,
-                TextFormat { font_id: font.clone(), color: theme::TEXT, ..Default::default() },
+                TextFormat { font_id: font.clone(), color: theme::pal().text, ..Default::default() },
             ),
         }
     }
     Payload::Text(job, lines, truncated)
+}
+
+/// A highlighting theme in the current palette's colors, rebuilt when the palette changes.
+fn syntax_theme() -> Arc<Theme> {
+    static CACHE: Mutex<Option<(u64, Arc<Theme>)>> = Mutex::new(None);
+    let generation = theme::generation();
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, t)) = cache.as_ref().filter(|(g, _)| *g == generation) {
+        return t.clone();
+    }
+    let p = theme::pal();
+    let c = |c: Color32| syntect::highlighting::Color { r: c.r(), g: c.g(), b: c.b(), a: 255 };
+    let [comment, keyword, string, number, function, ty] = p.syntax;
+    let rules: [(&str, Color32); 10] = [
+        ("comment, punctuation.definition.comment", comment),
+        ("keyword, storage, keyword.operator.word", keyword),
+        ("string, markup.raw", string),
+        ("constant.numeric, constant.language, constant.character", number),
+        ("entity.name.function, support.function, meta.function-call", function),
+        ("entity.name.type, entity.name.class, support.type, support.class, storage.type", ty),
+        ("entity.name.tag, markup.heading", keyword),
+        ("entity.other.attribute-name, variable.parameter", number),
+        ("constant.other, variable.other.constant, support.constant", number),
+        ("markup.bold, markup.italic", p.text),
+    ];
+    let mut t = ThemeSet::load_defaults().themes.remove("base16-ocean.dark").expect("bundled theme");
+    t.settings.foreground = Some(c(p.text));
+    t.settings.background = Some(c(p.panel));
+    t.scopes = rules
+        .iter()
+        .filter_map(|(sel, color)| {
+            Some(syntect::highlighting::ThemeItem {
+                scope: sel.parse().ok()?,
+                style: syntect::highlighting::StyleModifier { foreground: Some(c(*color)), background: None, font_style: None },
+            })
+        })
+        .collect();
+    let t = Arc::new(t);
+    *cache = Some((generation, t.clone()));
+    t
 }

@@ -15,6 +15,14 @@ PDF, video, SVG and audio metadata.
 Optional tools for previews: `pdftoppm`/`pdfinfo` (poppler), `ffmpeg`/`ffprobe`,
 `rsvg-convert`. Pasting files copied in other apps uses `wl-paste`.
 
+## Theme
+
+fpilot follows the active Omarchy theme (`~/.local/state/omarchy/current/theme/colors.toml`),
+light or dark, and restyles itself live on `omarchy theme set`. Without Omarchy
+it uses its own dark palette. `FPILOT_OMARCHY_THEME=<theme folder>` previews a
+theme without switching the desktop, e.g.
+`FPILOT_OMARCHY_THEME=/usr/share/omarchy/themes/gruvbox fpilot`.
+
 ## Keys
 
 | Key | Action |

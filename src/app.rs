@@ -103,6 +103,9 @@ pub struct App {
     preview: Preview,
     thumbs: Thumbs,
     watcher: Watcher,
+    /// Follows `omarchy theme set`; kept alive for its notifications.
+    theme_watch: Option<(notify::RecommendedWatcher, std::sync::mpsc::Receiver<()>)>,
+    theme_reload_at: Option<Instant>,
     ops: Ops,
     places: Places,
     show_hidden: bool,
@@ -156,6 +159,8 @@ impl App {
             preview: Preview::new(ctx.clone()),
             thumbs: Thumbs::new(ctx.clone()),
             watcher: Watcher::new(ctx.clone()),
+            theme_watch: theme::watch(ctx.clone()),
+            theme_reload_at: None,
             ops: Ops::new(ctx.clone()),
             ctx,
             panes: vec![Pane { tabs: Vec::new(), active: 0 }],
@@ -509,6 +514,25 @@ impl App {
 
         while let Ok(done) = self.ops.done_rx.try_recv() {
             self.job_done(done);
+        }
+
+        // Theme switches rewrite several files; wait for them to settle, then restyle.
+        if let Some((_, rx)) = &self.theme_watch {
+            if rx.try_iter().count() > 0 {
+                self.theme_reload_at = Some(now + Duration::from_millis(300));
+                ctx.request_repaint_after(Duration::from_millis(300));
+            }
+        }
+        match self.theme_reload_at {
+            Some(t) if now >= t => {
+                self.theme_reload_at = None;
+                if theme::reload(ctx) {
+                    self.preview.invalidate(); // re-highlight code in the new colors
+                }
+            }
+            // A repaint can land just short of the deadline; ask again.
+            Some(t) => ctx.request_repaint_after(t - now),
+            None => {}
         }
 
         // File watcher: debounce, then soft-reload affected tabs.

@@ -359,7 +359,7 @@ fn drag_icon(paths: &[PathBuf]) -> ColorImage {
     if paths.len() > 1 {
         // Badge dots: one per item, up to five.
         for i in 0..paths.len().min(5) {
-            fill_circle(&mut img, 54.0 - i as f32 * 9.0, 9.0, 4.5, crate::theme::ACCENT);
+            fill_circle(&mut img, 54.0 - i as f32 * 9.0, 9.0, 4.5, crate::theme::pal().accent);
         }
     }
     img

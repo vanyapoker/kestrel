@@ -32,7 +32,7 @@ impl App {
 
         Panel::bottom("status")
             .exact_size(26.0)
-            .frame(Frame::new().fill(PANEL).inner_margin(Margin::symmetric(12, 2)))
+            .frame(Frame::new().fill(pal().panel).inner_margin(Margin::symmetric(12, 2)))
             .show(ui, |ui| self.status_bar(ui));
         // Side panels yield to the file list in narrow windows.
         let width = ui.available_width();
@@ -43,7 +43,7 @@ impl App {
             .min_size(120.0_f32.min(width * 0.25))
             .max_size((width * 0.25).max(120.0))
             .drag_to_open(true)
-            .frame(Frame::new().fill(PANEL).inner_margin(Margin::symmetric(8, 4)))
+            .frame(Frame::new().fill(pal().panel).inner_margin(Margin::symmetric(8, 4)))
             .show_collapsible(ui, &mut show, |ui| self.sidebar(ui, &mut actions));
         self.show_sidebar = show;
         let mut show = self.show_preview;
@@ -52,10 +52,10 @@ impl App {
             .min_size(160.0_f32.min(width * 0.4))
             .max_size((width * 0.4).max(160.0))
             .drag_to_open(true)
-            .frame(Frame::new().fill(PANEL).inner_margin(Margin::symmetric(12, 4)))
+            .frame(Frame::new().fill(pal().panel).inner_margin(Margin::symmetric(12, 4)))
             .show_collapsible(ui, &mut show, |ui| self.preview_panel(ui));
         self.show_preview = show;
-        CentralPanel::default().frame(Frame::new().fill(BG)).show(ui, |ui| {
+        CentralPanel::default().frame(Frame::new().fill(pal().bg)).show(ui, |ui| {
             let full = ui.max_rect();
             self.pane_rects.clear();
             if self.panes.len() == 1 {
@@ -67,7 +67,7 @@ impl App {
                     Rect::from_min_max(full.min, Pos2::new(mid - 1.0, full.max.y)),
                     Rect::from_min_max(Pos2::new(mid + 1.0, full.min.y), full.max),
                 ];
-                ui.painter().vline(mid, full.y_range(), Stroke::new(2.0, BORDER));
+                ui.painter().vline(mid, full.y_range(), Stroke::new(2.0, pal().border));
                 for (p, r) in rects.into_iter().enumerate() {
                     self.pane_rects.push(r);
                     ui.scope_builder(UiBuilder::new().max_rect(r).id_salt(("pane", p)), |ui| {
@@ -176,8 +176,8 @@ impl App {
                 .fixed_pos(Pos2::new(x, field.bottom() + 4.0))
                 .show(ui.ctx(), |ui| {
                     Frame::new()
-                        .fill(PANEL)
-                        .stroke(Stroke::new(1.0, BORDER))
+                        .fill(pal().panel)
+                        .stroke(Stroke::new(1.0, pal().border))
                         .corner_radius(CornerRadius::same(6))
                         .inner_margin(Margin::same(4))
                         .show(ui, |ui| {
@@ -187,7 +187,7 @@ impl App {
                                 let (rect, item) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
                                 let lit = self.path_hl == Some(n);
                                 if lit || item.hovered() {
-                                    ui.painter().rect_filled(rect, CornerRadius::same(4), if lit { SELECT } else { HOVER });
+                                    ui.painter().rect_filled(rect, CornerRadius::same(4), if lit { pal().select } else { pal().hover });
                                 }
                                 draw_folder(ui.painter(), Pos2::new(rect.left() + 14.0, rect.center().y), 0.8);
                                 let name = c.trim_end_matches('/').rsplit('/').next().unwrap_or(c);
@@ -196,14 +196,14 @@ impl App {
                                     Align2::LEFT_CENTER,
                                     name,
                                     FontId::proportional(BODY),
-                                    TEXT,
+                                    pal().text,
                                 );
                                 if item.hovered() && ui.input(|i| i.pointer.primary_pressed()) {
                                     picked = Some(c.clone());
                                 }
                             }
                             if cands.len() > shown {
-                                ui.label(RichText::new(format!("  {} more…", cands.len() - shown)).size(12.0).color(FAINT));
+                                ui.label(RichText::new(format!("  {} more…", cands.len() - shown)).size(12.0).color(pal().faint));
                             }
                         });
                 });
@@ -242,15 +242,15 @@ impl App {
         }
         Panel::top(egui::Id::new(("tabs", p)))
             .exact_size(36.0)
-            .frame(Frame::new().fill(BG).inner_margin(Margin::symmetric(8, 4)))
+            .frame(Frame::new().fill(pal().bg).inner_margin(Margin::symmetric(8, 4)))
             .show_separator_line(false)
             .show(ui, |ui| self.tab_bar(ui, p, actions));
         Panel::top(egui::Id::new(("toolbar", p)))
             .exact_size(38.0)
-            .frame(Frame::new().fill(PANEL).inner_margin(Margin::symmetric(8, 4)))
+            .frame(Frame::new().fill(pal().panel).inner_margin(Margin::symmetric(8, 4)))
             .show(ui, |ui| self.toolbar(ui, p, actions));
         CentralPanel::default()
-            .frame(Frame::new().fill(BG).inner_margin(Margin::symmetric(4, 0)))
+            .frame(Frame::new().fill(pal().bg).inner_margin(Margin::symmetric(4, 0)))
             .show(ui, |ui| {
                 self.zoom_wheel(ui, p, actions);
                 let pane = &self.panes[p];
@@ -302,7 +302,7 @@ impl App {
             let pane = &self.panes[p];
             for (i, tab) in pane.tabs.iter().enumerate() {
                 let active = i == pane.active;
-                let galley = ui.painter().layout_no_wrap(tab.title(), FontId::proportional(13.0), TEXT);
+                let galley = ui.painter().layout_no_wrap(tab.title(), FontId::proportional(13.0), pal().text);
                 let w = (galley.size().x + 44.0).clamp(90.0, 220.0);
                 let (rect, resp) = ui.allocate_exact_size(vec2(w, 26.0), Sense::click());
                 let close_rect =
@@ -311,9 +311,9 @@ impl App {
                 let painter = ui.painter();
                 let drop_hover = resp.dnd_hover_payload::<DragPaths>().is_some();
                 let bg = if active || drop_hover {
-                    SURFACE
+                    pal().surface
                 } else if resp.hovered() {
-                    HOVER
+                    pal().hover
                 } else {
                     Color32::TRANSPARENT
                 };
@@ -323,22 +323,22 @@ impl App {
                         Pos2::new(rect.left() + 8.0, rect.bottom() - 2.0),
                         vec2(rect.width() - 16.0, 2.0),
                     );
-                    painter.rect_filled(line, CornerRadius::same(1), if pane_active { ACCENT } else { FAINT });
+                    painter.rect_filled(line, CornerRadius::same(1), if pane_active { pal().accent } else { pal().faint });
                 }
                 draw_folder(painter, Pos2::new(rect.left() + 14.0, rect.center().y), 0.8);
                 let text_rect = Rect::from_min_max(
                     Pos2::new(rect.left() + 24.0, rect.top()),
                     Pos2::new(rect.right() - 24.0, rect.bottom()),
                 );
-                let color = if active { TEXT } else { DIM };
+                let color = if active { pal().text } else { pal().dim };
                 painter
                     .with_clip_rect(text_rect)
                     .galley(Pos2::new(text_rect.left(), rect.center().y - galley.size().y / 2.0), galley, color);
                 if resp.hovered() || close.hovered() || active {
                     if close.hovered() {
-                        painter.rect_filled(close_rect, CornerRadius::same(4), HOVER);
+                        painter.rect_filled(close_rect, CornerRadius::same(4), pal().hover);
                     }
-                    painter.text(close_rect.center(), Align2::CENTER_CENTER, "×", FontId::proportional(14.0), DIM);
+                    painter.text(close_rect.center(), Align2::CENTER_CENTER, "×", FontId::proportional(14.0), pal().dim);
                 }
                 if let Some(paths) = resp.dnd_release_payload::<DragPaths>() {
                     let copy = ui.input(|i| i.modifiers.ctrl);
@@ -422,10 +422,10 @@ impl App {
                 }
                 if !tab.filter.is_empty() {
                     let chip = Frame::new()
-                        .fill(SELECT)
+                        .fill(pal().select)
                         .corner_radius(CornerRadius::same(5))
                         .inner_margin(Margin::symmetric(8, 3))
-                        .show(ui, |ui| ui.label(RichText::new(format!("Filter: {}  ×", tab.filter)).color(TEXT)));
+                        .show(ui, |ui| ui.label(RichText::new(format!("Filter: {}  ×", tab.filter)).color(pal().text)));
                     if chip.response.interact(Sense::click()).on_hover_text("Clear filter (Esc)").clicked() {
                         actions.push(Action::FocusPane(p));
                         actions.push(Action::ClearFilter);
@@ -438,9 +438,9 @@ impl App {
 
     fn path_bar(&mut self, ui: &mut Ui, p: usize, actions: &mut Vec<Action>) {
         let frame = Frame::new()
-            .fill(BG)
+            .fill(pal().bg)
             .corner_radius(CornerRadius::same(6))
-            .stroke(Stroke::new(1.0, if self.tab_in(p).search.is_some() { ACCENT } else { BORDER }))
+            .stroke(Stroke::new(1.0, if self.tab_in(p).search.is_some() { pal().accent } else { pal().border }))
             .inner_margin(Margin::symmetric(6, 2));
         frame.show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -453,7 +453,7 @@ impl App {
             let tab_id = tab.id;
             if let Some(s) = tab.search.as_mut() {
                 ui.horizontal_centered(|ui| {
-                    paint_glyph(ui.painter(), ui.cursor().min + vec2(8.0, 12.0), Glyph::Search, DIM);
+                    paint_glyph(ui.painter(), ui.cursor().min + vec2(8.0, 12.0), Glyph::Search, pal().dim);
                     ui.add_space(20.0);
                     let hint = format!("Search in {}", s.root.display());
                     let resp = ui.add(
@@ -505,10 +505,10 @@ impl App {
                 // Drop leading segments until the rest fits; they collapse into "…".
                 let font = FontId::proportional(BODY);
                 let pad = ui.spacing().button_padding.x * 2.0;
-                let sep_w = ui.painter().layout_no_wrap(" › ".into(), font.clone(), FAINT).size().x;
+                let sep_w = ui.painter().layout_no_wrap(" › ".into(), font.clone(), pal().faint).size().x;
                 let widths: Vec<f32> = parts
                     .iter()
-                    .map(|(_, l)| ui.painter().layout_no_wrap(l.clone(), font.clone(), TEXT).size().x + pad + sep_w)
+                    .map(|(_, l)| ui.painter().layout_no_wrap(l.clone(), font.clone(), pal().text).size().x + pad + sep_w)
                     .collect();
                 let mut skip = 0;
                 let ellipsis_w = 30.0;
@@ -517,7 +517,7 @@ impl App {
                 }
                 if skip > 0 {
                     let hidden = parts[skip - 1].0.to_path_buf();
-                    let r = ui.add(egui::Button::new(RichText::new("…").color(DIM)).frame_when_inactive(false));
+                    let r = ui.add(egui::Button::new(RichText::new("…").color(pal().dim)).frame_when_inactive(false));
                     if r.on_hover_text(hidden.display().to_string()).clicked() {
                         actions.push(Action::FocusPane(p));
                         actions.push(Action::Navigate(hidden));
@@ -526,9 +526,9 @@ impl App {
                 let last_index = parts.len() - 1;
                 for (n, (part, label)) in parts.into_iter().enumerate().skip(skip) {
                     if n > 1 || (skip > 0 && n > 0) {
-                        ui.label(RichText::new(" › ").color(FAINT));
+                        ui.label(RichText::new(" › ").color(pal().faint));
                     }
-                    let text = RichText::new(label).color(if n == last_index { TEXT } else { DIM });
+                    let text = RichText::new(label).color(if n == last_index { pal().text } else { pal().dim });
                     let resp = ui.add(egui::Button::new(text).frame_when_inactive(false));
                     if let Some(paths) = resp.dnd_release_payload::<DragPaths>() {
                         let copy = ui.input(|i| i.modifiers.ctrl);
@@ -583,7 +583,7 @@ impl App {
             let active = tab.sort == key;
             let right = align == Align2::RIGHT_CENTER;
             let pos = Pos2::new(if right { x1 } else { x0 }, r.center().y);
-            let color = if active || resp.hovered() { TEXT } else { DIM };
+            let color = if active || resp.hovered() { pal().text } else { pal().dim };
             let text_rect = ui.painter().text(pos, align, label, FontId::proportional(12.0), color);
             if active {
                 let ax = if right { text_rect.left() - 8.0 } else { text_rect.right() + 8.0 };
@@ -594,7 +594,7 @@ impl App {
                 actions.push(Action::Sort(key));
             }
         }
-        ui.painter().hline(full.x_range(), hrect.bottom(), Stroke::new(1.0, BORDER));
+        ui.painter().hline(full.x_range(), hrect.bottom(), Stroke::new(1.0, pal().border));
 
         if tab.view.is_empty() {
             empty_state(ui, tab);
@@ -617,15 +617,15 @@ impl App {
                     record_folder(ui.ctx(), row, &e.path);
                 }
                 if selected {
-                    painter.rect_filled(row, CornerRadius::same(5), if pane_active { SELECT } else { SELECT_DIM });
+                    painter.rect_filled(row, CornerRadius::same(5), if pane_active { pal().select } else { pal().select_dim });
                 } else if resp.hovered() || drop_target {
-                    painter.rect_filled(row, CornerRadius::same(5), HOVER);
+                    painter.rect_filled(row, CornerRadius::same(5), pal().hover);
                 }
                 if drop_target {
-                    painter.rect_stroke(row, CornerRadius::same(5), Stroke::new(1.5, ACCENT), egui::StrokeKind::Inside);
+                    painter.rect_stroke(row, CornerRadius::same(5), Stroke::new(1.5, pal().accent), egui::StrokeKind::Inside);
                 }
                 if tab.cursor == Some(vi) && !tab.marked.is_empty() && pane_active {
-                    painter.rect_stroke(row, CornerRadius::same(5), Stroke::new(1.0, ACCENT), egui::StrokeKind::Inside);
+                    painter.rect_stroke(row, CornerRadius::same(5), Stroke::new(1.0, pal().accent), egui::StrokeKind::Inside);
                 }
                 let faded = cut.is_some_and(|c| c.contains(&e.path)) || dragging.is_some_and(|d| d.0.contains(&e.path));
                 paint_row(painter, rect, &cols, e, sizes, sizing, faded);
@@ -694,15 +694,15 @@ impl App {
                         let painter = ui.painter();
                         let corner = CornerRadius::same(radius);
                         if selected {
-                            painter.rect_filled(tile, corner, if pane_active { SELECT } else { SELECT_DIM });
+                            painter.rect_filled(tile, corner, if pane_active { pal().select } else { pal().select_dim });
                         } else if resp.hovered() || drop_target {
-                            painter.rect_filled(tile, corner, HOVER);
+                            painter.rect_filled(tile, corner, pal().hover);
                         }
                         if drop_target {
-                            painter.rect_stroke(tile, corner, Stroke::new(1.5, ACCENT), egui::StrokeKind::Inside);
+                            painter.rect_stroke(tile, corner, Stroke::new(1.5, pal().accent), egui::StrokeKind::Inside);
                         }
                         if tab.cursor == Some(vi) && !tab.marked.is_empty() && pane_active {
-                            painter.rect_stroke(tile, corner, Stroke::new(1.0, ACCENT), egui::StrokeKind::Inside);
+                            painter.rect_stroke(tile, corner, Stroke::new(1.0, pal().accent), egui::StrokeKind::Inside);
                         }
                         let faded = cut.is_some_and(|c| c.contains(&e.path))
                             || dragging.is_some_and(|d| d.0.contains(&e.path));
@@ -747,7 +747,7 @@ impl App {
                 let collapsed = self.collapsed.contains(title);
                 let (hrect, header) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::click());
                 let hot = header.hovered();
-                let color = if hot { DIM } else { FAINT };
+                let color = if hot { pal().dim } else { pal().faint };
                 ui.painter().text(
                     Pos2::new(hrect.left() + 2.0, hrect.center().y),
                     Align2::LEFT_CENTER,
@@ -762,7 +762,7 @@ impl App {
                     actions.push(Action::ToggleSection(title));
                 }
                 if can_drop && bookmark_zone(ui, &header, &dragged_dirs, actions) {
-                    ui.painter().rect_stroke(hrect, CornerRadius::same(5), Stroke::new(1.5, ACCENT), egui::StrokeKind::Inside);
+                    ui.painter().rect_stroke(hrect, CornerRadius::same(5), Stroke::new(1.5, pal().accent), egui::StrokeKind::Inside);
                 }
                 ui.add_space(2.0);
                 if collapsed {
@@ -775,25 +775,25 @@ impl App {
                     let drop_target = drop_hover(&resp, path);
                     record_folder(ui.ctx(), rect, path);
                     if selected {
-                        painter.rect_filled(rect, CornerRadius::same(5), SELECT);
+                        painter.rect_filled(rect, CornerRadius::same(5), pal().select);
                     } else if resp.hovered() || drop_target {
-                        painter.rect_filled(rect, CornerRadius::same(5), HOVER);
+                        painter.rect_filled(rect, CornerRadius::same(5), pal().hover);
                     }
                     if drop_target {
-                        painter.rect_stroke(rect, CornerRadius::same(5), Stroke::new(1.5, ACCENT), egui::StrokeKind::Inside);
+                        painter.rect_stroke(rect, CornerRadius::same(5), Stroke::new(1.5, pal().accent), egui::StrokeKind::Inside);
                     }
                     let kind = match title {
                         "DEVICES" => Some(fsops::Special::Drive),
                         _ => fsops::special(path),
                     };
-                    let icon_color = if selected { ACCENT } else { DIM };
+                    let icon_color = if selected { pal().accent } else { pal().dim };
                     draw_place(painter, Pos2::new(rect.left() + 14.0, rect.center().y), kind, icon_color);
                     painter.with_clip_rect(rect.shrink(2.0)).text(
                         Pos2::new(rect.left() + 30.0, rect.center().y),
                         Align2::LEFT_CENTER,
                         name,
                         FontId::proportional(BODY),
-                        if selected { TEXT } else { DIM },
+                        if selected { pal().text } else { pal().dim },
                     );
                     if let Some(paths) = resp.dnd_release_payload::<DragPaths>() {
                         let copy = ui.input(|i| i.modifiers.ctrl);
@@ -835,20 +835,20 @@ impl App {
                     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::hover());
                     let hot = bookmark_zone(ui, &resp, &dragged_dirs, actions);
                     let painter = ui.painter();
-                    painter.rect_filled(rect, CornerRadius::same(5), if hot { SELECT_DIM } else { BG });
+                    painter.rect_filled(rect, CornerRadius::same(5), if hot { pal().select_dim } else { pal().bg });
                     painter.rect_stroke(
                         rect,
                         CornerRadius::same(5),
-                        Stroke::new(1.0, if hot { ACCENT } else { BORDER }),
+                        Stroke::new(1.0, if hot { pal().accent } else { pal().border }),
                         egui::StrokeKind::Inside,
                     );
-                    draw_emblem(painter, Pos2::new(rect.left() + 14.0, rect.center().y), fsops::Special::Bookmark, 0.9, if hot { ACCENT } else { DIM }, 1.4);
+                    draw_emblem(painter, Pos2::new(rect.left() + 14.0, rect.center().y), fsops::Special::Bookmark, 0.9, if hot { pal().accent } else { pal().dim }, 1.4);
                     painter.text(
                         Pos2::new(rect.left() + 30.0, rect.center().y),
                         Align2::LEFT_CENTER,
                         "Drop to bookmark",
                         FontId::proportional(12.5),
-                        if hot { TEXT } else { DIM },
+                        if hot { pal().text } else { pal().dim },
                     );
                 }
             }
@@ -859,14 +859,14 @@ impl App {
         let job = self.ops.snapshot();
         let queued = self.ops.queued.load(std::sync::atomic::Ordering::Relaxed);
         let tab = self.tab();
-        let small = |s: String| RichText::new(s).size(12.0).color(DIM);
+        let small = |s: String| RichText::new(s).size(12.0).color(pal().dim);
         ui.horizontal_centered(|ui| {
             if let Some(s) = &tab.search {
                 let n = tab.view.len();
                 let more = if s.truncated { "+" } else { "" };
                 ui.label(small(format!("{n}{more} results")));
                 if s.running {
-                    ui.add(egui::Spinner::new().size(11.0).color(DIM));
+                    ui.add(egui::Spinner::new().size(11.0).color(pal().dim));
                     ui.label(small("searching".into()));
                 }
             } else {
@@ -888,7 +888,7 @@ impl App {
                 ui.label(small(format!("{} items  ·  {dirs} folders, {files} files", tab.view.len())));
                 ui.label(small(format!("·  {}{}", util::human_size(bytes), if all_known { "" } else { "+" })));
                 if tab.entries.iter().any(|e| e.is_dir && self.sizing.contains(&e.path)) {
-                    ui.add(egui::Spinner::new().size(11.0).color(DIM));
+                    ui.add(egui::Spinner::new().size(11.0).color(pal().dim));
                 }
             }
             let n = tab.selection_count();
@@ -912,17 +912,17 @@ impl App {
                     }
                     let frac = if job.bytes_total > 0 { job.bytes_done as f32 / job.bytes_total as f32 } else { 0.0 };
                     if job.bytes_total > 0 {
-                        ui.add(egui::ProgressBar::new(frac).desired_width(140.0).desired_height(8.0).fill(ACCENT));
+                        ui.add(egui::ProgressBar::new(frac).desired_width(140.0).desired_height(8.0).fill(pal().accent));
                         ui.label(small(format!(
                             "{} / {}",
                             util::human_size(job.bytes_done),
                             util::human_size(job.bytes_total)
                         )));
                     } else {
-                        ui.add(egui::Spinner::new().size(11.0).color(DIM));
+                        ui.add(egui::Spinner::new().size(11.0).color(pal().dim));
                     }
                     let extra = if queued > 1 { format!("  (+{} queued)", queued - 1) } else { String::new() };
-                    ui.label(RichText::new(format!("{}{extra}", job.title)).size(12.0).color(TEXT));
+                    ui.label(RichText::new(format!("{}{extra}", job.title)).size(12.0).color(pal().text));
                 } else if let Some((free, total)) = tab.disk {
                     ui.label(small(format!("{} free of {}", util::human_size(free), util::human_size(total))));
                 }
@@ -934,7 +934,7 @@ impl App {
         let tab = self.tab();
         let Some(e) = tab.cursor_entry() else {
             ui.add_space(40.0);
-            ui.vertical_centered(|ui| ui.label(RichText::new("No selection").color(FAINT)));
+            ui.vertical_centered(|ui| ui.label(RichText::new("No selection").color(pal().faint)));
             return;
         };
         let cat = util::category(&e.ext, e.is_dir);
@@ -972,8 +972,8 @@ impl App {
             .show(ui, |ui| {
                 egui::Grid::new("info").num_columns(2).spacing(vec2(12.0, 4.0)).show(ui, |ui| {
                     for (k, v) in rows {
-                        ui.label(RichText::new(k).size(12.0).color(FAINT));
-                        ui.add(egui::Label::new(RichText::new(v).size(12.0).color(DIM)).wrap());
+                        ui.label(RichText::new(k).size(12.0).color(pal().faint));
+                        ui.add(egui::Label::new(RichText::new(v).size(12.0).color(pal().dim)).wrap());
                         ui.end_row();
                     }
                 });
@@ -998,14 +998,14 @@ impl App {
             }
             State::Ready(Content::Text { job, truncated, .. }) => {
                 Frame::new()
-                    .fill(BG)
+                    .fill(pal().bg)
                     .corner_radius(CornerRadius::same(6))
                     .inner_margin(Margin::same(8))
                     .show(ui, |ui| {
                         ScrollArea::both().auto_shrink([false; 2]).id_salt("preview_text").show(ui, |ui| {
                             ui.add(egui::Label::new(job.clone()).wrap_mode(egui::TextWrapMode::Extend));
                             if *truncated {
-                                ui.label(RichText::new("… preview truncated").color(FAINT).italics());
+                                ui.label(RichText::new("… preview truncated").color(pal().faint).italics());
                             }
                         });
                     });
@@ -1017,7 +1017,7 @@ impl App {
                     draw_path_folder(ui.painter(), r.center(), 4.0, &e.path);
                     ui.add_space(10.0);
                     if let Some(n) = items {
-                        ui.label(RichText::new(format!("{n} items")).color(DIM));
+                        ui.label(RichText::new(format!("{n} items")).color(pal().dim));
                     }
                 });
             }
@@ -1027,12 +1027,12 @@ impl App {
                     let (r, _) = ui.allocate_exact_size(vec2(64.0, 72.0), Sense::hover());
                     draw_icon_scaled(ui.painter(), r.center(), cat, 4.0);
                     ui.add_space(10.0);
-                    ui.label(RichText::new("No preview available").color(FAINT));
+                    ui.label(RichText::new("No preview available").color(pal().faint));
                 });
             }
             State::Ready(Content::Error(err)) => {
                 ui.add_space(40.0);
-                ui.vertical_centered(|ui| ui.label(RichText::new(err).color(FAINT)));
+                ui.vertical_centered(|ui| ui.label(RichText::new(err).color(pal().faint)));
             }
         });
     }
@@ -1049,12 +1049,12 @@ impl App {
         if let Some(pos) = pos {
             let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("drop_overlay")));
             if let Some((r, _)) = self.folder_rects.iter().find(|(r, _)| r.contains(pos)) {
-                painter.rect_filled(*r, CornerRadius::same(5), ACCENT.gamma_multiply(0.18));
-                painter.rect_stroke(*r, CornerRadius::same(5), Stroke::new(1.5, ACCENT), egui::StrokeKind::Inside);
+                painter.rect_filled(*r, CornerRadius::same(5), pal().accent.gamma_multiply(0.18));
+                painter.rect_stroke(*r, CornerRadius::same(5), Stroke::new(1.5, pal().accent), egui::StrokeKind::Inside);
             } else if let Some(r) = self.pane_rects.iter().find(|r| r.contains(pos)) {
-                painter.rect_filled(r.shrink(6.0), CornerRadius::same(10), ACCENT.gamma_multiply(0.10));
-                painter.rect_stroke(r.shrink(6.0), CornerRadius::same(10), Stroke::new(2.0, ACCENT), egui::StrokeKind::Inside);
-                painter.text(r.center(), Align2::CENTER_CENTER, "Drop to copy here", FontId::proportional(16.0), TEXT);
+                painter.rect_filled(r.shrink(6.0), CornerRadius::same(10), pal().accent.gamma_multiply(0.10));
+                painter.rect_stroke(r.shrink(6.0), CornerRadius::same(10), Stroke::new(2.0, pal().accent), egui::StrokeKind::Inside);
+                painter.text(r.center(), Align2::CENTER_CENTER, "Drop to copy here", FontId::proportional(16.0), pal().text);
             }
         }
         if !dropped.is_empty() {
@@ -1133,8 +1133,8 @@ impl App {
             .interactable(false)
             .show(ctx, |ui| {
                 let card = Frame::new()
-                    .fill(SURFACE.gamma_multiply(0.96))
-                    .stroke(Stroke::new(1.0, if hint.is_some() || bookmarking { ACCENT } else { BORDER }))
+                    .fill(pal().surface.gamma_multiply(0.96))
+                    .stroke(Stroke::new(1.0, if hint.is_some() || bookmarking { pal().accent } else { pal().border }))
                     .corner_radius(CornerRadius::same(8))
                     .shadow(egui::Shadow { offset: [0, 4], blur: 14, spread: 0, color: Color32::from_black_alpha(110) })
                     .inner_margin(Margin::symmetric(10, 8));
@@ -1142,8 +1142,8 @@ impl App {
                 if let Some(size) = stack_size {
                     for k in [2.0, 1.0] {
                         let r = Rect::from_min_size(origin + vec2(5.0, 5.0) * k, size);
-                        ui.painter().rect_filled(r, CornerRadius::same(8), PANEL);
-                        ui.painter().rect_stroke(r, CornerRadius::same(8), Stroke::new(1.0, BORDER), egui::StrokeKind::Inside);
+                        ui.painter().rect_filled(r, CornerRadius::same(8), pal().panel);
+                        ui.painter().rect_stroke(r, CornerRadius::same(8), Stroke::new(1.0, pal().border), egui::StrokeKind::Inside);
                     }
                 }
                 card.show(ui, |ui| {
@@ -1160,18 +1160,18 @@ impl App {
                         }
                         if n > 1 {
                             let c = r.right_top() + vec2(-2.0, 2.0);
-                            ui.painter().circle_filled(c, 9.0, ACCENT);
+                            ui.painter().circle_filled(c, 9.0, pal().accent);
                             ui.painter().text(c, Align2::CENTER_CENTER, n.to_string(), FontId::proportional(10.5), Color32::WHITE);
                         }
                         ui.add_space(4.0);
                         ui.vertical(|ui| {
                             ui.add_space(5.0);
-                            ui.add(egui::Label::new(RichText::new(name).color(TEXT)).truncate());
+                            ui.add(egui::Label::new(RichText::new(name).color(pal().text)).truncate());
                             let (text, color) = match &hint {
-                                _ if bookmarking => ("Add to bookmarks".to_string(), ACCENT),
-                                Some((true, t)) => (format!("Copy to {t}"), ACCENT),
-                                Some((false, t)) => (format!("Move to {t}"), ACCENT),
-                                None => ("Drop on a folder".to_string(), FAINT),
+                                _ if bookmarking => ("Add to bookmarks".to_string(), pal().accent),
+                                Some((true, t)) => (format!("Copy to {t}"), pal().accent),
+                                Some((false, t)) => (format!("Move to {t}"), pal().accent),
+                                None => ("Drop on a folder".to_string(), pal().faint),
                             };
                             ui.add(egui::Label::new(RichText::new(text).size(12.0).color(color)).truncate());
                         });
@@ -1219,7 +1219,7 @@ impl App {
         let modal = egui::Modal::new(egui::Id::new("palette"))
             .area(area)
             .backdrop_color(Color32::from_black_alpha(90))
-            .frame(Frame::new().fill(PANEL).stroke(Stroke::new(1.0, BORDER)).corner_radius(CornerRadius::same(10)).inner_margin(Margin::same(8)))
+            .frame(Frame::new().fill(pal().panel).stroke(Stroke::new(1.0, pal().border)).corner_radius(CornerRadius::same(10)).inner_margin(Margin::same(8)))
             .show(ctx, |ui| {
                 ui.set_width(520.0);
                 let resp = ui.add(
@@ -1243,16 +1243,16 @@ impl App {
                     let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
                     let selected = row == self.palette.selected;
                     if selected || r.hovered() {
-                        ui.painter().rect_filled(rect, CornerRadius::same(5), if selected { SELECT } else { HOVER });
+                        ui.painter().rect_filled(rect, CornerRadius::same(5), if selected { pal().select } else { pal().hover });
                     }
-                    ui.painter().text(rect.left_center() + vec2(10.0, 0.0), Align2::LEFT_CENTER, name, FontId::proportional(BODY), TEXT);
-                    ui.painter().with_clip_rect(rect).text(rect.right_center() - vec2(10.0, 0.0), Align2::RIGHT_CENTER, keys, FontId::proportional(12.0), FAINT);
+                    ui.painter().text(rect.left_center() + vec2(10.0, 0.0), Align2::LEFT_CENTER, name, FontId::proportional(BODY), pal().text);
+                    ui.painter().with_clip_rect(rect).text(rect.right_center() - vec2(10.0, 0.0), Align2::RIGHT_CENTER, keys, FontId::proportional(12.0), pal().faint);
                     if r.clicked() {
                         clicked = Some(row);
                     }
                 }
                 if n == 0 {
-                    ui.label(RichText::new("No matches").color(FAINT));
+                    ui.label(RichText::new("No matches").color(pal().faint));
                 }
                 clicked
             });
@@ -1276,8 +1276,8 @@ impl App {
         let Some(dialog) = self.dialog.as_mut() else { return };
         let (mut confirm, mut cancel) = (false, false);
         let frame = Frame::new()
-            .fill(PANEL)
-            .stroke(Stroke::new(1.0, BORDER))
+            .fill(pal().panel)
+            .stroke(Stroke::new(1.0, pal().border))
             .corner_radius(CornerRadius::same(10))
             .inner_margin(Margin::same(16));
         let modal = egui::Modal::new(egui::Id::new("dialog")).frame(frame).show(ctx, |ui| {
@@ -1300,13 +1300,13 @@ impl App {
                     ui.add_space(6.0);
                     let n = paths.len();
                     let what = if n == 1 { "This item".to_string() } else { format!("These {n} items") };
-                    ui.label(RichText::new(format!("{what} will be deleted. This can't be undone.")).color(DIM));
+                    ui.label(RichText::new(format!("{what} will be deleted. This can't be undone.")).color(pal().dim));
                     ui.add_space(6.0);
                     for p in paths.iter().take(6) {
-                        ui.label(RichText::new(format!("•  {}", ops_name(p))).color(TEXT));
+                        ui.label(RichText::new(format!("•  {}", ops_name(p))).color(pal().text));
                     }
                     if n > 6 {
-                        ui.label(RichText::new(format!("…and {} more", n - 6)).color(FAINT));
+                        ui.label(RichText::new(format!("…and {} more", n - 6)).color(pal().faint));
                     }
                     dialog_buttons(ui, "Delete", true, &mut confirm, &mut cancel);
                 }
@@ -1340,13 +1340,13 @@ impl App {
             .show(ctx, |ui| {
                 for t in &self.toasts {
                     Frame::new()
-                        .fill(SURFACE)
-                        .stroke(Stroke::new(1.0, if t.error { DANGER } else { BORDER }))
+                        .fill(pal().surface)
+                        .stroke(Stroke::new(1.0, if t.error { pal().danger } else { pal().border }))
                         .corner_radius(CornerRadius::same(8))
                         .inner_margin(Margin::symmetric(12, 8))
                         .show(ui, |ui| {
                             ui.set_max_width(420.0);
-                            ui.label(RichText::new(&t.text).color(if t.error { DANGER } else { TEXT }));
+                            ui.label(RichText::new(&t.text).color(if t.error { pal().danger } else { pal().text }));
                         });
                     ui.add_space(6.0);
                 }
@@ -1397,7 +1397,7 @@ fn empty_state(ui: &mut Ui, tab: &Tab) {
         "This folder is empty".into()
     };
     ui.add_space(40.0);
-    ui.vertical_centered(|ui| ui.label(RichText::new(msg).color(DIM)));
+    ui.vertical_centered(|ui| ui.label(RichText::new(msg).color(pal().dim)));
 }
 
 /// Scrolls the list while a drag hovers near its top or bottom edge.
@@ -1587,7 +1587,7 @@ fn paint_row(
     let alpha = if faded { 0.45 } else { 1.0 };
     let cat = util::category(&e.ext, e.is_dir);
     draw_entry_icon(painter, Pos2::new(cols.name.0 - 12.0, cy), 1.0, &e.path, cat);
-    let name_color = if e.hidden { DIM } else { TEXT };
+    let name_color = if e.hidden { pal().dim } else { pal().text };
     let name_clip = painter.with_clip_rect(Rect::from_x_y_ranges(cols.name.0..=cols.name.1, rect.y_range()));
     let name_rect = name_clip.text(
         Pos2::new(cols.name.0, cy),
@@ -1597,7 +1597,7 @@ fn paint_row(
         name_color.gamma_multiply(alpha),
     );
     if e.is_link {
-        painter.text(Pos2::new(cols.name.0 - 6.0, cy + 6.0), Align2::CENTER_CENTER, "↗", FontId::proportional(9.0), ACCENT);
+        painter.text(Pos2::new(cols.name.0 - 6.0, cy + 6.0), Align2::CENTER_CENTER, "↗", FontId::proportional(9.0), pal().accent);
     }
     let small = FontId::proportional(12.5);
     let size_text = if e.is_dir {
@@ -1610,10 +1610,10 @@ fn paint_row(
         util::human_size(e.size)
     };
     if let Some(size) = cols.size {
-        painter.text(Pos2::new(size.1, cy), Align2::RIGHT_CENTER, size_text, small.clone(), DIM.gamma_multiply(alpha));
+        painter.text(Pos2::new(size.1, cy), Align2::RIGHT_CENTER, size_text, small.clone(), pal().dim.gamma_multiply(alpha));
     }
     if let (Some(m), Some(date)) = (e.modified, cols.date) {
-        painter.text(Pos2::new(date.0, cy), Align2::LEFT_CENTER, util::fmt_time(m), small.clone(), DIM.gamma_multiply(alpha));
+        painter.text(Pos2::new(date.0, cy), Align2::LEFT_CENTER, util::fmt_time(m), small.clone(), pal().dim.gamma_multiply(alpha));
     }
     if let Some(k) = cols.kind {
         // Search results show where the match lives instead of the type.
@@ -1626,9 +1626,9 @@ fn paint_row(
         };
         painter
             .with_clip_rect(Rect::from_x_y_ranges(k.0..=k.1, rect.y_range()))
-            .text(Pos2::new(k.0, cy), Align2::LEFT_CENTER, text, small, FAINT);
+            .text(Pos2::new(k.0, cy), Align2::LEFT_CENTER, text, small, pal().faint);
     } else if let Some(rel) = e.rel.as_ref().filter(|r| !r.is_empty()) {
-        name_clip.text(name_rect.right_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, rel, small, FAINT);
+        name_clip.text(name_rect.right_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, rel, small, pal().faint);
     }
 }
 
@@ -1637,7 +1637,7 @@ fn paint_cell(painter: &Painter, cell: Rect, e: &Entry, faded: bool) {
     let alpha = if faded { 0.45 } else { 1.0 };
     let cy = cell.center().y;
     draw_entry_icon(painter, Pos2::new(cell.left() + 14.0, cy), 1.0, &e.path, util::category(&e.ext, e.is_dir));
-    let color = if e.hidden { DIM } else { TEXT };
+    let color = if e.hidden { pal().dim } else { pal().text };
     painter.with_clip_rect(cell.shrink2(vec2(6.0, 0.0)).intersect(painter.clip_rect())).text(
         Pos2::new(cell.left() + 30.0, cy),
         Align2::LEFT_CENTER,
@@ -1669,7 +1669,7 @@ fn paint_tile(painter: &Painter, thumbs: &mut Thumbs, tile: Rect, e: &Entry, fad
         let cat = util::category(&e.ext, e.is_dir);
         draw_entry_icon(painter, thumb_area.center(), side / 24.0, &e.path, cat);
     }
-    let color = if e.hidden { DIM } else { TEXT }.gamma_multiply(alpha);
+    let color = if e.hidden { pal().dim } else { pal().text }.gamma_multiply(alpha);
     let mut job = egui::text::LayoutJob::simple(e.name.clone(), FontId::proportional(12.5), color, tile.width() - 12.0);
     job.wrap.max_rows = 2;
     job.wrap.break_anywhere = true;
@@ -1708,12 +1708,12 @@ fn dialog_buttons(ui: &mut Ui, ok: &str, danger: bool, confirm: &mut bool, cance
     ui.add_space(14.0);
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         let ok_button = egui::Button::new(RichText::new(ok).color(Color32::WHITE))
-            .fill(if danger { DANGER } else { ACCENT_STRONG })
+            .fill(if danger { pal().danger } else { pal().accent_strong })
             .min_size(vec2(84.0, 28.0));
         if ui.add(ok_button).clicked() {
             *confirm = true;
         }
-        if ui.add(egui::Button::new("Cancel").fill(SURFACE).min_size(vec2(84.0, 28.0))).clicked() {
+        if ui.add(egui::Button::new("Cancel").fill(pal().surface).min_size(vec2(84.0, 28.0))).clicked() {
             *cancel = true;
         }
     });
@@ -1786,13 +1786,13 @@ fn glyph_button(ui: &mut Ui, glyph: Glyph, enabled: bool, on: bool, tip: &str) -
         .add_enabled(enabled, egui::Button::new("").frame_when_inactive(false).min_size(vec2(28.0, 26.0)))
         .on_hover_text(tip);
     let color = if !enabled {
-        FAINT
+        pal().faint
     } else if on {
-        ACCENT
+        pal().accent
     } else if resp.hovered() {
-        TEXT
+        pal().text
     } else {
-        DIM
+        pal().dim
     };
     paint_glyph(ui.painter(), resp.rect.center(), glyph, color);
     resp.clicked()
@@ -1875,12 +1875,12 @@ fn paint_glyph(p: &Painter, c: Pos2, glyph: Glyph, color: Color32) {
 
 fn sort_arrow(p: &Painter, c: Pos2, ascending: bool) {
     let (a, b) = if ascending { (-2.0, 2.0) } else { (2.0, -2.0) };
-    p.line(vec![c + vec2(-3.5, -a), c + vec2(0.0, -b), c + vec2(3.5, -a)], Stroke::new(1.4, ACCENT));
+    p.line(vec![c + vec2(-3.5, -a), c + vec2(0.0, -b), c + vec2(3.5, -a)], Stroke::new(1.4, pal().accent));
 }
 
 fn draw_checker(p: &Painter, r: Rect) {
     let cell = 8.0;
-    p.rect_filled(r, CornerRadius::ZERO, Color32::from_gray(0x2a));
+    p.rect_filled(r, CornerRadius::ZERO, pal().checker.0);
     let (nx, ny) = ((r.width() / cell).ceil() as usize, (r.height() / cell).ceil() as usize);
     if nx * ny > 40_000 {
         return;
@@ -1889,7 +1889,7 @@ fn draw_checker(p: &Painter, r: Rect) {
     for y in 0..ny {
         for x in (y % 2..nx).step_by(2) {
             let min = r.min + vec2(x as f32, y as f32) * cell;
-            painter.rect_filled(Rect::from_min_size(min, vec2(cell, cell)), CornerRadius::ZERO, Color32::from_gray(0x33));
+            painter.rect_filled(Rect::from_min_size(min, vec2(cell, cell)), CornerRadius::ZERO, pal().checker.1);
         }
     }
 }

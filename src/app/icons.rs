@@ -6,8 +6,6 @@ use crate::util::Category;
 use eframe::egui::{Color32, CornerRadius, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2, epaint::PathShape, vec2};
 use std::path::Path;
 
-/// Emblem color on top of a folder body.
-const EMBLEM: Color32 = Color32::from_rgb(0x8f, 0x67, 0x14);
 
 pub fn draw_icon_scaled(p: &Painter, c: Pos2, cat: Category, s: f32) {
     if cat == Category::Folder {
@@ -27,18 +25,18 @@ pub fn draw_folder(p: &Painter, c: Pos2, s: f32) {
     let body = Rect::from_center_size(c + vec2(0.0, 1.0) * s, vec2(15.0, 11.0) * s);
     let tab = Rect::from_min_size(body.left_top() - vec2(0.0, 2.0 * s), vec2(6.5, 4.0) * s);
     let radius = CornerRadius::same((1.5 * s).min(255.0) as u8);
-    p.rect_filled(tab, radius, FOLDER.gamma_multiply(0.75));
-    p.rect_filled(body, radius, FOLDER);
+    p.rect_filled(tab, radius, pal().folder.gamma_multiply(0.75));
+    p.rect_filled(body, radius, pal().folder);
 }
 
 /// A folder icon, with an emblem when `path` is a well-known folder.
 pub fn draw_path_folder(p: &Painter, c: Pos2, s: f32, path: &Path) {
     match fsops::special(path) {
         // At row size an emblem on a folder is a blur; the bare glyph reads better.
-        Some(kind) if s < 1.5 => draw_emblem(p, c, kind, s, FOLDER, 1.4),
+        Some(kind) if s < 1.5 => draw_emblem(p, c, kind, s, pal().folder, 1.4),
         Some(kind) => {
             draw_folder(p, c, s);
-            draw_emblem(p, c + vec2(0.0, 1.5) * s, kind, s * 0.42, EMBLEM, (1.6 * s.sqrt()).min(3.5));
+            draw_emblem(p, c + vec2(0.0, 1.5) * s, kind, s * 0.42, pal().emblem, (1.6 * s.sqrt()).min(3.5));
         }
         None => draw_folder(p, c, s),
     }
