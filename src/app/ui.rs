@@ -1309,6 +1309,11 @@ impl App {
                         ui.label(RichText::new(format!("…and {} more", n - 6)).color(pal().faint));
                     }
                     dialog_buttons(ui, "Delete", true, &mut confirm, &mut cancel);
+                    // Esc closes the modal on its own; Backspace cancels too.
+                    ui.input_mut(|i| {
+                        confirm |= super::take(i, Modifiers::NONE, Key::Enter);
+                        cancel |= super::take(i, Modifiers::NONE, Key::Backspace);
+                    });
                 }
             }
         });
