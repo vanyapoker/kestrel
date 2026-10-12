@@ -41,7 +41,7 @@ pub struct Palette {
 }
 
 impl Palette {
-    /// fpilot's own dark look, used when no Omarchy theme is found.
+    /// Kestrel's own dark look, used when no Omarchy theme is found.
     pub fn builtin() -> Self {
         let rgb = Color32::from_rgb;
         Self {
@@ -185,8 +185,8 @@ fn omarchy_dir() -> PathBuf {
 }
 
 fn load_palette() -> Palette {
-    // FPILOT_OMARCHY_THEME=<theme folder> previews a theme without switching the desktop.
-    let dir = std::env::var_os("FPILOT_OMARCHY_THEME").map(PathBuf::from).unwrap_or_else(|| omarchy_dir().join("theme"));
+    // KESTREL_OMARCHY_THEME=<theme folder> previews a theme without switching the desktop.
+    let dir = std::env::var_os("KESTREL_OMARCHY_THEME").map(PathBuf::from).unwrap_or_else(|| omarchy_dir().join("theme"));
     std::fs::read_to_string(dir.join("colors.toml"))
         .ok()
         .and_then(|s| Palette::from_omarchy(&s))
@@ -216,7 +216,7 @@ pub fn watch(ctx: egui::Context) -> Option<(notify::RecommendedWatcher, Receiver
         }
     })
     .ok()?;
-    if let Some(dir) = std::env::var_os("FPILOT_OMARCHY_THEME") {
+    if let Some(dir) = std::env::var_os("KESTREL_OMARCHY_THEME") {
         w.watch(Path::new(&dir), notify::RecursiveMode::NonRecursive).ok()?;
     } else {
         // `omarchy theme set` swaps the whole theme folder, so watch its parent.

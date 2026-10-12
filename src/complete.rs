@@ -94,7 +94,7 @@ mod tests {
 
     #[test]
     fn completes_folders() {
-        let d = std::env::temp_dir().join(format!("fpilot-complete-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("kestrel-complete-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         for n in ["Documents", "Downloads", "music", ".config", "my docs"] {
             std::fs::create_dir_all(d.join(n)).unwrap();

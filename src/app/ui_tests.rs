@@ -77,7 +77,7 @@ impl Driver {
 }
 
 fn sandbox(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("fpilot-ui-{name}-{}", std::process::id()));
+    let d = std::env::temp_dir().join(format!("kestrel-ui-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&d);
     fs::create_dir_all(d.join("dest")).unwrap();
     fs::write(d.join("a.txt"), "a").unwrap();
@@ -96,7 +96,7 @@ fn drag_file_onto_folder_moves_it() {
         // While held: the payload is the file and the card targets the folder.
         let held = d.app.dragging.as_ref().expect("file should be held while dragging");
         assert_eq!(held.0, vec![dir.join("a.txt")]);
-        let target = d.ctx.data(|m| m.get_temp::<PathBuf>(egui::Id::new("fpilot_drop_target")));
+        let target = d.ctx.data(|m| m.get_temp::<PathBuf>(egui::Id::new("kestrel_drop_target")));
         assert_eq!(target, Some(dir.join("dest")));
     });
     d.until("move", |_| dir.join("dest/a.txt").exists());

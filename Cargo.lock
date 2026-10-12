@@ -942,25 +942,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
-name = "fpilot"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "eframe",
- "ignore",
- "image",
- "libc",
- "notify",
- "raw-window-handle",
- "rayon",
- "syntect",
- "trash",
- "wayland-backend",
- "wayland-client",
- "wayland-protocols-wlr",
-]
-
-[[package]]
 name = "fsevent-sys"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1424,6 +1405,25 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "kestrel"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "eframe",
+ "ignore",
+ "image",
+ "libc",
+ "notify",
+ "raw-window-handle",
+ "rayon",
+ "syntect",
+ "trash",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols-wlr",
 ]
 
 [[package]]

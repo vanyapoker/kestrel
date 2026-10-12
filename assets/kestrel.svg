@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <rect x="8" y="8" width="112" height="112" rx="26" fill="#1c1f24"/>
+  <path d="M28 42a6 6 0 0 1 6-6h20l8 8h32a6 6 0 0 1 6 6v6H28z" fill="#b8913a"/>
+  <rect x="28" y="50" width="72" height="44" rx="6" fill="#e8b84a"/>
+  <!-- kestrel in a stoop: swept wings, pointed tail -->
+  <path d="M64 63
+           C58 60 48 58 38 60
+           C47 63 54 67 58 72
+           L61 84 L64 80 L67 84 L70 72
+           C74 67 81 63 90 60
+           C80 58 70 60 64 63Z" fill="#2b4575"/>
+  <circle cx="64" cy="64" r="3.2" fill="#2b4575"/>
+</svg>

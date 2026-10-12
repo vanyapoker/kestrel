@@ -1025,7 +1025,7 @@ impl State {
                     self.egui_input.events.push(egui::Event::Copy);
                     return;
                 } else if is_paste_command(self.modifiers, active_key) {
-                    // fpilot patch: always report the paste, even when the clipboard
+                    // kestrel patch: always report the paste, even when the clipboard
                     // has no text (e.g. files copied in a file manager).
                     let contents = self.clipboard.get().unwrap_or_default().replace("\r\n", "\n");
                     self.egui_input.events.push(egui::Event::Paste(contents));

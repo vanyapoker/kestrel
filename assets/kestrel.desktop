@@ -1,12 +1,12 @@
 [Desktop Entry]
 Type=Application
-Name=fpilot
+Name=Kestrel
 GenericName=File Manager
 Comment=Fast file manager with previews and folder sizes
-Exec=fpilot %f
-Icon=fpilot
+Exec=kestrel %f
+Icon=kestrel
 Terminal=false
 Categories=System;FileTools;FileManager;
-Keywords=files;folders;explorer;file pilot;
+Keywords=files;folders;explorer;file pilot;fpilot;
 MimeType=inode/directory;
-StartupWMClass=fpilot
+StartupWMClass=kestrel

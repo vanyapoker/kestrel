@@ -25,14 +25,14 @@ fn main() -> eframe::Result {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("fpilot")
-            .with_app_id("fpilot")
+            .with_title("Kestrel")
+            .with_app_id("kestrel")
             .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([640.0, 400.0]),
         ..Default::default()
     };
     eframe::run_native(
-        "fpilot",
+        "kestrel",
         options,
         Box::new(move |cc| Ok(Box::new(app::App::new(cc, start)))),
     )

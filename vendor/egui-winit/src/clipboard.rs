@@ -179,11 +179,11 @@ fn init_smithay_clipboard(
 
     profiling::function_scope!();
 
-    // fpilot patch: smithay-clipboard would create the client's first
+    // kestrel patch: smithay-clipboard would create the client's first
     // wl_data_device, and compositors deliver drag-and-drop only to the first
-    // one. fpilot runs its own data device (src/wl_dnd.rs), so skip it here;
+    // one. kestrel runs its own data device (src/wl_dnd.rs), so skip it here;
     // text clipboard falls back to arboard.
-    if std::env::var_os("FPILOT_SMITHAY_CLIPBOARD").is_none() {
+    if std::env::var_os("KESTREL_SMITHAY_CLIPBOARD").is_none() {
         return None;
     }
 

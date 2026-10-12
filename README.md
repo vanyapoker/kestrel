@@ -1,4 +1,4 @@
-# fpilot
+# Kestrel
 
 A fast, keyboard-friendly file manager for Linux, inspired by File Pilot.
 Rust + egui (OpenGL); all filesystem work happens off the UI thread.
@@ -17,11 +17,11 @@ Optional tools for previews: `pdftoppm`/`pdfinfo` (poppler), `ffmpeg`/`ffprobe`,
 
 ## Theme
 
-fpilot follows the active Omarchy theme (`~/.local/state/omarchy/current/theme/colors.toml`),
+Kestrel follows the active Omarchy theme (`~/.local/state/omarchy/current/theme/colors.toml`),
 light or dark, and restyles itself live on `omarchy theme set`. Without Omarchy
-it uses its own dark palette. `FPILOT_OMARCHY_THEME=<theme folder>` previews a
+it uses its own dark palette. `KESTREL_OMARCHY_THEME=<theme folder>` previews a
 theme without switching the desktop, e.g.
-`FPILOT_OMARCHY_THEME=/usr/share/omarchy/themes/gruvbox fpilot`.
+`KESTREL_OMARCHY_THEME=/usr/share/omarchy/themes/gruvbox kestrel`.
 
 ## Keys
 
@@ -68,6 +68,6 @@ Benchmark: `cargo test --release -- --ignored --nocapture bench`
 
     ./install.sh
 
-Builds a release binary into `~/.local/bin/fpilot` and adds an icon and a
-launcher entry (`~/.local/share/applications/fpilot.desktop`). Re-run it after
+Builds a release binary into `~/.local/bin/kestrel` and adds an icon and a
+launcher entry (`~/.local/share/applications/kestrel.desktop`). Re-run it after
 pulling changes.

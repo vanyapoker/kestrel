@@ -1,5 +1,5 @@
 [package]
-name = "fpilot"
+name = "kestrel"
 version = "0.1.0"
 edition = "2024"
 
@@ -30,6 +30,6 @@ opt-level = 2
 [dev-dependencies]
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 
-# egui-winit with two small fpilot patches (see vendor/egui-winit/FPILOT_PATCHES.md).
+# egui-winit with two small kestrel patches (see vendor/egui-winit/KESTREL_PATCHES.md).
 [patch.crates-io]
 egui-winit = { path = "vendor/egui-winit" }

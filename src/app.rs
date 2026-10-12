@@ -1217,7 +1217,7 @@ impl App {
             // Safety: both pointers belong to our live window, which outlives the app.
             match unsafe { crate::wl_dnd::WlDnd::new(d.display.as_ptr(), w.surface.as_ptr(), self.ctx.clone()) } {
                 Ok(wl) => self.wl = Some(wl),
-                Err(e) => eprintln!("fpilot: system drag and drop unavailable: {e}"),
+                Err(e) => eprintln!("kestrel: system drag and drop unavailable: {e}"),
             }
         }
     }

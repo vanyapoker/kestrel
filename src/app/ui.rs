@@ -93,7 +93,7 @@ impl App {
             let sel = self.tab().cursor_entry().map(|e| (e.path.clone(), e.is_dir));
             self.preview.request(sel.as_ref().map(|(p, d)| (p.as_path(), *d)));
         }
-        let title = format!("{} — fpilot", self.tab().path.display());
+        let title = format!("{} — Kestrel", self.tab().path.display());
         if title != self.window_title {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.window_title = title;
@@ -1085,7 +1085,7 @@ impl App {
         if ctx.content_rect().shrink(2.0).contains(pos) {
             return;
         }
-        if std::env::var_os("FPILOT_DEBUG").is_some() {
+        if std::env::var_os("KESTREL_DEBUG").is_some() {
             eprintln!("[dnd] pointer left window at {pos:?} while dragging");
         }
         if wl.start_drag(&payload.0) {
@@ -1434,7 +1434,7 @@ fn bookmark_zone(ui: &Ui, resp: &egui::Response, dirs: &[PathBuf], actions: &mut
 }
 
 fn bookmark_hover_id() -> egui::Id {
-    egui::Id::new("fpilot_bookmark_hover")
+    egui::Id::new("kestrel_bookmark_hover")
 }
 
 fn chevron(p: &Painter, c: Pos2, open: bool, color: Color32) {
@@ -1455,7 +1455,7 @@ fn same_filesystem(a: &Path, b: &Path) -> bool {
 }
 
 fn folder_rects_id() -> egui::Id {
-    egui::Id::new("fpilot_folder_rects")
+    egui::Id::new("kestrel_folder_rects")
 }
 
 /// Remembers where folders are drawn so drops from other apps can target them.
@@ -1464,7 +1464,7 @@ fn record_folder(ctx: &egui::Context, rect: Rect, path: &Path) {
 }
 
 fn drop_target_id() -> egui::Id {
-    egui::Id::new("fpilot_drop_target")
+    egui::Id::new("kestrel_drop_target")
 }
 
 /// True while a drag hovers `target`; also records it so the drag card can say where it goes.

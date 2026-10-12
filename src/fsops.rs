@@ -351,7 +351,7 @@ mod tests {
 
     #[test]
     fn bookmark_file_edits() {
-        let d = std::env::temp_dir().join(format!("fpilot-bm-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("kestrel-bm-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         let file = d.join("gtk-3.0/bookmarks");
         let a = Path::new("/home/x/My Stuff");

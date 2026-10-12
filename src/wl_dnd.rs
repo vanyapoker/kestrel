@@ -32,10 +32,10 @@ use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum, event_crea
 
 const URI_LIST: &str = "text/uri-list";
 
-/// `FPILOT_DEBUG=1` traces the drag-and-drop protocol on stderr.
+/// `KESTREL_DEBUG=1` traces the drag-and-drop protocol on stderr.
 macro_rules! trace {
     ($($arg:tt)*) => {
-        if std::env::var_os("FPILOT_DEBUG").is_some() {
+        if std::env::var_os("KESTREL_DEBUG").is_some() {
             eprintln!("[dnd] {}", format!($($arg)*));
         }
     };
@@ -323,7 +323,7 @@ fn shm_buffer(shm: &WlShm, qh: &QueueHandle<State>, img: &ColorImage) -> Option<
     let [w, h] = img.size;
     let stride = w * 4;
     let size = stride * h;
-    let fd = unsafe { libc::memfd_create(c"fpilot-drag-icon".as_ptr(), libc::MFD_CLOEXEC) };
+    let fd = unsafe { libc::memfd_create(c"kestrel-drag-icon".as_ptr(), libc::MFD_CLOEXEC) };
     if fd < 0 {
         return None;
     }
