@@ -2,6 +2,7 @@ use eframe::egui::{
     self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Stroke, TextStyle,
     Visuals, vec2,
 };
+use crate::util::Category;
 use std::sync::Arc;
 
 pub const BG: Color32 = Color32::from_rgb(0x16, 0x18, 0x1c);
@@ -97,3 +98,19 @@ pub fn apply(ctx: &egui::Context) {
         .into();
     });
 }
+
+pub fn category_color(cat: Category) -> Color32 {
+    match cat {
+        Category::Folder => FOLDER,
+        Category::Image => Color32::from_rgb(0xc6, 0x78, 0xdd),
+        Category::Video => Color32::from_rgb(0xe0, 0x6c, 0x75),
+        Category::Audio => Color32::from_rgb(0x56, 0xb6, 0xc2),
+        Category::Archive => Color32::from_rgb(0xd1, 0x9a, 0x66),
+        Category::Code => Color32::from_rgb(0x61, 0xaf, 0xef),
+        Category::Text => Color32::from_rgb(0xab, 0xb2, 0xbf),
+        Category::Document => Color32::from_rgb(0xe5, 0xc0, 0x7b),
+        Category::Executable => Color32::from_rgb(0x98, 0xc3, 0x79),
+        Category::Other => Color32::from_rgb(0x7f, 0x84, 0x8e),
+    }
+}
+

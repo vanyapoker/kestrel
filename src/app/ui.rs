@@ -20,22 +20,31 @@ const TILE: egui::Vec2 = egui::Vec2::new(124.0, 142.0);
 impl App {
     pub(super) fn draw(&mut self, ui: &mut Ui) {
         let mut actions = Vec::new();
-        ui.ctx().data_mut(|d| d.remove_temp::<PathBuf>(drop_target_id()));
+        ui.ctx().data_mut(|d| {
+            d.remove_temp::<PathBuf>(drop_target_id());
+            let rects = d.get_temp::<Vec<(Rect, PathBuf)>>(folder_rects_id()).unwrap_or_default();
+            self.folder_rects = rects;
+            d.remove_temp::<Vec<(Rect, PathBuf)>>(folder_rects_id());
+        });
         self.dragging = DragAndDrop::payload::<DragPaths>(ui.ctx());
 
         Panel::bottom("status")
             .exact_size(26.0)
             .frame(Frame::new().fill(PANEL).inner_margin(Margin::symmetric(12, 2)))
             .show(ui, |ui| self.status_bar(ui));
+        // Side panels yield to the file list in narrow windows.
+        let width = ui.available_width();
         Panel::left("sidebar")
             .default_size(190.0)
-            .min_size(140.0)
+            .min_size(120.0_f32.min(width * 0.25))
+            .max_size((width * 0.25).max(120.0))
             .frame(Frame::new().fill(PANEL).inner_margin(Margin::symmetric(8, 4)))
             .show(ui, |ui| self.sidebar(ui, &mut actions));
         if self.show_preview {
             Panel::right("preview")
                 .default_size(360.0)
-                .min_size(220.0)
+                .min_size(160.0_f32.min(width * 0.4))
+                .max_size((width * 0.4).max(160.0))
                 .frame(Frame::new().fill(PANEL).inner_margin(Margin::symmetric(12, 4)))
                 .show(ui, |ui| self.preview_panel(ui));
         }
@@ -63,6 +72,7 @@ impl App {
         });
 
         self.external_drops(ui.ctx(), &mut actions);
+        self.maybe_drag_out(ui.ctx());
         self.drag_chip(ui.ctx());
         self.palette_ui(ui.ctx(), &mut actions);
         self.dialog_ui(ui.ctx());
@@ -440,6 +450,9 @@ impl App {
                 let painter = ui.painter();
                 let row = rect.shrink2(vec2(4.0, 1.0));
                 let drop_target = e.is_dir && drop_hover(&resp, &e.path);
+                if e.is_dir {
+                    record_folder(ui.ctx(), row, &e.path);
+                }
                 if selected {
                     painter.rect_filled(row, CornerRadius::same(5), if pane_active { SELECT } else { SELECT_DIM });
                 } else if resp.hovered() || drop_target {
@@ -498,6 +511,9 @@ impl App {
                         let tile = Rect::from_center_size(rect.center(), TILE - vec2(8.0, 8.0));
                         let selected = tab.is_selected(vi);
                         let drop_target = e.is_dir && drop_hover(&resp, &e.path);
+                        if e.is_dir {
+                            record_folder(ui.ctx(), tile, &e.path);
+                        }
                         let painter = ui.painter();
                         if selected {
                             painter.rect_filled(tile, CornerRadius::same(8), if pane_active { SELECT } else { SELECT_DIM });
@@ -541,6 +557,7 @@ impl App {
                     let painter = ui.painter();
                     let selected = *path == cur;
                     let drop_target = drop_hover(&resp, path);
+                    record_folder(ui.ctx(), rect, path);
                     if selected {
                         painter.rect_filled(rect, CornerRadius::same(5), SELECT);
                     } else if resp.hovered() || drop_target {
@@ -758,25 +775,60 @@ impl App {
     // ------------------------------------------------------------ overlays
 
     fn external_drops(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
-        let (dropped, hovering, pos) = ctx.input(|i| {
+        // Drops via winit (X11); on Wayland they come through `wl_dnd` instead.
+        let (dropped, winit_hover, pointer) = ctx.input(|i| {
             let dropped: Vec<PathBuf> = i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect();
             (dropped, !i.raw.hovered_files.is_empty(), i.pointer.hover_pos())
         });
-        let pane = pos
-            .and_then(|pos| self.pane_rects.iter().position(|r| r.contains(pos)))
-            .unwrap_or(self.active_pane);
-        if hovering {
-            if let Some(r) = self.pane_rects.get(pane) {
-                let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("drop_overlay")));
-                painter.rect_filled(r.shrink(6.0), CornerRadius::same(10), ACCENT.gamma_multiply(0.12));
+        let pos = self.ext_hover.or(if winit_hover { pointer } else { None });
+        if let Some(pos) = pos {
+            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("drop_overlay")));
+            if let Some((r, _)) = self.folder_rects.iter().find(|(r, _)| r.contains(pos)) {
+                painter.rect_filled(*r, CornerRadius::same(5), ACCENT.gamma_multiply(0.18));
+                painter.rect_stroke(*r, CornerRadius::same(5), Stroke::new(1.5, ACCENT), egui::StrokeKind::Inside);
+            } else if let Some(r) = self.pane_rects.iter().find(|r| r.contains(pos)) {
+                painter.rect_filled(r.shrink(6.0), CornerRadius::same(10), ACCENT.gamma_multiply(0.10));
                 painter.rect_stroke(r.shrink(6.0), CornerRadius::same(10), Stroke::new(2.0, ACCENT), egui::StrokeKind::Inside);
                 painter.text(r.center(), Align2::CENTER_CENTER, "Drop to copy here", FontId::proportional(16.0), TEXT);
             }
         }
         if !dropped.is_empty() {
-            actions.push(Action::FocusPane(pane));
-            let dest = self.tab_in(pane).path.clone();
-            actions.push(Action::Drop { paths: dropped, dest, copy: true });
+            if let Some((dest, pane)) = self.drop_destination(pointer.unwrap_or_default()) {
+                actions.push(Action::FocusPane(pane));
+                actions.push(Action::Drop { paths: dropped, dest, copy: true });
+            }
+        }
+    }
+
+    /// Folder under `pos` (row, tile or sidebar entry), else the folder of the pane under it.
+    pub(super) fn drop_destination(&self, pos: Pos2) -> Option<(PathBuf, usize)> {
+        let pane = self.pane_rects.iter().position(|r| r.contains(pos)).unwrap_or(self.active_pane);
+        if let Some((_, p)) = self.folder_rects.iter().find(|(r, _)| r.contains(pos)) {
+            return Some((p.clone(), pane));
+        }
+        let tab = self.tab_in(pane);
+        tab.search.is_none().then(|| (tab.path.clone(), pane))
+    }
+
+    /// Hands the in-app drag to the compositor once it leaves the window.
+    fn maybe_drag_out(&mut self, ctx: &egui::Context) {
+        let (Some(wl), Some(payload)) = (&self.wl, &self.dragging) else { return };
+        if wl.dragging_out() {
+            return;
+        }
+        let Some(pos) = ctx.pointer_latest_pos() else { return };
+        if ctx.content_rect().shrink(2.0).contains(pos) {
+            return;
+        }
+        if std::env::var_os("FPILOT_DEBUG").is_some() {
+            eprintln!("[dnd] pointer left window at {pos:?} while dragging");
+        }
+        if wl.start_drag(&payload.0) {
+            DragAndDrop::clear_payload(ctx);
+            self.dragging = None;
+            // The compositor now owns the pointer; egui never sees the release.
+            self.inject_release = true;
+            ctx.request_repaint();
         }
     }
 
@@ -1108,6 +1160,15 @@ fn same_filesystem(a: &Path, b: &Path) -> bool {
         (Ok(x), Ok(y)) => x.dev() == y.dev(),
         _ => false,
     }
+}
+
+fn folder_rects_id() -> egui::Id {
+    egui::Id::new("fpilot_folder_rects")
+}
+
+/// Remembers where folders are drawn so drops from other apps can target them.
+fn record_folder(ctx: &egui::Context, rect: Rect, path: &Path) {
+    ctx.data_mut(|d| d.get_temp_mut_or_default::<Vec<(Rect, PathBuf)>>(folder_rects_id()).push((rect, path.to_path_buf())));
 }
 
 fn drop_target_id() -> egui::Id {
@@ -1487,21 +1548,6 @@ fn paint_glyph(p: &Painter, c: Pos2, glyph: Glyph, color: Color32) {
 fn sort_arrow(p: &Painter, c: Pos2, ascending: bool) {
     let (a, b) = if ascending { (-2.0, 2.0) } else { (2.0, -2.0) };
     p.line(vec![c + vec2(-3.5, -a), c + vec2(0.0, -b), c + vec2(3.5, -a)], Stroke::new(1.4, ACCENT));
-}
-
-fn category_color(cat: Category) -> Color32 {
-    match cat {
-        Category::Folder => FOLDER,
-        Category::Image => Color32::from_rgb(0xc6, 0x78, 0xdd),
-        Category::Video => Color32::from_rgb(0xe0, 0x6c, 0x75),
-        Category::Audio => Color32::from_rgb(0x56, 0xb6, 0xc2),
-        Category::Archive => Color32::from_rgb(0xd1, 0x9a, 0x66),
-        Category::Code => Color32::from_rgb(0x61, 0xaf, 0xef),
-        Category::Text => Color32::from_rgb(0xab, 0xb2, 0xbf),
-        Category::Document => Color32::from_rgb(0xe5, 0xc0, 0x7b),
-        Category::Executable => Color32::from_rgb(0x98, 0xc3, 0x79),
-        Category::Other => Color32::from_rgb(0x7f, 0x84, 0x8e),
-    }
 }
 
 fn draw_icon(p: &Painter, c: Pos2, cat: Category) {

@@ -114,6 +114,15 @@ pub struct App {
     /// Payload of the drag in progress, refreshed every frame.
     dragging: Option<Arc<DragPaths>>,
     window_title: String,
+    /// System drag and drop (Wayland only; `None` in tests and on X11).
+    wl: Option<crate::wl_dnd::WlDnd>,
+    wl_tried: bool,
+    /// Pointer position of a drag from another app hovering us.
+    ext_hover: Option<egui::Pos2>,
+    /// Send egui a synthetic button release (after handing a drag to the compositor).
+    inject_release: bool,
+    /// Folders drawn last frame, for resolving external drops.
+    folder_rects: Vec<(egui::Rect, PathBuf)>,
     /// Where each visible row was drawn last frame (for UI tests).
     #[cfg(test)]
     row_rects: HashMap<PathBuf, egui::Rect>,
@@ -160,6 +169,11 @@ impl App {
             pending_paste: None,
             dragging: None,
             window_title: String::new(),
+            wl: None,
+            wl_tried: false,
+            ext_hover: None,
+            inject_release: false,
+            folder_rects: Vec::new(),
             #[cfg(test)]
             row_rects: HashMap::new(),
         };
@@ -602,16 +616,50 @@ impl App {
             return;
         }
         let text = paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n");
-        self.ctx.copy_text(text.clone());
+        let on_system = self.wl.as_ref().is_some_and(|wl| wl.set_clipboard_files(&paths, cut));
+        if !on_system {
+            self.ctx.copy_text(text.clone());
+        }
         let n = paths.len();
         self.clip = Some(Clip { paths, cut, text });
         let what = if n == 1 { "1 item".into() } else { format!("{n} items") };
         self.toast(format!("{} {what}", if cut { "Cut" } else { "Copied" }), false);
     }
 
+    fn set_text_clipboard(&mut self, text: String) {
+        if !self.wl.as_ref().is_some_and(|wl| wl.set_clipboard_text(&text)) {
+            self.ctx.copy_text(text);
+        }
+    }
+
     /// `text` is the system clipboard contents, if egui delivered a paste event.
     fn paste(&mut self, text: Option<String>) {
         let Some(dest) = self.paste_target() else { return };
+        if let Some(wl) = &self.wl {
+            match wl.read_clipboard() {
+                crate::wl_dnd::ClipRead::Ours => {}
+                crate::wl_dnd::ClipRead::Files { paths, cut } => {
+                    let kind = if cut { JobKind::Move } else { JobKind::Copy };
+                    self.ops.submit(Job { kind, srcs: paths, dest: Some(dest) });
+                    return;
+                }
+                crate::wl_dnd::ClipRead::Nothing => {
+                    if self.clip.is_none() {
+                        self.toast("Clipboard has no files to paste", false);
+                        return;
+                    }
+                }
+            }
+            // Ours: the internal clipboard knows whether it was a cut.
+            if let Some(clip) = self.clip.take() {
+                let kind = if clip.cut { JobKind::Move } else { JobKind::Copy };
+                if !clip.cut {
+                    self.clip = Some(Clip { paths: clip.paths.clone(), cut: false, text: clip.text });
+                }
+                self.ops.submit(Job { kind, srcs: clip.paths, dest: Some(dest) });
+            }
+            return;
+        }
         let ours = match (&self.clip, &text) {
             (Some(c), Some(t)) => c.text.trim() == t.trim(),
             (Some(_), None) => true,
@@ -780,7 +828,7 @@ impl App {
             Cmd::CopyPath => {
                 let text = self.tab().targets().iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n");
                 if !text.is_empty() {
-                    self.ctx.copy_text(text);
+                    self.set_text_clipboard(text);
                     self.toast("Path copied", false);
                 }
             }
@@ -845,7 +893,7 @@ impl App {
                 let pane = &mut self.panes[self.active_pane];
                 pane.tabs[pane.active].apply_view(sizes, hidden);
             }
-            Action::CopyPath(p) => self.ctx.copy_text(p.display().to_string()),
+            Action::CopyPath(p) => self.set_text_clipboard(p.display().to_string()),
             Action::OpenTerminal(p) => fsops::open_terminal(&p),
             Action::ClearFilter => {
                 self.tab_mut().filter.clear();
@@ -1071,8 +1119,58 @@ impl App {
     }
 }
 
+impl App {
+    fn init_wayland(&mut self, frame: &eframe::Frame) {
+        use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
+        self.wl_tried = true;
+        let Some(win) = frame.winit_window() else { return };
+        let (Ok(d), Ok(w)) = (win.display_handle(), win.window_handle()) else { return };
+        if let (RawDisplayHandle::Wayland(d), RawWindowHandle::Wayland(w)) = (d.as_raw(), w.as_raw()) {
+            // Safety: both pointers belong to our live window, which outlives the app.
+            match unsafe { crate::wl_dnd::WlDnd::new(d.display.as_ptr(), w.surface.as_ptr(), self.ctx.clone()) } {
+                Ok(wl) => self.wl = Some(wl),
+                Err(e) => eprintln!("fpilot: system drag and drop unavailable: {e}"),
+            }
+        }
+    }
+
+    fn poll_wayland(&mut self) {
+        let Some(wl) = &self.wl else { return };
+        for ev in wl.poll() {
+            match ev {
+                crate::wl_dnd::DndEvent::Hover { pos } => self.ext_hover = Some(pos),
+                crate::wl_dnd::DndEvent::Leave => self.ext_hover = None,
+                crate::wl_dnd::DndEvent::Drop { paths, pos, own } => {
+                    self.ext_hover = None;
+                    if let Some((dest, pane)) = self.drop_destination(pos) {
+                        self.active_pane = pane;
+                        // Our own drag coming back behaves like an in-app drop; others always copy.
+                        self.drop_paths(paths, dest, !own);
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl eframe::App for App {
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        if std::mem::take(&mut self.inject_release) {
+            let pos = self.ctx.pointer_latest_pos().unwrap_or_default();
+            raw.events.push(Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            });
+        }
+    }
+
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if !self.wl_tried {
+            self.init_wayland(frame);
+        }
+        self.poll_wayland();
         self.poll(ctx);
         self.handle_keys(ctx);
     }
@@ -1114,7 +1212,7 @@ fn start_listing(tab: &mut Tab, tx: &Sender<Listing>, ctx: &egui::Context, soft:
 }
 
 /// Paths from clipboard text: one per line, plain or as file:// URIs.
-fn parse_path_list(text: &str) -> Vec<PathBuf> {
+pub(crate) fn parse_path_list(text: &str) -> Vec<PathBuf> {
     text.lines()
         .map(str::trim)
         .filter(|l| !l.is_empty() && !l.starts_with('#'))

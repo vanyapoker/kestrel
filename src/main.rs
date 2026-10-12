@@ -9,6 +9,7 @@ mod theme;
 mod thumbs;
 mod util;
 mod watch;
+mod wl_dnd;
 
 use eframe::egui;
 use std::path::PathBuf;
