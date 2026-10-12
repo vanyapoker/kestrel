@@ -39,7 +39,7 @@ impl App {
         // Both can be toggled, or dragged closed past their minimum width and back open.
         let mut show = self.show_sidebar;
         Panel::left("sidebar")
-            .default_size(190.0)
+            .default_size(self.sidebar_width)
             .min_size(120.0_f32.min(width * 0.25))
             .max_size((width * 0.25).max(120.0))
             .drag_to_open(true)
@@ -48,13 +48,21 @@ impl App {
         self.show_sidebar = show;
         let mut show = self.show_preview;
         Panel::right("preview")
-            .default_size(360.0)
+            .default_size(self.preview_width)
             .min_size(160.0_f32.min(width * 0.4))
             .max_size((width * 0.4).max(160.0))
             .drag_to_open(true)
             .frame(Frame::new().fill(pal().panel).inner_margin(Margin::symmetric(12, 4)))
             .show_collapsible(ui, &mut show, |ui| self.preview_panel(ui));
         self.show_preview = show;
+        // Remember widths only while shown; a folded panel reports its animation size.
+        let width_of = |id: &str| egui::containers::panel::PanelState::load(ui.ctx(), egui::Id::new(id)).map(|s| s.size().x);
+        if self.show_sidebar && let Some(w) = width_of("sidebar") {
+            self.sidebar_width = w;
+        }
+        if self.show_preview && let Some(w) = width_of("preview") {
+            self.preview_width = w;
+        }
         CentralPanel::default().frame(Frame::new().fill(pal().bg)).show(ui, |ui| {
             let full = ui.max_rect();
             self.pane_rects.clear();

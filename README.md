@@ -53,6 +53,7 @@ If you installed from your own clone, run `./install.sh --uninstall` there inste
 - **Drag and drop** within Kestrel and to or from other apps. Copy and paste files to and from other file managers too.
 - **Matches your Omarchy theme.** Kestrel uses your current theme's colors, light or dark, and updates live when you switch themes.
 - **Bookmarks shared with GTK,** so they also show up in Nautilus and in file pickers.
+- **Picks up where you left off.** Tabs, split view, view modes, sorting and panel layout are restored on the next launch. Opening a specific folder (`kestrel ~/Downloads`) opens just that folder.
 - **Live updates.** The view refreshes on its own when files change.
 
 ## Keyboard shortcuts

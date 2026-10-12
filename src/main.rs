@@ -5,6 +5,7 @@ mod ops;
 mod palette;
 mod preview;
 mod search;
+mod session;
 mod tab;
 mod theme;
 mod thumbs;
@@ -27,12 +28,13 @@ fn main() -> eframe::Result {
         }
         _ => {}
     }
+    // With a folder argument, open just that folder; otherwise restore the last session.
     let start = std::env::args_os()
         .nth(1)
         .map(PathBuf::from)
         .and_then(|p| p.canonicalize().ok())
-        .filter(|p| p.is_dir())
-        .unwrap_or_else(fsops::home_dir);
+        .filter(|p| p.is_dir());
+    let session = session::load();
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -49,6 +51,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "kestrel",
         options,
-        Box::new(move |cc| Ok(Box::new(app::App::new(cc, start)))),
+        Box::new(move |cc| Ok(Box::new(app::App::new(cc, start, session)))),
     )
 }

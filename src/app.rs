@@ -143,11 +143,25 @@ pub struct App {
     /// Where each visible row was drawn last frame (for UI tests).
     #[cfg(test)]
     row_rects: HashMap<PathBuf, egui::Rect>,
+    /// Session file; `None` in tests, so they never touch the real one.
+    session_file: Option<PathBuf>,
+    /// The session text last written, to skip identical saves.
+    saved_session: String,
+    next_session_check: Instant,
+    /// Panel widths to restore, and the last widths seen while shown.
+    sidebar_width: f32,
+    preview_width: f32,
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext, start: PathBuf) -> Self {
-        Self::with_ctx(cc.egui_ctx.clone(), start)
+    pub fn new(cc: &eframe::CreationContext, start: Option<PathBuf>, session: Option<crate::session::Session>) -> Self {
+        let mut app = Self::with_ctx(cc.egui_ctx.clone(), start.clone().unwrap_or_else(fsops::home_dir));
+        if let Some(s) = session {
+            app.restore(&s, start.is_none());
+            app.saved_session = s.to_text();
+        }
+        app.session_file = crate::session::file();
+        app
     }
 
     fn with_ctx(ctx: egui::Context, start: PathBuf) -> Self {
@@ -200,6 +214,11 @@ impl App {
             folder_rects: Vec::new(),
             #[cfg(test)]
             row_rects: HashMap::new(),
+            session_file: None,
+            saved_session: String::new(),
+            next_session_check: Instant::now(),
+            sidebar_width: 190.0,
+            preview_width: 360.0,
         };
         app.open_tab(start);
         app
@@ -236,6 +255,101 @@ impl App {
         let secs = if error { 6 } else { 3 };
         self.toasts.push(Toast { text: text.into(), error, until: Instant::now() + Duration::from_secs(secs) });
         self.ctx.request_repaint_after(Duration::from_secs(secs));
+    }
+
+    // ------------------------------------------------------------ session
+
+    /// Applies saved settings, and the saved tabs too when `tabs` is set.
+    fn restore(&mut self, s: &crate::session::Session, tabs: bool) {
+        self.show_hidden = s.show_hidden;
+        self.show_preview = s.show_preview;
+        self.show_sidebar = s.show_sidebar;
+        // Sections are keyed by their static titles; ignore names we no longer have.
+        self.collapsed = ["PLACES", "BOOKMARKS", "DEVICES"].into_iter().filter(|t| s.collapsed.iter().any(|c| c == t)).collect();
+        if let Some(w) = s.sidebar_width {
+            self.sidebar_width = w;
+        }
+        if let Some(w) = s.preview_width {
+            self.preview_width = w;
+        }
+        if !tabs || s.panes.is_empty() {
+            // Opened on a specific folder: keep it, but in the view it was last seen in.
+            if let Some(t) = s.panes.get(s.active_pane).and_then(|p| p.tabs.get(p.active)) {
+                let tab = self.tab_mut();
+                (tab.sort, tab.ascending, tab.mode) = (t.sort, t.ascending, t.mode);
+            }
+            return;
+        }
+        for pane in std::mem::take(&mut self.panes) {
+            for tab in pane.tabs {
+                tab.cancel.store(true, Ordering::Relaxed);
+            }
+        }
+        for ps in &s.panes {
+            let mut tabs = Vec::new();
+            for t in &ps.tabs {
+                // A folder may have been removed since; open its nearest surviving parent.
+                let Some(dir) = t.path.ancestors().find(|a| a.is_dir()) else { continue };
+                let mut tab = self.new_tab(dir.to_path_buf());
+                (tab.sort, tab.ascending, tab.mode) = (t.sort, t.ascending, t.mode);
+                tabs.push(tab);
+            }
+            if !tabs.is_empty() {
+                let active = ps.active.min(tabs.len() - 1);
+                self.panes.push(Pane { tabs, active });
+            }
+        }
+        if self.panes.is_empty() {
+            let tab = self.new_tab(fsops::home_dir());
+            self.panes.push(Pane { tabs: vec![tab], active: 0 });
+        }
+        self.active_pane = s.active_pane.min(self.panes.len() - 1);
+    }
+
+    fn session(&self) -> crate::session::Session {
+        use crate::session::{PaneState, Session, TabState};
+        let panes = self
+            .panes
+            .iter()
+            .map(|p| PaneState {
+                tabs: p
+                    .tabs
+                    .iter()
+                    .map(|t| TabState { path: t.path.clone(), sort: t.sort, ascending: t.ascending, mode: t.mode })
+                    .collect(),
+                active: p.active,
+            })
+            .collect();
+        let mut collapsed: Vec<String> = self.collapsed.iter().map(|s| s.to_string()).collect();
+        collapsed.sort();
+        Session {
+            panes,
+            active_pane: self.active_pane,
+            show_hidden: self.show_hidden,
+            show_preview: self.show_preview,
+            show_sidebar: self.show_sidebar,
+            collapsed,
+            sidebar_width: Some(self.sidebar_width),
+            preview_width: Some(self.preview_width),
+        }
+    }
+
+    /// Writes the session if it changed. Checked every couple of seconds, so a
+    /// crash loses little, and once more on exit.
+    fn save_session(&mut self, force: bool) {
+        let Some(file) = self.session_file.clone() else { return };
+        let now = Instant::now();
+        if !force && now < self.next_session_check {
+            return;
+        }
+        self.next_session_check = now + Duration::from_secs(2);
+        let text = self.session().to_text();
+        if text != self.saved_session {
+            match crate::session::save(&file, &text) {
+                Ok(()) => self.saved_session = text,
+                Err(e) => eprintln!("kestrel: could not save session: {e}"),
+            }
+        }
     }
 
     // ------------------------------------------------------------ tabs & navigation
@@ -1243,6 +1357,7 @@ impl App {
 
 impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.save_session(true);
         // Stop the drag-and-drop thread while winit's display is still alive.
         self.wl = None;
     }
@@ -1271,6 +1386,7 @@ impl eframe::App for App {
         self.poll_wayland();
         self.poll(ctx);
         self.handle_keys(ctx);
+        self.save_session(false);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
