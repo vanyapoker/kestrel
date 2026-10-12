@@ -1,4 +1,6 @@
 mod ui;
+#[cfg(test)]
+mod ui_tests;
 
 use crate::fsops::{self, Entry, Places};
 use crate::ops::{self, Job, JobKind, Ops};
@@ -109,11 +111,20 @@ pub struct App {
     /// Screen rects of the panes from the last frame, for external drops.
     pane_rects: Vec<egui::Rect>,
     pending_paste: Option<String>,
+    /// Payload of the drag in progress, refreshed every frame.
+    dragging: Option<Arc<DragPaths>>,
+    window_title: String,
+    /// Where each visible row was drawn last frame (for UI tests).
+    #[cfg(test)]
+    row_rects: HashMap<PathBuf, egui::Rect>,
 }
 
 impl App {
     pub fn new(cc: &eframe::CreationContext, start: PathBuf) -> Self {
-        let ctx = cc.egui_ctx.clone();
+        Self::with_ctx(cc.egui_ctx.clone(), start)
+    }
+
+    fn with_ctx(ctx: egui::Context, start: PathBuf) -> Self {
         theme::apply(&ctx);
         let (list_tx, list_rx) = channel();
         let (size_tx, size_rx) = channel();
@@ -147,6 +158,10 @@ impl App {
             toasts: Vec::new(),
             pane_rects: Vec::new(),
             pending_paste: None,
+            dragging: None,
+            window_title: String::new(),
+            #[cfg(test)]
+            row_rects: HashMap::new(),
         };
         app.open_tab(start);
         app
@@ -387,6 +402,15 @@ impl App {
                 Ok(entries) => {
                     tab.entries = entries;
                     tab.error = None;
+                }
+                Err(_) if l.soft && !tab.path.exists() => {
+                    // The folder was deleted or renamed under us: fall back to the nearest parent.
+                    if let Some(up) = tab.path.ancestors().find(|a| a.is_dir()).map(Path::to_path_buf) {
+                        tab.select_after_load = None;
+                        tab.path = up;
+                        start_listing(tab, &self.list_tx, &self.ctx, false);
+                    }
+                    continue;
                 }
                 Err(e) => {
                     tab.entries.clear();
@@ -760,11 +784,7 @@ impl App {
                     self.toast("Path copied", false);
                 }
             }
-            Cmd::OpenTerminal => {
-                let tab = self.tab();
-                let dir = tab.cursor_entry().filter(|e| e.is_dir && tab.search.is_some()).map(|e| e.path.clone());
-                fsops::open_terminal(&dir.unwrap_or_else(|| tab.path.clone()));
-            }
+            Cmd::OpenTerminal => fsops::open_terminal(&self.tab().path.clone()),
             Cmd::EditPath => {
                 self.path_edit = Some((self.active_pane, self.tab().path.display().to_string()));
                 self.path_edit_focus = true;
@@ -859,6 +879,10 @@ impl App {
             return;
         }
         if ctx.text_edit_focused() {
+            return;
+        }
+        if egui::DragAndDrop::has_any_payload(ctx) && ctx.input_mut(|i| take(i, Modifiers::NONE, Key::Escape)) {
+            egui::DragAndDrop::clear_payload(ctx); // cancel the drag
             return;
         }
         // Tab focus-navigation can park focus on a button; keys belong to the file list.

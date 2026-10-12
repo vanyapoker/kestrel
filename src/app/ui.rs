@@ -20,6 +20,8 @@ const TILE: egui::Vec2 = egui::Vec2::new(124.0, 142.0);
 impl App {
     pub(super) fn draw(&mut self, ui: &mut Ui) {
         let mut actions = Vec::new();
+        ui.ctx().data_mut(|d| d.remove_temp::<PathBuf>(drop_target_id()));
+        self.dragging = DragAndDrop::payload::<DragPaths>(ui.ctx());
 
         Panel::bottom("status")
             .exact_size(26.0)
@@ -75,7 +77,10 @@ impl App {
             self.preview.request(sel.as_ref().map(|(p, d)| (p.as_path(), *d)));
         }
         let title = format!("{} — fpilot", self.tab().path.display());
-        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Title(title));
+        if title != self.window_title {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.window_title = title;
+        }
     }
 
     // ------------------------------------------------------------ panes
@@ -382,6 +387,9 @@ impl App {
         let sizes = &self.sizes;
         let sizing = &self.sizing;
         let cut = self.clip.as_ref().filter(|c| c.cut).map(|c| &c.paths);
+        let dragging = self.dragging.as_deref();
+        #[cfg(test)]
+        let row_rects = &mut self.row_rects;
         let pane = &mut self.panes[p];
         let tab = &mut pane.tabs[pane.active];
         let full = ui.available_rect_before_wrap();
@@ -443,14 +451,17 @@ impl App {
                 if tab.cursor == Some(vi) && !tab.marked.is_empty() && pane_active {
                     painter.rect_stroke(row, CornerRadius::same(5), Stroke::new(1.0, ACCENT), egui::StrokeKind::Inside);
                 }
-                let faded = cut.is_some_and(|c| c.contains(&e.path));
+                let faded = cut.is_some_and(|c| c.contains(&e.path)) || dragging.is_some_and(|d| d.0.contains(&e.path));
                 paint_row(painter, rect, &cols, e, sizes, sizing, faded);
+                #[cfg(test)]
+                row_rects.insert(e.path.clone(), rect);
 
                 row_interactions(ui, &resp, tab, vi, e, ctrl_shift, actions, p);
             }
         });
         tab.scroll_offset = out.state.offset.y;
         tab.viewport_h = out.inner_rect.height();
+        drag_autoscroll(ui, tab, out.inner_rect);
         background_drop(ui, p, tab, out.inner_rect, actions);
     }
 
@@ -504,6 +515,7 @@ impl App {
         });
         tab.scroll_offset = out.state.offset.y;
         tab.viewport_h = out.inner_rect.height();
+        drag_autoscroll(ui, tab, out.inner_rect);
         background_drop(ui, p, tab, out.inner_rect, actions);
     }
 
@@ -600,12 +612,10 @@ impl App {
             let n = tab.selection_count();
             if n > 1 {
                 let bytes: u64 = tab
-                    .targets()
+                    .entries
                     .iter()
-                    .filter_map(|p| {
-                        let e = tab.entries.iter().find(|e| &e.path == p)?;
-                        if e.is_dir { self.sizes.get(p).copied() } else { Some(e.size) }
-                    })
+                    .filter(|e| tab.marked.contains(&e.path))
+                    .filter_map(|e| if e.is_dir { self.sizes.get(&e.path).copied() } else { Some(e.size) })
                     .sum();
                 ui.label(small(format!("·  {n} selected ({})", util::human_size(bytes))));
             }
@@ -770,27 +780,87 @@ impl App {
         }
     }
 
-    fn drag_chip(&self, ctx: &egui::Context) {
+    /// The card that follows the cursor while dragging: what you hold and where it will go.
+    fn drag_chip(&mut self, ctx: &egui::Context) {
         let Some(payload) = DragAndDrop::payload::<DragPaths>(ctx) else { return };
+        let Some(first) = payload.0.first() else { return };
+        // Nothing is "held" until the pointer actually moves away from the press.
+        if !ctx.input(|i| i.pointer.is_decidedly_dragging()) {
+            return;
+        }
         let Some(pos) = ctx.pointer_latest_pos() else { return };
-        let copy = ctx.input(|i| i.modifiers.ctrl);
+        ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+
         let n = payload.0.len();
-        let what = if n == 1 { ops_name(&payload.0[0]) } else { format!("{n} items") };
-        egui::Area::new(egui::Id::new("drag_chip"))
+        let target = ctx.data(|d| d.get_temp::<PathBuf>(drop_target_id()));
+        let force_copy = ctx.input(|i| i.modifiers.ctrl);
+        let hint = target.as_ref().map(|t| {
+            let copy = force_copy || !same_filesystem(first, t);
+            (copy, ops_name(t))
+        });
+        let is_dir = first.is_dir();
+        let ext = first.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+        let cat = util::category(&ext, is_dir);
+        let renderer = if is_dir { None } else { thumbs::renderer_for(&ext) };
+        let thumb = renderer.and_then(|r| self.thumbs.get(first, r)).map(|t| (t.id(), t.size_vec2()));
+        let name = if n == 1 { ops_name(first) } else { format!("{} and {} more", ops_name(first), n - 1) };
+
+        let origin = pos + vec2(16.0, 12.0);
+        let stack_size = (n > 1).then(|| {
+            ctx.data(|d| d.get_temp::<egui::Vec2>(egui::Id::new("drag_card_size"))).unwrap_or(vec2(220.0, 64.0))
+        });
+        let shown = egui::Area::new(egui::Id::new("drag_card"))
             .order(egui::Order::Tooltip)
-            .fixed_pos(pos + vec2(14.0, 10.0))
+            .fixed_pos(origin)
             .interactable(false)
             .show(ctx, |ui| {
-                Frame::new()
-                    .fill(SURFACE)
-                    .stroke(Stroke::new(1.0, BORDER))
-                    .corner_radius(CornerRadius::same(6))
-                    .inner_margin(Margin::symmetric(8, 4))
-                    .show(ui, |ui| {
-                        let verb = if copy { "Copy" } else { "Move" };
-                        ui.label(RichText::new(format!("{verb} {what}")).color(TEXT));
+                let card = Frame::new()
+                    .fill(SURFACE.gamma_multiply(0.96))
+                    .stroke(Stroke::new(1.0, if hint.is_some() { ACCENT } else { BORDER }))
+                    .corner_radius(CornerRadius::same(8))
+                    .shadow(egui::Shadow { offset: [0, 4], blur: 14, spread: 0, color: Color32::from_black_alpha(110) })
+                    .inner_margin(Margin::symmetric(10, 8));
+                // Cards peeking out behind signal a stack of several items (sized from last frame).
+                if let Some(size) = stack_size {
+                    for k in [2.0, 1.0] {
+                        let r = Rect::from_min_size(origin + vec2(5.0, 5.0) * k, size);
+                        ui.painter().rect_filled(r, CornerRadius::same(8), PANEL);
+                        ui.painter().rect_stroke(r, CornerRadius::same(8), Stroke::new(1.0, BORDER), egui::StrokeKind::Inside);
+                    }
+                }
+                card.show(ui, |ui| {
+                    ui.set_min_width(180.0);
+                    ui.set_max_width(280.0);
+                    ui.horizontal(|ui| {
+                        let (r, _) = ui.allocate_exact_size(vec2(48.0, 48.0), Sense::hover());
+                        match thumb {
+                            Some((id, size)) => {
+                                let scale = (r.width() / size.x).min(r.height() / size.y);
+                                ui.painter().image(id, Rect::from_center_size(r.center(), size * scale), UV, Color32::WHITE);
+                            }
+                            None => draw_icon_scaled(ui.painter(), r.center(), cat, 2.6),
+                        }
+                        if n > 1 {
+                            let c = r.right_top() + vec2(-2.0, 2.0);
+                            ui.painter().circle_filled(c, 9.0, ACCENT);
+                            ui.painter().text(c, Align2::CENTER_CENTER, n.to_string(), FontId::proportional(10.5), Color32::WHITE);
+                        }
+                        ui.add_space(4.0);
+                        ui.vertical(|ui| {
+                            ui.add_space(5.0);
+                            ui.add(egui::Label::new(RichText::new(name).color(TEXT)).truncate());
+                            let (text, color) = match &hint {
+                                Some((true, t)) => (format!("Copy to {t}"), ACCENT),
+                                Some((false, t)) => (format!("Move to {t}"), ACCENT),
+                                None => ("Drop on a folder".to_string(), FAINT),
+                            };
+                            ui.add(egui::Label::new(RichText::new(text).size(12.0).color(color)).truncate());
+                        });
                     });
+                });
             });
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new("drag_card_size"), shown.response.rect.size()));
+        ctx.request_repaint();
     }
 
     fn palette_ui(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
@@ -1011,8 +1081,46 @@ fn empty_state(ui: &mut Ui, tab: &Tab) {
     ui.vertical_centered(|ui| ui.label(RichText::new(msg).color(DIM)));
 }
 
+/// Scrolls the list while a drag hovers near its top or bottom edge.
+fn drag_autoscroll(ui: &Ui, tab: &mut Tab, viewport: Rect) {
+    if !DragAndDrop::has_payload_of_type::<DragPaths>(ui.ctx()) {
+        return;
+    }
+    let Some(pos) = ui.ctx().pointer_latest_pos() else { return };
+    if !viewport.x_range().contains(pos.x) {
+        return;
+    }
+    const EDGE: f32 = 36.0;
+    let speed = if pos.y < viewport.top() + EDGE && pos.y > viewport.top() - EDGE {
+        -(viewport.top() + EDGE - pos.y)
+    } else if pos.y > viewport.bottom() - EDGE && pos.y < viewport.bottom() + EDGE {
+        pos.y - (viewport.bottom() - EDGE)
+    } else {
+        return;
+    };
+    tab.force_offset = Some((tab.scroll_offset + speed * 0.4).max(0.0));
+    ui.ctx().request_repaint();
+}
+
+fn same_filesystem(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::symlink_metadata(a), std::fs::metadata(b)) {
+        (Ok(x), Ok(y)) => x.dev() == y.dev(),
+        _ => false,
+    }
+}
+
+fn drop_target_id() -> egui::Id {
+    egui::Id::new("fpilot_drop_target")
+}
+
+/// True while a drag hovers `target`; also records it so the drag card can say where it goes.
 fn drop_hover(resp: &egui::Response, target: &Path) -> bool {
-    resp.dnd_hover_payload::<DragPaths>().is_some_and(|p| !p.0.iter().any(|s| s == target))
+    let hovering = resp.dnd_hover_payload::<DragPaths>().is_some_and(|p| !p.0.iter().any(|s| s == target));
+    if hovering {
+        resp.ctx.data_mut(|d| d.insert_temp(drop_target_id(), target.to_path_buf()));
+    }
+    hovering
 }
 
 /// Dropping onto empty space in a pane moves/copies into that pane's folder.
@@ -1021,6 +1129,16 @@ fn background_drop(ui: &mut Ui, p: usize, tab: &Tab, rect: Rect, actions: &mut V
         return;
     }
     let resp = ui.interact(rect, ui.id().with(("pane_drop", p)), Sense::hover());
+    // Rows are checked first; only claim the hint if no folder row did.
+    let claimed = ui.ctx().data(|d| d.get_temp::<PathBuf>(drop_target_id()).is_some());
+    if !claimed {
+        let into_other_folder = resp
+            .dnd_hover_payload::<DragPaths>()
+            .is_some_and(|d| d.0.iter().any(|s| s.parent() != Some(tab.path.as_path())));
+        if into_other_folder {
+            ui.ctx().data_mut(|d| d.insert_temp(drop_target_id(), tab.path.clone()));
+        }
+    }
     if let Some(paths) = resp.dnd_release_payload::<DragPaths>() {
         let copy = ui.input(|i| i.modifiers.ctrl);
         actions.push(Action::Drop { paths: paths.0.clone(), dest: tab.path.clone(), copy });
