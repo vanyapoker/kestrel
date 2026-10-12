@@ -106,6 +106,52 @@ pub struct WlDnd {
     compositor: WlCompositor,
     shm: WlShm,
     rx: Receiver<DndEvent>,
+    /// Writing to this stops the dispatch thread.
+    wake_tx: OwnedFd,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for WlDnd {
+    /// Stops the dispatch thread while the display is still alive, so its
+    /// proxies aren't destroyed after winit has freed the connection.
+    fn drop(&mut self) {
+        let _ = unsafe { libc::write(std::os::fd::AsRawFd::as_raw_fd(&self.wake_tx), [1u8].as_ptr().cast(), 1) };
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+/// Dispatches our event queue until `wake` becomes readable or the connection fails.
+fn dispatch_loop(mut queue: wayland_client::EventQueue<State>, mut state: State, wake: OwnedFd) {
+    use std::os::fd::AsRawFd;
+    loop {
+        if queue.dispatch_pending(&mut state).is_err() || queue.flush().is_err() {
+            break;
+        }
+        let Some(guard) = queue.prepare_read() else { continue };
+        let mut fds = [
+            libc::pollfd { fd: guard.connection_fd().as_raw_fd(), events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: wake.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+        ];
+        if unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) } < 0 {
+            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            break;
+        }
+        if fds[1].revents != 0 {
+            return; // WlDnd dropped; the display is still alive, so normal cleanup is safe.
+        }
+        match guard.read() {
+            Ok(_) => {}
+            Err(wayland_client::backend::WaylandError::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(_) => break,
+        }
+    }
+    // The connection is broken and may already be freed: skip the proxy destructors.
+    std::mem::forget(queue);
+    std::mem::forget(state);
 }
 
 impl WlDnd {
@@ -131,7 +177,7 @@ impl WlDnd {
 
         let shared = Arc::new(Mutex::new(Shared::default()));
         let (tx, rx) = channel();
-        let mut state = State {
+        let state = State {
             our_surface: surface.id(),
             shared: shared.clone(),
             tx,
@@ -139,15 +185,17 @@ impl WlDnd {
             offer: None,
             pos: Pos2::ZERO,
         };
-        let mut queue = queue;
-        std::thread::Builder::new()
+        let mut fds = [0; 2];
+        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        let (wake_rx, wake_tx) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        let thread = std::thread::Builder::new()
             .name("wayland-dnd".into())
-            .spawn(move || {
-                while queue.blocking_dispatch(&mut state).is_ok() {}
-            })
+            .spawn(move || dispatch_loop(queue, state, wake_rx))
             .map_err(|e| e.to_string())?;
         conn.flush().map_err(|e| e.to_string())?;
-        Ok(Self { conn, qh, shared, manager, device, surface, compositor, shm, rx })
+        Ok(Self { conn, qh, shared, manager, device, surface, compositor, shm, rx, wake_tx, thread: Some(thread) })
     }
 
     pub fn poll(&self) -> Vec<DndEvent> {

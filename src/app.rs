@@ -1242,6 +1242,11 @@ impl App {
 }
 
 impl eframe::App for App {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Stop the drag-and-drop thread while winit's display is still alive.
+        self.wl = None;
+    }
+
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
         if std::mem::take(&mut self.inject_release) {
             let pos = self.ctx.pointer_latest_pos().unwrap_or_default();
@@ -1255,6 +1260,11 @@ impl eframe::App for App {
     }
 
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // Ask for a frame callback with this frame, so winit holds the next redraw
+        // until the compositor wants one (none arrive on a hidden workspace).
+        if let Some(win) = frame.winit_window() {
+            win.pre_present_notify();
+        }
         if !self.wl_tried {
             self.init_wayland(frame);
         }

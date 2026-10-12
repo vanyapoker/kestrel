@@ -40,6 +40,10 @@ fn main() -> eframe::Result {
             .with_app_id("kestrel")
             .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([640.0, 400.0]),
+        // With vsync, Mesa blocks in eglSwapBuffers until the compositor's frame
+        // callback, which never comes while the window sits on a hidden workspace,
+        // so the app froze there. Frames are paced by `pre_present_notify` instead.
+        glow_options: eframe::egui_glow::GlowConfiguration { vsync: false, ..Default::default() },
         ..Default::default()
     };
     eframe::run_native(
