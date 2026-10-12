@@ -1,4 +1,5 @@
 use crate::theme;
+use crate::thumbs::{self, Renderer};
 use eframe::egui::{self, text::LayoutJob, Color32, ColorImage, FontId, TextFormat};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -13,13 +14,15 @@ const MAX_TEXT_BYTES: usize = 256 * 1024;
 const MAX_TEXT_LINES: usize = 3000;
 const MAX_LINE_CHARS: usize = 1000;
 const MAX_IMAGE_SIDE: u32 = 1600;
-const MAX_IMAGE_FILE: u64 = 256 * 1024 * 1024;
+
+/// Extra metadata rows shown under the preview (dimensions, duration, pages…).
+pub type Info = Vec<(String, String)>;
 
 pub enum Content {
-    Image { tex: egui::TextureHandle, w: u32, h: u32 },
+    Image { tex: egui::TextureHandle, info: Info },
     Text { job: LayoutJob, lines: usize, truncated: bool },
     Dir { items: Option<usize> },
-    Binary,
+    Binary { info: Info },
     Error(String),
 }
 
@@ -29,10 +32,10 @@ pub enum State {
 }
 
 enum Payload {
-    Image(ColorImage, u32, u32),
+    Image(ColorImage, Info),
     Text(LayoutJob, usize, bool),
     Dir(Option<usize>),
-    Binary,
+    Binary(Info),
     Error(String),
 }
 
@@ -104,14 +107,13 @@ impl Preview {
                 continue;
             }
             self.state = State::Ready(match res.payload {
-                Payload::Image(img, w, h) => Content::Image {
+                Payload::Image(img, info) => Content::Image {
                     tex: ctx.load_texture("preview", img, egui::TextureOptions::LINEAR),
-                    w,
-                    h,
+                    info,
                 },
                 Payload::Text(job, lines, truncated) => Content::Text { job, lines, truncated },
                 Payload::Dir(items) => Content::Dir { items },
-                Payload::Binary => Content::Binary,
+                Payload::Binary(info) => Content::Binary { info },
                 Payload::Error(e) => Content::Error(e),
             });
         }
@@ -126,37 +128,67 @@ fn load(path: &Path, is_dir: bool) -> Payload {
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    if matches!(
-        ext.as_str(),
-        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "ico" | "tif" | "tiff" | "tga" | "qoi"
-            | "pnm" | "hdr" | "exr" | "avif"
-    ) {
-        return load_image(path);
+    if let Some(renderer) = thumbs::renderer_for(&ext) {
+        let mut info = Info::new();
+        match renderer {
+            Renderer::Video => info = media_rows(path),
+            Renderer::Pdf => {
+                if let Some(n) = thumbs::pdf_pages(path) {
+                    info.push(("Pages".into(), n.to_string()));
+                }
+            }
+            _ => {}
+        }
+        return match thumbs::render(path, renderer, MAX_IMAGE_SIDE) {
+            Ok(r) => {
+                if let (Some((w, h)), true) = (r.dims, renderer == Renderer::Raster) {
+                    info.insert(0, ("Dimensions".into(), format!("{w} × {h}")));
+                }
+                Payload::Image(r.image, info)
+            }
+            Err(e) if renderer == Renderer::Raster => Payload::Error(e),
+            Err(_) => Payload::Binary(info),
+        };
+    }
+    if matches!(crate::util::category(&ext, false), crate::util::Category::Audio) {
+        return Payload::Binary(media_rows(path));
     }
     load_text(path)
 }
 
-fn load_image(path: &Path) -> Payload {
-    if std::fs::metadata(path).map(|m| m.len() > MAX_IMAGE_FILE).unwrap_or(false) {
-        return Payload::Error("Image too large to preview".into());
+/// Human-friendly rows from ffprobe output.
+fn media_rows(path: &Path) -> Info {
+    let raw = thumbs::media_info(path);
+    let get = |k: &str| raw.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone());
+    let mut info = Info::new();
+    if let (Some(w), Some(h)) = (get("width"), get("height")) {
+        info.push(("Resolution".into(), format!("{w} × {h}")));
     }
-    let img = match image::ImageReader::open(path)
-        .map_err(|e| e.to_string())
-        .and_then(|r| r.with_guessed_format().map_err(|e| e.to_string()))
-        .and_then(|r| r.decode().map_err(|e| e.to_string()))
-    {
-        Ok(img) => img,
-        Err(e) => return Payload::Error(e),
-    };
-    let (w, h) = (img.width(), img.height());
-    let img = if w > MAX_IMAGE_SIDE || h > MAX_IMAGE_SIDE {
-        img.thumbnail(MAX_IMAGE_SIDE, MAX_IMAGE_SIDE)
-    } else {
-        img
-    };
-    let rgba = img.to_rgba8();
-    let size = [rgba.width() as usize, rgba.height() as usize];
-    Payload::Image(ColorImage::from_rgba_unmultiplied(size, rgba.as_raw()), w, h)
+    if let Some(d) = get("duration").and_then(|d| d.parse::<f64>().ok()) {
+        let s = d.round() as u64;
+        let text = if s >= 3600 {
+            format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+        } else {
+            format!("{}:{:02}", s / 60, s % 60)
+        };
+        info.push(("Duration".into(), text));
+    }
+    let codecs: Vec<String> = raw.iter().filter(|(k, _)| k == "codec_name").map(|(_, v)| v.clone()).collect();
+    if !codecs.is_empty() {
+        info.push(("Codecs".into(), codecs.join(", ")));
+    }
+    if let Some(b) = get("bit_rate").and_then(|b| b.parse::<u64>().ok()) {
+        info.push(("Bitrate".into(), format!("{} kb/s", b / 1000)));
+    }
+    if let Some(r) = get("sample_rate") {
+        info.push(("Sample rate".into(), format!("{r} Hz")));
+    }
+    for (key, label) in [("title", "Title"), ("artist", "Artist"), ("album", "Album")] {
+        if let Some(v) = get(key) {
+            info.push((label.into(), v));
+        }
+    }
+    info
 }
 
 fn load_text(path: &Path) -> Payload {
@@ -171,7 +203,7 @@ fn load_text(path: &Path) -> Payload {
         Err(e) => return Payload::Error(e.to_string()),
     }
     if buf[..buf.len().min(8192)].contains(&0) {
-        return Payload::Binary;
+        return Payload::Binary(Info::new());
     }
     let text = String::from_utf8_lossy(&buf).replace('\t', "    ");
     let mut truncated = file_len as usize > buf.len();

@@ -15,6 +15,8 @@ pub struct Entry {
     pub size: u64,
     pub modified: Option<SystemTime>,
     pub mode: u32,
+    /// Parent folder relative to the search root (search results only).
+    pub rel: Option<String>,
 }
 
 /// Reads a directory. Metadata is fetched in parallel, which matters on large folders.
@@ -24,38 +26,42 @@ pub fn list_dir(path: &Path) -> Result<Vec<Entry>, String> {
     Ok(raw
         .par_iter()
         .filter_map(|de| {
-            let path = de.path();
             let lmeta = de.metadata().ok()?; // does not follow symlinks
-            let is_link = lmeta.file_type().is_symlink();
-            // For symlinks, report the target's type/size when it resolves.
-            let meta = if is_link {
-                fs::metadata(&path).unwrap_or(lmeta)
-            } else {
-                lmeta
-            };
             let name = de.file_name().to_string_lossy().into_owned();
-            let is_dir = meta.is_dir();
-            let ext = if is_dir {
-                String::new()
-            } else {
-                Path::new(&name)
-                    .extension()
-                    .map(|e| e.to_string_lossy().to_lowercase())
-                    .unwrap_or_default()
-            };
-            Some(Entry {
-                hidden: name.starts_with('.'),
-                name,
-                path,
-                ext,
-                is_dir,
-                is_link,
-                size: if is_dir { 0 } else { meta.len() },
-                modified: meta.modified().ok(),
-                mode: meta.mode(),
-            })
+            Some(make_entry(de.path(), name, lmeta))
         })
         .collect())
+}
+
+/// Builds an entry from `symlink_metadata`; symlinks report their target's type and size.
+pub fn make_entry(path: PathBuf, name: String, lmeta: fs::Metadata) -> Entry {
+    let is_link = lmeta.file_type().is_symlink();
+    let meta = if is_link {
+        fs::metadata(&path).unwrap_or(lmeta)
+    } else {
+        lmeta
+    };
+    let is_dir = meta.is_dir();
+    let ext = if is_dir {
+        String::new()
+    } else {
+        Path::new(&name)
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default()
+    };
+    Entry {
+        hidden: name.starts_with('.'),
+        name,
+        path,
+        ext,
+        is_dir,
+        is_link,
+        size: if is_dir { 0 } else { meta.len() },
+        modified: meta.modified().ok(),
+        mode: meta.mode(),
+        rel: None,
+    }
 }
 
 pub fn device_of(path: &Path) -> Option<u64> {
@@ -189,7 +195,7 @@ fn xdg_user_dir(home: &Path, key: &str) -> Option<PathBuf> {
     None
 }
 
-fn percent_decode(s: &str) -> String {
+pub fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;

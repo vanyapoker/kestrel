@@ -1,8 +1,14 @@
 mod app;
 mod fsops;
+mod ops;
+mod palette;
 mod preview;
+mod search;
+mod tab;
 mod theme;
+mod thumbs;
 mod util;
+mod watch;
 
 use eframe::egui;
 use std::path::PathBuf;
