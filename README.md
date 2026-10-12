@@ -45,6 +45,11 @@ Optional tools for previews: `pdftoppm`/`pdfinfo` (poppler), `ffmpeg`/`ffprobe`,
 | Ctrl+B | Toggle sidebar (both panels can also be dragged shut) |
 | F5 | Refresh |
 
+Sidebar sections fold shut by clicking their header. Bookmark a folder from
+its right-click menu, the palette, or by dragging it onto the Bookmarks
+section. Bookmarks are GTK's (`~/.config/gtk-3.0/bookmarks`), so they're shared
+with Nautilus and file pickers.
+
 Drag files onto folders, tabs, breadcrumbs or the sidebar to move them
 (Ctrl to copy; across filesystems it always copies). Name clashes never
 overwrite: the new item gets a " (2)" suffix.

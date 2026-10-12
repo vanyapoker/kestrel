@@ -266,3 +266,22 @@ fn path_bar_completes_folders() {
     assert!(d.app.path_edit.is_none());
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn sidebar_sections_collapse() {
+    let dir = sandbox("collapse");
+    let mut d = Driver::new(dir.clone());
+    d.frame(Vec::new());
+    d.frame(Vec::new());
+    // The PLACES header sits at the top of the sidebar.
+    d.move_to(Pos2::new(40.0, 21.0));
+    d.button(true);
+    d.button(false);
+    d.frame(Vec::new());
+    assert!(d.app.collapsed.contains("PLACES"));
+    d.button(true);
+    d.button(false);
+    d.frame(Vec::new());
+    assert!(!d.app.collapsed.contains("PLACES"));
+    fs::remove_dir_all(dir).unwrap();
+}

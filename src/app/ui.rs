@@ -1,3 +1,4 @@
+use super::icons::*;
 use super::{Action, App, Dialog, DragPaths};
 use crate::complete;
 use crate::fsops::{self, Entry};
@@ -6,7 +7,7 @@ use crate::preview::{Content, State};
 use crate::tab::{ICON_SIZES, SortKey, Tab, ViewMode};
 use crate::theme::*;
 use crate::thumbs::{self, Thumbs};
-use crate::util::{self, Category};
+use crate::util;
 use eframe::egui::{
     self, Align, Align2, CentralPanel, Color32, CornerRadius, DragAndDrop, FontId, Frame, Key, Layout, Margin,
     Modifiers, Painter, Panel, Pos2, Rect, RichText, ScrollArea, Sense, Stroke, Ui, UiBuilder, vec2,
@@ -22,6 +23,7 @@ impl App {
         let mut actions = Vec::new();
         ui.ctx().data_mut(|d| {
             d.remove_temp::<PathBuf>(drop_target_id());
+            d.remove_temp::<bool>(bookmark_hover_id());
             let rects = d.get_temp::<Vec<(Rect, PathBuf)>>(folder_rects_id()).unwrap_or_default();
             self.folder_rects = rects;
             d.remove_temp::<Vec<(Rect, PathBuf)>>(folder_rects_id());
@@ -558,6 +560,7 @@ impl App {
         let sizing = &self.sizing;
         let cut = self.clip.as_ref().filter(|c| c.cut).map(|c| &c.paths);
         let dragging = self.dragging.as_deref();
+        let bookmarks = &self.places.bookmarks;
         #[cfg(test)]
         let row_rects = &mut self.row_rects;
         let pane = &mut self.panes[p];
@@ -629,7 +632,7 @@ impl App {
                 #[cfg(test)]
                 row_rects.insert(e.path.clone(), rect);
 
-                row_interactions(ui, &resp, tab, vi, e, ctrl_shift, actions, p);
+                row_interactions(ui, &resp, tab, vi, e, ctrl_shift, actions, p, bookmarks);
             }
         });
         tab.scroll_offset = out.state.offset.y;
@@ -643,6 +646,7 @@ impl App {
     fn file_grid(&mut self, ui: &mut Ui, p: usize, actions: &mut Vec<Action>) {
         let pane_active = p == self.active_pane;
         let thumbs = &mut self.thumbs;
+        let bookmarks = &self.places.bookmarks;
         let cut = self.clip.as_ref().filter(|c| c.cut).map(|c| &c.paths);
         let dragging = self.dragging.as_deref();
         let pane = &mut self.panes[p];
@@ -706,7 +710,7 @@ impl App {
                             ViewMode::Icons(_) => paint_tile(painter, thumbs, tile, e, faded),
                             _ => paint_cell(painter, tile, e, faded),
                         }
-                        row_interactions(ui, &resp, tab, vi, e, ctrl_shift, actions, p);
+                        row_interactions(ui, &resp, tab, vi, e, ctrl_shift, actions, p, bookmarks);
                     }
                 });
             }
@@ -720,20 +724,50 @@ impl App {
     // ------------------------------------------------------------ sidebar / status / preview
 
     fn sidebar(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
+        // Folders being dragged can be dropped on the Bookmarks section to bookmark them.
+        let dragged_dirs: Vec<PathBuf> = self
+            .dragging
+            .as_ref()
+            .map(|d| d.0.iter().filter(|p| p.is_dir()).cloned().collect())
+            .unwrap_or_default();
         ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
             let cur = self.tab().path.clone();
-            let sections: [(&str, &Vec<(String, PathBuf)>); 3] = [
+            let sections: [(&'static str, &Vec<(String, PathBuf)>); 3] = [
                 ("PLACES", &self.places.places),
                 ("BOOKMARKS", &self.places.bookmarks),
                 ("DEVICES", &self.places.devices),
             ];
             for (title, items) in sections {
-                if items.is_empty() {
+                let bookmarks = title == "BOOKMARKS";
+                let can_drop = bookmarks && !dragged_dirs.is_empty();
+                if items.is_empty() && !can_drop {
                     continue;
                 }
                 ui.add_space(8.0);
-                ui.label(RichText::new(title).size(10.5).color(FAINT).strong());
+                let collapsed = self.collapsed.contains(title);
+                let (hrect, header) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::click());
+                let hot = header.hovered();
+                let color = if hot { DIM } else { FAINT };
+                ui.painter().text(
+                    Pos2::new(hrect.left() + 2.0, hrect.center().y),
+                    Align2::LEFT_CENTER,
+                    title,
+                    FontId::proportional(10.5),
+                    color,
+                );
+                if hot || collapsed {
+                    chevron(ui.painter(), Pos2::new(hrect.right() - 8.0, hrect.center().y), !collapsed, color);
+                }
+                if header.clicked() {
+                    actions.push(Action::ToggleSection(title));
+                }
+                if can_drop && bookmark_zone(ui, &header, &dragged_dirs, actions) {
+                    ui.painter().rect_stroke(hrect, CornerRadius::same(5), Stroke::new(1.5, ACCENT), egui::StrokeKind::Inside);
+                }
                 ui.add_space(2.0);
+                if collapsed {
+                    continue;
+                }
                 for (name, path) in items {
                     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
                     let painter = ui.painter();
@@ -748,9 +782,14 @@ impl App {
                     if drop_target {
                         painter.rect_stroke(rect, CornerRadius::same(5), Stroke::new(1.5, ACCENT), egui::StrokeKind::Inside);
                     }
-                    draw_folder(painter, Pos2::new(rect.left() + 14.0, rect.center().y), 0.85);
+                    let kind = match title {
+                        "DEVICES" => Some(fsops::Special::Drive),
+                        _ => fsops::special(path),
+                    };
+                    let icon_color = if selected { ACCENT } else { DIM };
+                    draw_place(painter, Pos2::new(rect.left() + 14.0, rect.center().y), kind, icon_color);
                     painter.with_clip_rect(rect.shrink(2.0)).text(
-                        Pos2::new(rect.left() + 28.0, rect.center().y),
+                        Pos2::new(rect.left() + 30.0, rect.center().y),
                         Align2::LEFT_CENTER,
                         name,
                         FontId::proportional(BODY),
@@ -767,6 +806,50 @@ impl App {
                     if resp.middle_clicked() {
                         actions.push(Action::NewTab(path.clone()));
                     }
+                    let marked = bookmarks || self.places.bookmarks.iter().any(|(_, b)| b == path);
+                    resp.context_menu(|ui| {
+                        ui.set_min_width(180.0);
+                        if ui.button("Open in new tab").clicked() {
+                            actions.push(Action::NewTab(path.clone()));
+                            ui.close();
+                        }
+                        if ui.button("Open terminal here").clicked() {
+                            actions.push(Action::OpenTerminal(path.clone()));
+                            ui.close();
+                        }
+                        ui.separator();
+                        if marked {
+                            if ui.button("Remove from bookmarks").clicked() {
+                                actions.push(Action::Unbookmark(path.clone()));
+                                ui.close();
+                            }
+                        } else if ui.button("Add to bookmarks").clicked() {
+                            actions.push(Action::Bookmark(vec![path.clone()]));
+                            ui.close();
+                        }
+                    });
+                }
+                // While folders are dragged, an explicit target under the bookmarks.
+                if can_drop {
+                    ui.add_space(2.0);
+                    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::hover());
+                    let hot = bookmark_zone(ui, &resp, &dragged_dirs, actions);
+                    let painter = ui.painter();
+                    painter.rect_filled(rect, CornerRadius::same(5), if hot { SELECT_DIM } else { BG });
+                    painter.rect_stroke(
+                        rect,
+                        CornerRadius::same(5),
+                        Stroke::new(1.0, if hot { ACCENT } else { BORDER }),
+                        egui::StrokeKind::Inside,
+                    );
+                    draw_emblem(painter, Pos2::new(rect.left() + 14.0, rect.center().y), fsops::Special::Bookmark, 0.9, if hot { ACCENT } else { DIM }, 1.4);
+                    painter.text(
+                        Pos2::new(rect.left() + 30.0, rect.center().y),
+                        Align2::LEFT_CENTER,
+                        "Drop to bookmark",
+                        FontId::proportional(12.5),
+                        if hot { TEXT } else { DIM },
+                    );
                 }
             }
         });
@@ -859,7 +942,7 @@ impl App {
         ui.add_space(10.0);
         ui.horizontal(|ui| {
             let (r, _) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::hover());
-            draw_icon(ui.painter(), r.center(), cat);
+            draw_entry_icon(ui.painter(), r.center(), 1.0, &e.path, cat);
             ui.add(egui::Label::new(RichText::new(&e.name).size(14.5).strong()).wrap());
         });
         ui.add_space(6.0);
@@ -931,7 +1014,7 @@ impl App {
                 ui.add_space(40.0);
                 ui.vertical_centered(|ui| {
                     let (r, _) = ui.allocate_exact_size(vec2(80.0, 64.0), Sense::hover());
-                    draw_folder(ui.painter(), r.center(), 4.0);
+                    draw_path_folder(ui.painter(), r.center(), 4.0, &e.path);
                     ui.add_space(10.0);
                     if let Some(n) = items {
                         ui.label(RichText::new(format!("{n} items")).color(DIM));
@@ -1028,6 +1111,7 @@ impl App {
         let n = payload.0.len();
         let target = ctx.data(|d| d.get_temp::<PathBuf>(drop_target_id()));
         let force_copy = ctx.input(|i| i.modifiers.ctrl);
+        let bookmarking = ctx.data(|d| d.get_temp::<bool>(bookmark_hover_id())).unwrap_or(false);
         let hint = target.as_ref().map(|t| {
             let copy = force_copy || !same_filesystem(first, t);
             (copy, ops_name(t))
@@ -1050,7 +1134,7 @@ impl App {
             .show(ctx, |ui| {
                 let card = Frame::new()
                     .fill(SURFACE.gamma_multiply(0.96))
-                    .stroke(Stroke::new(1.0, if hint.is_some() { ACCENT } else { BORDER }))
+                    .stroke(Stroke::new(1.0, if hint.is_some() || bookmarking { ACCENT } else { BORDER }))
                     .corner_radius(CornerRadius::same(8))
                     .shadow(egui::Shadow { offset: [0, 4], blur: 14, spread: 0, color: Color32::from_black_alpha(110) })
                     .inner_margin(Margin::symmetric(10, 8));
@@ -1072,7 +1156,7 @@ impl App {
                                 let scale = (r.width() / size.x).min(r.height() / size.y);
                                 ui.painter().image(id, Rect::from_center_size(r.center(), size * scale), UV, Color32::WHITE);
                             }
-                            None => draw_icon_scaled(ui.painter(), r.center(), cat, 2.6),
+                            None => draw_entry_icon(ui.painter(), r.center(), 2.6, first, cat),
                         }
                         if n > 1 {
                             let c = r.right_top() + vec2(-2.0, 2.0);
@@ -1084,6 +1168,7 @@ impl App {
                             ui.add_space(5.0);
                             ui.add(egui::Label::new(RichText::new(name).color(TEXT)).truncate());
                             let (text, color) = match &hint {
+                                _ if bookmarking => ("Add to bookmarks".to_string(), ACCENT),
                                 Some((true, t)) => (format!("Copy to {t}"), ACCENT),
                                 Some((false, t)) => (format!("Move to {t}"), ACCENT),
                                 None => ("Drop on a folder".to_string(), FAINT),
@@ -1336,6 +1421,31 @@ fn drag_autoscroll(ui: &Ui, tab: &mut Tab, viewport: Rect) {
     ui.ctx().request_repaint();
 }
 
+/// Drop zone that bookmarks dragged folders; returns whether a drag hovers it.
+fn bookmark_zone(ui: &Ui, resp: &egui::Response, dirs: &[PathBuf], actions: &mut Vec<Action>) -> bool {
+    let hot = resp.dnd_hover_payload::<DragPaths>().is_some();
+    if hot {
+        ui.ctx().data_mut(|d| d.insert_temp(bookmark_hover_id(), true));
+    }
+    if resp.dnd_release_payload::<DragPaths>().is_some() {
+        actions.push(Action::Bookmark(dirs.to_vec()));
+    }
+    hot
+}
+
+fn bookmark_hover_id() -> egui::Id {
+    egui::Id::new("fpilot_bookmark_hover")
+}
+
+fn chevron(p: &Painter, c: Pos2, open: bool, color: Color32) {
+    let pts = if open {
+        vec![c + vec2(-3.5, -1.5), c + vec2(0.0, 2.0), c + vec2(3.5, -1.5)]
+    } else {
+        vec![c + vec2(-1.5, -3.5), c + vec2(2.0, 0.0), c + vec2(-1.5, 3.5)]
+    };
+    p.line(pts, Stroke::new(1.4, color));
+}
+
 fn same_filesystem(a: &Path, b: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
     match (std::fs::symlink_metadata(a), std::fs::metadata(b)) {
@@ -1398,6 +1508,7 @@ fn row_interactions(
     (ctrl, shift): (bool, bool),
     actions: &mut Vec<Action>,
     p: usize,
+    bookmarks: &[(String, PathBuf)],
 ) {
     if resp.drag_started() {
         let paths = if tab.is_selected(vi) { tab.targets() } else { vec![e.path.clone()] };
@@ -1434,6 +1545,13 @@ fn row_interactions(
         item(ui, "Open", "Enter", Action::OpenEntry(vi));
         if e.is_dir {
             item(ui, "Open in new tab", "", Action::NewTab(e.path.clone()));
+            if bookmarks.iter().any(|(_, b)| *b == e.path) {
+                item(ui, "Remove from bookmarks", "", Action::Unbookmark(e.path.clone()));
+            } else {
+                let dirs: Vec<PathBuf> = if tab.is_selected(vi) { tab.targets() } else { vec![e.path.clone()] };
+                let dirs: Vec<PathBuf> = dirs.into_iter().filter(|p| p.is_dir()).collect();
+                item(ui, "Add to bookmarks", "", Action::Bookmark(dirs));
+            }
         }
         if tab.search.is_some() {
             item(ui, "Show in folder", "", Action::Reveal(e.path.clone()));
@@ -1468,7 +1586,7 @@ fn paint_row(
     let cy = rect.center().y;
     let alpha = if faded { 0.45 } else { 1.0 };
     let cat = util::category(&e.ext, e.is_dir);
-    draw_icon(painter, Pos2::new(cols.name.0 - 12.0, cy), cat);
+    draw_entry_icon(painter, Pos2::new(cols.name.0 - 12.0, cy), 1.0, &e.path, cat);
     let name_color = if e.hidden { DIM } else { TEXT };
     let name_clip = painter.with_clip_rect(Rect::from_x_y_ranges(cols.name.0..=cols.name.1, rect.y_range()));
     let name_rect = name_clip.text(
@@ -1518,7 +1636,7 @@ fn paint_row(
 fn paint_cell(painter: &Painter, cell: Rect, e: &Entry, faded: bool) {
     let alpha = if faded { 0.45 } else { 1.0 };
     let cy = cell.center().y;
-    draw_icon(painter, Pos2::new(cell.left() + 14.0, cy), util::category(&e.ext, e.is_dir));
+    draw_entry_icon(painter, Pos2::new(cell.left() + 14.0, cy), 1.0, &e.path, util::category(&e.ext, e.is_dir));
     let color = if e.hidden { DIM } else { TEXT };
     painter.with_clip_rect(cell.shrink2(vec2(6.0, 0.0)).intersect(painter.clip_rect())).text(
         Pos2::new(cell.left() + 30.0, cy),
@@ -1549,7 +1667,7 @@ fn paint_tile(painter: &Painter, thumbs: &mut Thumbs, tile: Rect, e: &Entry, fad
     }
     if !drew {
         let cat = util::category(&e.ext, e.is_dir);
-        draw_icon_scaled(painter, thumb_area.center(), cat, side / 24.0);
+        draw_entry_icon(painter, thumb_area.center(), side / 24.0, &e.path, cat);
     }
     let color = if e.hidden { DIM } else { TEXT }.gamma_multiply(alpha);
     let mut job = egui::text::LayoutJob::simple(e.name.clone(), FontId::proportional(12.5), color, tile.width() - 12.0);
@@ -1758,32 +1876,6 @@ fn paint_glyph(p: &Painter, c: Pos2, glyph: Glyph, color: Color32) {
 fn sort_arrow(p: &Painter, c: Pos2, ascending: bool) {
     let (a, b) = if ascending { (-2.0, 2.0) } else { (2.0, -2.0) };
     p.line(vec![c + vec2(-3.5, -a), c + vec2(0.0, -b), c + vec2(3.5, -a)], Stroke::new(1.4, ACCENT));
-}
-
-fn draw_icon(p: &Painter, c: Pos2, cat: Category) {
-    draw_icon_scaled(p, c, cat, 1.0);
-}
-
-fn draw_icon_scaled(p: &Painter, c: Pos2, cat: Category, s: f32) {
-    if cat == Category::Folder {
-        draw_folder(p, c, s);
-        return;
-    }
-    let color = category_color(cat);
-    let r = Rect::from_center_size(c, vec2(11.0, 14.0) * s);
-    let radius = CornerRadius::same((2.0 * s).min(255.0) as u8);
-    p.rect_filled(r, radius, color.gamma_multiply(0.22));
-    p.rect_stroke(r, radius, Stroke::new(s.sqrt(), color), egui::StrokeKind::Inside);
-    let band = Rect::from_min_size(Pos2::new(r.left(), r.bottom() - 4.0 * s), vec2(r.width(), 4.0 * s));
-    p.rect_filled(band, CornerRadius { nw: 0, ne: 0, sw: radius.sw, se: radius.se }, color);
-}
-
-fn draw_folder(p: &Painter, c: Pos2, s: f32) {
-    let body = Rect::from_center_size(c + vec2(0.0, 1.0) * s, vec2(15.0, 11.0) * s);
-    let tab = Rect::from_min_size(body.left_top() - vec2(0.0, 2.0 * s), vec2(6.5, 4.0) * s);
-    let radius = CornerRadius::same((1.5 * s).min(255.0) as u8);
-    p.rect_filled(tab, radius, FOLDER.gamma_multiply(0.75));
-    p.rect_filled(body, radius, FOLDER);
 }
 
 fn draw_checker(p: &Painter, r: Rect) {

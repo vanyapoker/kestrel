@@ -1,4 +1,5 @@
 use rayon::prelude::*;
+use std::collections::HashMap;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -126,17 +127,70 @@ pub fn home_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/"))
 }
 
+/// Well-known folders that get their own icon.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Special {
+    Home,
+    Desktop,
+    Documents,
+    Downloads,
+    Pictures,
+    Music,
+    Videos,
+    Projects,
+    Work,
+    Public,
+    Templates,
+    Root,
+    Drive,
+    Bookmark,
+}
+
+const XDG_DIRS: [(&str, &str, Special); 9] = [
+    ("Desktop", "XDG_DESKTOP_DIR", Special::Desktop),
+    ("Documents", "XDG_DOCUMENTS_DIR", Special::Documents),
+    ("Downloads", "XDG_DOWNLOAD_DIR", Special::Downloads),
+    ("Pictures", "XDG_PICTURES_DIR", Special::Pictures),
+    ("Music", "XDG_MUSIC_DIR", Special::Music),
+    ("Videos", "XDG_VIDEOS_DIR", Special::Videos),
+    ("Projects", "XDG_PROJECTS_DIR", Special::Projects),
+    ("Public", "XDG_PUBLICSHARE_DIR", Special::Public),
+    ("Templates", "XDG_TEMPLATES_DIR", Special::Templates),
+];
+
+/// The icon kind for `path`, if it is a well-known folder.
+pub fn special(path: &Path) -> Option<Special> {
+    static MAP: std::sync::OnceLock<HashMap<PathBuf, Special>> = std::sync::OnceLock::new();
+    MAP.get_or_init(|| {
+        let home = home_dir();
+        let mut m = HashMap::new();
+        for (name, key, kind) in XDG_DIRS {
+            m.insert(xdg_user_dir(&home, key).unwrap_or_else(|| home.join(name)), kind);
+        }
+        for (name, kind) in [
+            ("Work", Special::Work),
+            ("Code", Special::Projects),
+            ("code", Special::Projects),
+            ("src", Special::Projects),
+            ("dev", Special::Projects),
+            ("repos", Special::Projects),
+            ("git", Special::Projects),
+        ] {
+            m.entry(home.join(name)).or_insert(kind);
+        }
+        // Unused XDG dirs often point at $HOME itself.
+        m.insert(home, Special::Home);
+        m.insert(PathBuf::from("/"), Special::Root);
+        m
+    })
+    .get(path)
+    .copied()
+}
+
 pub fn places() -> Places {
     let home = home_dir();
     let mut places = vec![("Home".to_string(), home.clone())];
-    for (name, key) in [
-        ("Desktop", "XDG_DESKTOP_DIR"),
-        ("Documents", "XDG_DOCUMENTS_DIR"),
-        ("Downloads", "XDG_DOWNLOAD_DIR"),
-        ("Pictures", "XDG_PICTURES_DIR"),
-        ("Music", "XDG_MUSIC_DIR"),
-        ("Videos", "XDG_VIDEOS_DIR"),
-    ] {
+    for (name, key, _) in &XDG_DIRS[..7] {
         let p = xdg_user_dir(&home, key).unwrap_or_else(|| home.join(name));
         if p.is_dir() && p != home {
             places.push((name.to_string(), p));
@@ -145,20 +199,15 @@ pub fn places() -> Places {
     places.push(("Root".to_string(), PathBuf::from("/")));
 
     let mut bookmarks = Vec::new();
-    if let Ok(s) = fs::read_to_string(home.join(".config/gtk-3.0/bookmarks")) {
+    if let Ok(s) = fs::read_to_string(bookmarks_file()) {
         for line in s.lines() {
-            let (uri, label) = line.split_once(' ').unwrap_or((line, ""));
-            if let Some(p) = uri.strip_prefix("file://") {
-                let p = PathBuf::from(percent_decode(p));
-                let label = if label.is_empty() {
-                    p.file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| p.display().to_string())
-                } else {
-                    label.to_string()
-                };
-                bookmarks.push((label, p));
-            }
+            let Some((p, label)) = parse_bookmark(line) else { continue };
+            let label = if label.is_empty() {
+                p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.display().to_string())
+            } else {
+                label.to_string()
+            };
+            bookmarks.push((label, p));
         }
     }
 
@@ -181,6 +230,59 @@ pub fn places() -> Places {
         }
     }
     Places { places, bookmarks, devices }
+}
+
+/// Bookmarks live in GTK's file, so they are shared with Nautilus and file pickers.
+fn bookmarks_file() -> PathBuf {
+    home_dir().join(".config/gtk-3.0/bookmarks")
+}
+
+fn parse_bookmark(line: &str) -> Option<(PathBuf, &str)> {
+    let (uri, label) = line.split_once(' ').unwrap_or((line, ""));
+    let p = uri.strip_prefix("file://")?;
+    Some((PathBuf::from(percent_decode(p)), label))
+}
+
+pub fn add_bookmark(path: &Path) -> std::io::Result<bool> {
+    add_bookmark_in(&bookmarks_file(), path)
+}
+
+pub fn remove_bookmark(path: &Path) -> std::io::Result<bool> {
+    remove_bookmark_in(&bookmarks_file(), path)
+}
+
+/// Appends `path` unless it is already bookmarked. Returns whether it was added.
+fn add_bookmark_in(file: &Path, path: &Path) -> std::io::Result<bool> {
+    let text = fs::read_to_string(file).unwrap_or_default();
+    if text.lines().filter_map(parse_bookmark).any(|(p, _)| p == path) {
+        return Ok(false);
+    }
+    if let Some(dir) = file.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let mut out = text;
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(&crate::wl_dnd::file_uri(path));
+    out.push('\n');
+    fs::write(file, out)?;
+    Ok(true)
+}
+
+/// Drops every line pointing at `path`, keeping other lines as they were.
+fn remove_bookmark_in(file: &Path, path: &Path) -> std::io::Result<bool> {
+    let text = fs::read_to_string(file)?;
+    let kept: Vec<&str> = text.lines().filter(|l| parse_bookmark(l).is_none_or(|(p, _)| p != path)).collect();
+    if kept.len() == text.lines().count() {
+        return Ok(false);
+    }
+    let mut out = kept.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    fs::write(file, out)?;
+    Ok(true)
 }
 
 fn xdg_user_dir(home: &Path, key: &str) -> Option<PathBuf> {
@@ -246,6 +348,23 @@ pub fn open_terminal(dir: &Path) {
 mod tests {
     use super::*;
     use std::time::Instant;
+
+    #[test]
+    fn bookmark_file_edits() {
+        let d = std::env::temp_dir().join(format!("fpilot-bm-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let file = d.join("gtk-3.0/bookmarks");
+        let a = Path::new("/home/x/My Stuff");
+        assert!(add_bookmark_in(&file, a).unwrap());
+        assert!(!add_bookmark_in(&file, a).unwrap()); // no duplicates
+        fs::write(&file, format!("file:///keep Kept label\n{}", fs::read_to_string(&file).unwrap())).unwrap();
+        assert!(add_bookmark_in(&file, Path::new("/b")).unwrap());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "file:///keep Kept label\nfile:///home/x/My%20Stuff\nfile:///b\n");
+        assert!(remove_bookmark_in(&file, a).unwrap());
+        assert!(!remove_bookmark_in(&file, a).unwrap());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "file:///keep Kept label\nfile:///b\n");
+        fs::remove_dir_all(d).unwrap();
+    }
 
     /// `cargo test --release -- --ignored --nocapture bench`
     #[test]

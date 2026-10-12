@@ -40,9 +40,11 @@ fn main() {
         queue.roundtrip(&mut S).unwrap();
         std::thread::sleep(Duration::from_millis(ms));
     };
+    // VP_BUTTON=right sends right clicks.
+    let button = if std::env::var("VP_BUTTON").as_deref() == Ok("right") { 0x111 } else { 0x110 };
     let (x0, y0) = points[0];
     step(&|t| vp.motion_absolute(t, x0, y0, w, h), 120);
-    step(&|t| vp.button(t, 0x110, wl_pointer::ButtonState::Pressed), 120);
+    step(&|t| vp.button(t, button, wl_pointer::ButtonState::Pressed), 120);
     for win in points.windows(2) {
         let ((ax, ay), (bx, by)) = (win[0], win[1]);
         for i in 1..=20 {
@@ -52,7 +54,7 @@ fn main() {
         }
         step(&|_| {}, 250);
     }
-    step(&|t| vp.button(t, 0x110, wl_pointer::ButtonState::Released), 200);
+    step(&|t| vp.button(t, button, wl_pointer::ButtonState::Released), 200);
     vp.destroy();
     queue.roundtrip(&mut S).unwrap();
 }

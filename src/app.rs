@@ -1,3 +1,4 @@
+mod icons;
 mod ui;
 #[cfg(test)]
 mod ui_tests;
@@ -81,6 +82,9 @@ enum Action {
     StopSearch,
     /// Step the active tab's view mode (Ctrl+wheel).
     Zoom(i32),
+    ToggleSection(&'static str),
+    Bookmark(Vec<PathBuf>),
+    Unbookmark(PathBuf),
 }
 
 pub struct App {
@@ -104,6 +108,8 @@ pub struct App {
     show_hidden: bool,
     show_preview: bool,
     show_sidebar: bool,
+    /// Sidebar sections folded shut by clicking their header.
+    collapsed: HashSet<&'static str>,
     /// Fractional Ctrl+wheel steps not yet applied to the view mode.
     zoom_accum: f32,
     path_edit: Option<(usize, String)>,
@@ -167,6 +173,7 @@ impl App {
             show_hidden: false,
             show_preview: true,
             show_sidebar: true,
+            collapsed: HashSet::new(),
             zoom_accum: 0.0,
             path_edit: None,
             path_edit_focus: false,
@@ -832,6 +839,7 @@ impl App {
             }
             Cmd::TogglePreview => self.show_preview = !self.show_preview,
             Cmd::ToggleSidebar => self.show_sidebar = !self.show_sidebar,
+            Cmd::BookmarkFolder => self.apply(Action::Bookmark(vec![self.tab().path.clone()])),
             Cmd::ZoomIn => self.zoom(1),
             Cmd::ZoomOut => self.zoom(-1),
             Cmd::ToggleSplit => self.toggle_split(),
@@ -932,6 +940,35 @@ impl App {
             }
             Action::StopSearch => self.stop_search(),
             Action::Zoom(steps) => self.zoom(steps),
+            Action::ToggleSection(s) => {
+                if !self.collapsed.remove(s) {
+                    self.collapsed.insert(s);
+                }
+            }
+            Action::Bookmark(paths) => {
+                let mut added = 0;
+                for p in &paths {
+                    match fsops::add_bookmark(p) {
+                        Ok(true) => added += 1,
+                        Ok(false) => {}
+                        Err(e) => self.toast(format!("Could not save bookmark: {e}"), true),
+                    }
+                }
+                self.places = fsops::places();
+                self.collapsed.remove("BOOKMARKS");
+                match (added, paths.first()) {
+                    (0, Some(_)) => self.toast("Already bookmarked", false),
+                    (1, Some(p)) => self.toast(format!("Bookmarked {}", p.file_name().unwrap_or(p.as_os_str()).to_string_lossy()), false),
+                    (n, _) if n > 1 => self.toast(format!("Bookmarked {n} folders"), false),
+                    _ => {}
+                }
+            }
+            Action::Unbookmark(p) => {
+                if let Err(e) = fsops::remove_bookmark(&p) {
+                    self.toast(format!("Could not remove bookmark: {e}"), true);
+                }
+                self.places = fsops::places();
+            }
         }
     }
 
