@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=fpilot
+GenericName=File Manager
+Comment=Fast file manager with previews and folder sizes
+Exec=fpilot %f
+Icon=fpilot
+Terminal=false
+Categories=System;FileTools;FileManager;
+Keywords=files;folders;explorer;file pilot;
+MimeType=inode/directory;
+StartupWMClass=fpilot

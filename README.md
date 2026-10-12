@@ -47,3 +47,11 @@ Drag files onto folders, tabs, breadcrumbs or the sidebar to move them
 overwrite: the new item gets a " (2)" suffix.
 
 Benchmark: `cargo test --release -- --ignored --nocapture bench`
+
+## Install
+
+    ./install.sh
+
+Builds a release binary into `~/.local/bin/fpilot` and adds an icon and a
+launcher entry (`~/.local/share/applications/fpilot.desktop`). Re-run it after
+pulling changes.
