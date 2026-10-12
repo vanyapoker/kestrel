@@ -23,6 +23,10 @@ pub enum JobKind {
     MoveBack,
     /// Undo: restore `srcs` (original paths) from the trash.
     Untrash,
+    /// Unpack each archive in `srcs` next to itself.
+    Extract,
+    /// Zip `srcs` into `dest`, named `name`.
+    Compress,
 }
 
 pub struct Job {
@@ -34,11 +38,13 @@ pub struct Job {
     pub pairs: Vec<(PathBuf, PathBuf)>,
     /// This job reverses an earlier one, so it isn't itself undoable.
     pub undoing: bool,
+    /// File name for `Compress`.
+    pub name: Option<String>,
 }
 
 impl Job {
     pub fn new(kind: JobKind, srcs: Vec<PathBuf>, dest: Option<PathBuf>) -> Self {
-        Self { kind, srcs, dest, pairs: Vec::new(), undoing: false }
+        Self { kind, srcs, dest, pairs: Vec::new(), undoing: false, name: None }
     }
 
     /// The job that reverses `undo`.
@@ -190,6 +196,8 @@ impl Worker {
             JobKind::Delete => format!("Deleting {what}"),
             JobKind::MoveBack => format!("Moving back {what}"),
             JobKind::Untrash => format!("Restoring {what}"),
+            JobKind::Extract => format!("Extracting {what}"),
+            JobKind::Compress => format!("Compressing {what}"),
         };
         *self.progress.lock().unwrap() = Some(Progress { title, ..Default::default() });
         self.ctx.request_repaint();
@@ -238,6 +246,28 @@ impl Worker {
             JobKind::Untrash => {
                 untrash(&job.srcs, &mut done);
                 done.summary = format!("Restored {what}");
+            }
+            JobKind::Extract => {
+                for src in &job.srcs {
+                    if self.cancelled() {
+                        break;
+                    }
+                    self.update(|p| p.current = file_name(src));
+                    self.extract(src, &mut done);
+                }
+                if !done.created.is_empty() {
+                    done.undo = Some(Undo::TrashCreated(done.created.clone()));
+                }
+                done.summary = format!("Extracted {what}");
+            }
+            JobKind::Compress => {
+                let dest = job.dest.clone().expect("compress needs a destination");
+                let name = job.name.clone().unwrap_or_else(|| "Archive.zip".into());
+                self.compress(&job.srcs, &dest, &name, &mut done);
+                if !done.created.is_empty() {
+                    done.undo = Some(Undo::TrashCreated(done.created.clone()));
+                }
+                done.summary = format!("Compressed {what} to \"{}\"", done.created.first().map(|p| file_name(p)).unwrap_or(name));
             }
             JobKind::Delete => {
                 for src in &job.srcs {
@@ -336,6 +366,108 @@ impl Worker {
             }
         }
         moved
+    }
+
+    /// Runs an archive tool, killing it if the job is cancelled. Errors carry its stderr.
+    fn run_tool(&self, cmd: &mut std::process::Command) -> Result<(), String> {
+        use std::process::Stdio;
+        let mut child = cmd
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("bsdtar: {e}"))?;
+        // Drain stderr on a thread so a chatty tool can't block on a full pipe.
+        let mut stderr = child.stderr.take();
+        let reader = std::thread::spawn(move || {
+            let mut s = String::new();
+            if let Some(e) = stderr.as_mut() {
+                let _ = e.read_to_string(&mut s);
+            }
+            s
+        });
+        let status = loop {
+            if self.cancelled() {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("cancelled".into());
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => std::thread::sleep(Duration::from_millis(30)),
+                Err(e) => return Err(e.to_string()),
+            }
+        };
+        let err = reader.join().unwrap_or_default();
+        if status.success() {
+            Ok(())
+        } else {
+            Err(err.lines().find(|l| !l.trim().is_empty()).unwrap_or("failed").trim().to_string())
+        }
+    }
+
+    /// Unpacks `archive` next to itself. A single top-level item comes out as
+    /// is; anything else goes into a folder named after the archive.
+    fn extract(&mut self, archive: &Path, done: &mut Done) {
+        let Some(dir) = archive.parent() else { return };
+        let tmp = unique_dest(dir, &format!(".kestrel-extract-{}", file_name(archive)));
+        if let Err(e) = fs::create_dir(&tmp) {
+            return done.errors.push(format!("{}: {e}", file_name(archive)));
+        }
+        let res = self.run_tool(std::process::Command::new("bsdtar").arg("-xf").arg(archive).arg("-C").arg(&tmp));
+        let items: Vec<PathBuf> = fs::read_dir(&tmp).map(|rd| rd.flatten().map(|d| d.path()).collect()).unwrap_or_default();
+        if let Err(e) = &res {
+            if e != "cancelled" {
+                done.errors.push(format!("{}: {e}", file_name(archive)));
+            }
+            // Keep whatever came out of a partly readable archive, but not a cancelled one.
+            if items.is_empty() || e == "cancelled" {
+                let _ = fs::remove_dir_all(&tmp);
+                return;
+            }
+        }
+        let placed = if let [single] = items.as_slice() {
+            let target = unique_dest(dir, &file_name(single));
+            fs::rename(single, &target).map(|()| {
+                let _ = fs::remove_dir(&tmp);
+                target
+            })
+        } else {
+            let target = unique_dest(dir, &archive_stem(archive));
+            fs::rename(&tmp, &target).map(|()| target)
+        };
+        match placed {
+            Ok(target) => done.created.push(target),
+            Err(e) => done.errors.push(format!("{}: {e}", file_name(archive))),
+        }
+    }
+
+    /// Zips `srcs` into `dest/name`, writing to a temporary file first so a
+    /// failed or cancelled run leaves nothing half-written behind.
+    fn compress(&mut self, srcs: &[PathBuf], dest: &Path, name: &str, done: &mut Done) {
+        let target = unique_dest(dest, name);
+        let part = dest.join(format!(".{}.part", file_name(&target)));
+        let mut cmd = std::process::Command::new("bsdtar");
+        cmd.args(["--format", "zip", "-cf"]).arg(&part);
+        for src in srcs {
+            let (Some(parent), Some(base)) = (src.parent(), src.file_name()) else { continue };
+            // `-C` per item lets search results from different folders go in one zip.
+            let mut entry = std::ffi::OsString::new();
+            if base.to_string_lossy().starts_with('-') {
+                entry.push("./"); // not an option
+            }
+            entry.push(base);
+            cmd.arg("-C").arg(parent).arg(entry);
+        }
+        match self.run_tool(&mut cmd).and_then(|()| fs::rename(&part, &target).map_err(|e| e.to_string())) {
+            Ok(()) => done.created.push(target),
+            Err(e) => {
+                let _ = fs::remove_file(&part);
+                if e != "cancelled" {
+                    done.errors.push(format!("Compress failed: {e}"));
+                }
+            }
+        }
     }
 
     /// Moves `cur` back to exactly `orig`, never replacing something already there.
@@ -514,6 +646,37 @@ fn push_unique(v: &mut Vec<PathBuf>, p: PathBuf) {
     }
 }
 
+const ARCHIVE_EXTS: &[&str] = &[
+    ".tar.gz", ".tar.xz", ".tar.bz2", ".tar.zst", ".tar.lz4", ".tar.lzma", ".tar", ".tgz", ".txz", ".tbz", ".tbz2", ".tzst",
+    ".zip", ".7z", ".rar", ".jar", ".cpio", ".iso", ".cab", ".xar", ".deb",
+];
+
+/// Whether bsdtar can unpack this file, judging by its name.
+pub fn is_archive(path: &Path) -> bool {
+    let name = file_name(path).to_lowercase();
+    ARCHIVE_EXTS.iter().any(|ext| name.len() > ext.len() && name.ends_with(ext))
+}
+
+/// "photos.tar.gz" → "photos".
+fn archive_stem(path: &Path) -> String {
+    let name = file_name(path);
+    let lower = name.to_lowercase();
+    ARCHIVE_EXTS
+        .iter()
+        .find(|ext| lower.len() > ext.len() && lower.ends_with(*ext))
+        .map(|ext| name[..name.len() - ext.len()].to_string())
+        .unwrap_or(name)
+}
+
+/// The zip name for compressing `srcs`: the item's name for one item, else "Archive.zip".
+pub fn zip_name(srcs: &[PathBuf]) -> String {
+    match srcs {
+        [one] if one.is_dir() => format!("{}.zip", file_name(one)),
+        [one] => format!("{}.zip", one.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| file_name(one))),
+        _ => "Archive.zip".into(),
+    }
+}
+
 /// Restores each of `paths` (original locations) from the trash, taking the
 /// most recently trashed item when the trash holds several from one path.
 fn untrash(paths: &[PathBuf], done: &mut Done) {
@@ -626,5 +789,51 @@ mod tests {
         assert_eq!(fs::read_to_string(a.join("f.txt")).unwrap(), "hi");
         assert!(b.join("f (2).txt").exists());
         fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn compress_and_extract() {
+        let d = tmpdir("zip");
+        fs::create_dir_all(d.join("proj/src")).unwrap();
+        fs::write(d.join("proj/src/main.rs"), "fn main() {}").unwrap();
+        fs::write(d.join("-dash.txt"), "x").unwrap();
+        fs::write(d.join("b.txt"), "b").unwrap();
+
+        let mut job = Job::new(JobKind::Compress, vec![d.join("proj")], Some(d.clone()));
+        job.name = Some(zip_name(&job.srcs));
+        let done = run(job);
+        assert!(done.errors.is_empty(), "{:?}", done.errors);
+        assert_eq!(done.created, vec![d.join("proj.zip")]);
+        assert!(!d.join(".proj.zip.part").exists());
+
+        // One top-level folder comes out as itself (renamed, never merged).
+        let done = run(Job::new(JobKind::Extract, vec![d.join("proj.zip")], None));
+        assert!(done.errors.is_empty(), "{:?}", done.errors);
+        assert_eq!(done.created, vec![d.join("proj (2)")]);
+        assert_eq!(fs::read_to_string(d.join("proj (2)/src/main.rs")).unwrap(), "fn main() {}");
+
+        // Loose files go into a folder named after the archive.
+        let mut job = Job::new(JobKind::Compress, vec![d.join("-dash.txt"), d.join("b.txt")], Some(d.clone()));
+        job.name = Some(zip_name(&job.srcs));
+        assert!(run(job).errors.is_empty());
+        let done = run(Job::new(JobKind::Extract, vec![d.join("Archive.zip")], None));
+        assert_eq!(done.created, vec![d.join("Archive")]);
+        assert!(d.join("Archive/-dash.txt").exists() && d.join("Archive/b.txt").exists());
+        assert!(fs::read_dir(&d).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().starts_with(".kestrel")));
+
+        // A broken archive reports an error and leaves no temp folder.
+        fs::write(d.join("bad.zip"), "not a zip").unwrap();
+        let done = run(Job::new(JobKind::Extract, vec![d.join("bad.zip")], None));
+        assert_eq!(done.errors.len(), 1);
+        assert!(fs::read_dir(&d).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().starts_with(".kestrel")));
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn archive_names() {
+        assert!(is_archive(Path::new("/x/Photos.TAR.GZ")));
+        assert!(!is_archive(Path::new("/x/.zip")));
+        assert_eq!(archive_stem(Path::new("/x/photos.tar.gz")), "photos");
+        assert_eq!(zip_name(&[PathBuf::from("/nonexistent/report.pdf")]), "report.zip");
     }
 }

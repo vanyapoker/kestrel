@@ -37,6 +37,8 @@ pub enum Cmd {
     SortType,
     CancelJob,
     Undo,
+    Extract,
+    Compress,
 }
 
 pub const COMMANDS: &[(Cmd, &str, &str)] = &[
@@ -59,6 +61,8 @@ pub const COMMANDS: &[(Cmd, &str, &str)] = &[
     (Cmd::Cut, "Cut", "Ctrl+X"),
     (Cmd::Paste, "Paste", "Ctrl+V"),
     (Cmd::Duplicate, "Duplicate", "Ctrl+D"),
+    (Cmd::Extract, "Extract here", ""),
+    (Cmd::Compress, "Compress to .zip", ""),
     (Cmd::Trash, "Move to trash", "Delete"),
     (Cmd::DeletePermanently, "Delete permanently", "Shift+Delete"),
     (Cmd::SelectAll, "Select all", "Ctrl+A"),

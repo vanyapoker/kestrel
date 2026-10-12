@@ -1582,6 +1582,12 @@ fn row_interactions(
         item(ui, "Duplicate", "Ctrl+D", Action::Cmd(Cmd::Duplicate));
         item(ui, "Rename", "F2", Action::Cmd(Cmd::Rename));
         ui.separator();
+        let targets = if tab.is_selected(vi) { tab.targets() } else { vec![e.path.clone()] };
+        if targets.iter().any(|t| crate::ops::is_archive(t)) {
+            item(ui, "Extract here", "", Action::Cmd(Cmd::Extract));
+        }
+        item(ui, "Compress to .zip", "", Action::Cmd(Cmd::Compress));
+        ui.separator();
         item(ui, "Copy path", "Alt+C", Action::CopyPath(e.path.clone()));
         let term = if e.is_dir { e.path.clone() } else { tab.path.clone() };
         item(ui, "Open terminal here", "", Action::OpenTerminal(term));

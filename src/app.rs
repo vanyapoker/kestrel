@@ -772,7 +772,7 @@ impl App {
         } else if let Some(first) = done.errors.first() {
             let more = if done.errors.len() > 1 { format!(" (+{} more errors)", done.errors.len() - 1) } else { String::new() };
             self.toast(format!("{first}{more}"), true);
-        } else if matches!(done.kind, JobKind::Copy | JobKind::Move | JobKind::Trash | JobKind::Delete) {
+        } else if matches!(done.kind, JobKind::Copy | JobKind::Move | JobKind::Trash | JobKind::Delete | JobKind::Extract | JobKind::Compress) {
             self.toast(done.summary, false);
         }
     }
@@ -986,6 +986,23 @@ impl App {
                 }
             }
             Cmd::Undo => self.undo(),
+            Cmd::Extract => {
+                let archives: Vec<PathBuf> = self.tab().targets().into_iter().filter(|p| ops::is_archive(p)).collect();
+                if archives.is_empty() {
+                    self.toast("Select an archive to extract", false);
+                } else {
+                    self.ops.submit(Job::new(JobKind::Extract, archives, None));
+                }
+            }
+            Cmd::Compress => {
+                let srcs = self.tab().targets();
+                // Search results can come from several folders; the zip goes next to the first.
+                if let Some(dest) = srcs.first().and_then(|p| p.parent()).map(Path::to_path_buf) {
+                    let mut job = Job::new(JobKind::Compress, srcs, Some(dest));
+                    job.name = Some(ops::zip_name(&job.srcs));
+                    self.ops.submit(job);
+                }
+            }
             Cmd::Copy => self.copy_to_clipboard(false),
             Cmd::Cut => self.copy_to_clipboard(true),
             Cmd::Paste => self.paste(None),
