@@ -1556,6 +1556,10 @@ fn row_interactions(
             }
         };
         item(ui, "Open", "Enter", Action::OpenEntry(vi));
+        let mut open_with = Vec::new();
+        if !e.is_dir {
+            open_with_menu(ui, tab, vi, e, p, &mut open_with);
+        }
         if e.is_dir {
             item(ui, "Open in new tab", "", Action::NewTab(e.path.clone()));
             if bookmarks.iter().any(|(_, b)| *b == e.path) {
@@ -1584,6 +1588,43 @@ fn row_interactions(
         ui.separator();
         item(ui, "Move to trash", "Delete", Action::Cmd(Cmd::Trash));
         item(ui, "Delete permanently", "Shift+Del", Action::Cmd(Cmd::DeletePermanently));
+        actions.extend(open_with);
+    });
+}
+
+/// "Open with" submenu: apps for this file type, default first, and a way to change the default.
+fn open_with_menu(ui: &mut Ui, tab: &Tab, vi: usize, e: &Entry, p: usize, actions: &mut Vec<Action>) {
+    let choices = crate::apps::choices(&e.path);
+    if choices.apps.is_empty() {
+        return;
+    }
+    let paths: Vec<PathBuf> = if tab.is_selected(vi) { tab.targets().into_iter().filter(|t| !t.is_dir()).collect() } else { vec![e.path.clone()] };
+    let what = match e.path.extension() {
+        Some(ext) => format!(".{} files", ext.to_string_lossy()),
+        None => "files like this".into(),
+    };
+    const SHOWN: usize = 12;
+    ui.menu_button("Open with", |ui| {
+        ui.set_min_width(200.0);
+        for app in choices.apps.iter().take(SHOWN) {
+            let default = choices.default.as_deref() == Some(app.id.as_str());
+            if ui.add(egui::Button::new(&app.name).shortcut_text(if default { "default" } else { "" })).clicked() {
+                actions.push(Action::FocusPane(p));
+                actions.push(Action::OpenWith(app.clone(), paths.clone()));
+                ui.close();
+            }
+        }
+        ui.separator();
+        ui.menu_button(format!("Always open {what} with"), |ui| {
+            ui.set_min_width(200.0);
+            for app in choices.apps.iter().take(SHOWN) {
+                let default = choices.default.as_deref() == Some(app.id.as_str());
+                if ui.add_enabled(!default, egui::Button::new(&app.name)).clicked() {
+                    actions.push(Action::SetDefaultApp(app.clone(), choices.mime.clone(), what.clone()));
+                    ui.close();
+                }
+            }
+        });
     });
 }
 

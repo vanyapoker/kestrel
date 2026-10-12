@@ -85,6 +85,9 @@ enum Action {
     ToggleSection(&'static str),
     Bookmark(Vec<PathBuf>),
     Unbookmark(PathBuf),
+    OpenWith(crate::apps::DesktopApp, Vec<PathBuf>),
+    /// App id, file type, and a label for the toast (".md files").
+    SetDefaultApp(crate::apps::DesktopApp, String, String),
 }
 
 pub struct App {
@@ -1106,6 +1109,15 @@ impl App {
             }
             Action::StopSearch => self.stop_search(),
             Action::Zoom(steps) => self.zoom(steps),
+            Action::OpenWith(app, paths) => {
+                if let Err(e) = crate::apps::launch(&app, &paths) {
+                    self.toast(e, true);
+                }
+            }
+            Action::SetDefaultApp(app, mime, what) => match crate::apps::set_default(&app.id, &mime) {
+                Ok(()) => self.toast(format!("{what} now open with {}", app.name), false),
+                Err(e) => self.toast(format!("Couldn't set the default app: {e}"), true),
+            },
             Action::ToggleSection(s) => {
                 if !self.collapsed.remove(s) {
                     self.collapsed.insert(s);
