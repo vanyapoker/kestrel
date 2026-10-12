@@ -285,3 +285,37 @@ fn sidebar_sections_collapse() {
     assert!(!d.app.collapsed.contains("PLACES"));
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn paste_reaches_create_dialog_opened_from_palette() {
+    let dir = sandbox("palette-paste");
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| a.row_rects.contains_key(&dir.join("a.txt")));
+    let key = |k: Key| Event::Key { key: k, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE };
+    d.modifiers = Modifiers::COMMAND;
+    d.frame(vec![Event::Key { key: Key::P, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::COMMAND }]);
+    d.frame(vec![Event::Text("new folder".into())]);
+    d.frame(vec![key(Key::Enter)]);
+    // The dialog is first drawn on the frame that carries the paste.
+    d.frame(vec![Event::Paste("pasted".into())]);
+    d.frame(Vec::new());
+    let name = match &d.app.dialog {
+        Some(Dialog::Create { name, .. }) => name.clone(),
+        _ => panic!("no create dialog"),
+    };
+    fs::remove_dir_all(dir).unwrap();
+    assert_eq!(name, "pasted");
+}
+
+#[test]
+fn create_dialog_field_is_focused() {
+    let dir = sandbox("dialog-focus");
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| a.row_rects.contains_key(&dir.join("a.txt")));
+    let cs = Modifiers::COMMAND | Modifiers::SHIFT;
+    d.modifiers = cs;
+    d.frame(vec![Event::Key { key: Key::N, physical_key: None, pressed: true, repeat: false, modifiers: cs }]);
+    d.frame(Vec::new());
+    assert!(d.ctx.memory(|m| m.has_focus(egui::Id::new("dialog_name"))));
+    fs::remove_dir_all(dir).unwrap();
+}

@@ -969,6 +969,7 @@ impl App {
                 let base = if folder { "New folder" } else { "New file.txt" };
                 let name = ops::file_name(&ops::unique_dest(&dir, base));
                 self.dialog = Some(Dialog::Create { dir, name, folder, focus: true });
+                self.ctx.memory_mut(|m| m.request_focus(egui::Id::new("dialog_name")));
             }
             Cmd::Rename => {
                 if let Some(e) = self.tab().cursor_entry() {
@@ -1421,6 +1422,17 @@ impl eframe::App for App {
     }
 
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        // egui-winit reads the clipboard through X11 only, which is empty or stale on
+        // Wayland; take paste text from our own data device so text fields get it.
+        if let Some(wl) = &self.wl {
+            for ev in &mut raw.events {
+                if let Event::Paste(text) = ev
+                    && let Some(t) = wl.read_clipboard_text()
+                {
+                    *text = t.replace("\r\n", "\n");
+                }
+            }
+        }
         if std::mem::take(&mut self.inject_release) {
             let pos = self.ctx.pointer_latest_pos().unwrap_or_default();
             raw.events.push(Event::PointerButton {

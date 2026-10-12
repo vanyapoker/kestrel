@@ -69,6 +69,8 @@ struct Shared {
     input_serial: Option<u32>,
     /// Generation of the clipboard source we own, if we own the selection.
     own_selection: Option<u64>,
+    /// Plain text of the clipboard source we own.
+    own_text: String,
     selection_gen: u64,
     /// The current selection (clipboard) offer from another client.
     selection: Option<WlDataOffer>,
@@ -277,14 +279,38 @@ impl WlDnd {
         shared.selection_gen += 1;
         let generation = shared.selection_gen;
         data.clipboard = Some(generation);
+        let plain = data.plain.clone();
         let source = self.manager.create_data_source(&self.qh, Arc::new(data));
         for mime in extra.iter().copied().chain(["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING", "TEXT"]) {
             source.offer(mime.into());
         }
         self.device.set_selection(Some(&source), serial);
         shared.own_selection = Some(generation);
+        shared.own_text = plain;
         drop(shared);
         self.conn.flush().is_ok()
+    }
+
+    /// Reads text from the clipboard. egui-winit's own clipboard is X11-only here
+    /// (smithay-clipboard is patched out), so text pastes come from our data device.
+    pub fn read_clipboard_text(&self) -> Option<String> {
+        let offer = {
+            let shared = self.shared.lock().unwrap();
+            if shared.own_selection.is_some() {
+                trace!("paste text: ours");
+                return Some(shared.own_text.clone());
+            }
+            trace!("paste text: offer {:?}", shared.selection.is_some());
+            shared.selection.clone()?
+        };
+        let mimes = offer.data::<OfferData>().map(|d| d.mimes.lock().unwrap().clone()).unwrap_or_default();
+        let mime = ["text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "STRING", "TEXT"]
+            .into_iter()
+            .find(|m| mimes.iter().any(|x| x == m));
+        trace!("paste text: mimes {mimes:?} -> {mime:?}");
+        let text = receive(&self.conn, &offer, mime?);
+        trace!("paste text: got {:?}", text.as_ref().map(|t| t.len()));
+        text
     }
 
     /// Reads files from the clipboard (blocks briefly while the owner sends them).

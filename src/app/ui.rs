@@ -1744,20 +1744,24 @@ fn name_field(ui: &mut Ui, title: &str, name: &mut String, focus: &mut bool, sel
     ui.label(RichText::new(title).size(15.0).strong());
     ui.add_space(8.0);
     let id = egui::Id::new("dialog_name");
+    // Focus and selection go in before the TextEdit is laid out, so a paste in the same
+    // frame replaces the selected name. A dialog opened from the palette is first drawn on
+    // the frame that carries the Ctrl+V; an unfocused TextEdit drops it.
+    let select_now = std::mem::take(focus);
+    if select_now {
+        let mut state = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+        let range = egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(select));
+        state.cursor.set_char_range(Some(range));
+        state.store(ui.ctx(), id);
+    }
     let resp = ui.add(
         egui::TextEdit::singleline(name)
             .id(id)
             .desired_width(f32::INFINITY)
             .margin(Margin::symmetric(8, 5)),
     );
-    if *focus {
-        *focus = false;
+    if select_now {
         resp.request_focus();
-        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id) {
-            let range = egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(select));
-            state.cursor.set_char_range(Some(range));
-            state.store(ui.ctx(), id);
-        }
     }
     if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
         *confirm = true;
