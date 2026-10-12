@@ -2,6 +2,9 @@
 name = "kestrel"
 version = "0.1.0"
 edition = "2024"
+description = "A fast, keyboard-friendly file manager for Omarchy, inspired by File Pilot"
+license = "MIT"
+repository = "https://github.com/vanyapoker/kestrel"
 
 [dependencies]
 chrono = "0.4.45"

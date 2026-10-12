@@ -1,73 +1,113 @@
-# Kestrel
+<p align="center">
+  <img src="assets/kestrel.svg" width="96" alt="Kestrel icon">
+</p>
 
-A fast, keyboard-friendly file manager for Linux, inspired by File Pilot.
-Rust + egui (OpenGL); all filesystem work happens off the UI thread.
+<h1 align="center">Kestrel</h1>
 
-    cargo run --release -- [path]
+<p align="center">
+  A fast, keyboard-friendly file manager for <a href="https://omarchy.org">Omarchy</a>, inspired by <a href="https://filepilot.tech">File Pilot</a>.
+</p>
 
-Features: tabs, split view, details/list/icon views (Ctrl+wheel to zoom),
-hideable sidebar and preview panel, recursive search,
-command palette, background copy/move with progress (uses `copy_file_range`,
-so copies on btrfs/xfs are instant reflinks), trash, drag and drop, live
-folder sizes, auto-refresh on changes, and previews for images, code/text,
-PDF, video, SVG and audio metadata.
-
-Optional tools for previews: `pdftoppm`/`pdfinfo` (poppler), `ffmpeg`/`ffprobe`,
-`rsvg-convert`. Pasting files copied in other apps uses `wl-paste`.
-
-## Theme
-
-Kestrel follows the active Omarchy theme (`~/.local/state/omarchy/current/theme/colors.toml`),
-light or dark, and restyles itself live on `omarchy theme set`. Without Omarchy
-it uses its own dark palette. `KESTREL_OMARCHY_THEME=<theme folder>` previews a
-theme without switching the desktop, e.g.
-`KESTREL_OMARCHY_THEME=/usr/share/omarchy/themes/gruvbox kestrel`.
-
-## Keys
-
-| Key | Action |
-|---|---|
-| Ctrl+P | Command palette |
-| ↑ ↓ PgUp PgDn Home End (← → in grid) | Move cursor; with Shift, extend selection |
-| Ctrl+click, Shift+click, Ctrl+Space, Ctrl+A | Multi-select |
-| Enter / double-click | Open (folder or default app) |
-| Backspace / Alt+↑ | Up (or delete last filter char) |
-| Alt+← / Alt+→, mouse back/forward | History |
-| *type anything* | Filter current folder; Esc clears |
-| Ctrl+F | Recursive search in current folder |
-| Ctrl+C / Ctrl+X / Ctrl+V | Copy / cut / paste files |
-| Ctrl+D | Duplicate |
-| F2 | Rename |
-| Ctrl+Shift+N | New folder |
-| Delete / Shift+Delete | Move to trash / delete permanently |
-| Alt+C | Copy path |
-| Ctrl+Alt+T | Open terminal here |
-| Ctrl+L / click path bar | Edit path (`~` works); folders autocomplete: Tab completes, ↑ ↓ pick, Enter goes |
-| Ctrl+T / Ctrl+W | New / close tab (middle-click also works) |
-| Ctrl+Tab, Ctrl+1..9 | Switch tabs |
-| F6 or Ctrl+\\ | Toggle split view; Tab switches pane |
-| Ctrl+G | Toggle icons / details view |
-| Ctrl+wheel | Zoom: details → list → small icons → … → huge icons |
-| Ctrl+H | Toggle hidden files |
-| F3 | Toggle preview panel |
-| Ctrl+B | Toggle sidebar (both panels can also be dragged shut) |
-| F5 | Refresh |
-
-Sidebar sections fold shut by clicking their header. Bookmark a folder from
-its right-click menu, the palette, or by dragging it onto the Bookmarks
-section. Bookmarks are GTK's (`~/.config/gtk-3.0/bookmarks`), so they're shared
-with Nautilus and file pickers.
-
-Drag files onto folders, tabs, breadcrumbs or the sidebar to move them
-(Ctrl to copy; across filesystems it always copies). Name clashes never
-overwrite: the new item gets a " (2)" suffix.
-
-Benchmark: `cargo test --release -- --ignored --nocapture bench`
+<p align="center">
+  <img src="assets/screenshot.png" alt="Kestrel showing a source folder with a syntax-highlighted preview" width="900">
+</p>
 
 ## Install
 
-    ./install.sh
+```sh
+curl -fsSL https://raw.githubusercontent.com/vanyapoker/kestrel/master/install.sh | bash
+```
 
-Builds a release binary into `~/.local/bin/kestrel` and adds an icon and a
-launcher entry (`~/.local/share/applications/kestrel.desktop`). Re-run it after
-pulling changes.
+Then open **Kestrel** from the app launcher (Super + Space) or run `kestrel` in a terminal.
+
+The installer installs anything it needs to build (Rust, git), compiles Kestrel and
+adds a launcher entry and icon. The first build takes a few minutes.
+
+## Update
+
+```sh
+kestrel-update
+```
+
+This pulls the latest version and rebuilds it. Running the install command again does the same thing.
+
+## Uninstall
+
+```sh
+bash ~/.local/share/kestrel/source/install.sh --uninstall
+```
+
+If you installed from your own clone, run `./install.sh --uninstall` there instead.
+
+## Features
+
+- **Fast.** All disk work runs in the background, so the window never freezes, even on huge folders or slow drives.
+- **Folder sizes.** Every folder shows its real size, worked out live as you browse.
+- **Preview panel.** See images, code with syntax highlighting, text, PDFs, videos, SVGs and audio details without opening anything.
+- **Tabs and split view.** Work in several folders at once, and drag files between panes.
+- **Find anything.** Type to filter the current folder, or press Ctrl+F to search all its subfolders.
+- **Command palette.** Ctrl+P reaches every action.
+- **Several views.** Switch between details, list and icon views, and zoom with Ctrl+scroll.
+- **Safe file operations.** Copy and move run in the background with progress. Deleted files go to the trash, and files are never overwritten: a copy with the same name gets a " (2)" suffix.
+- **Instant copies on btrfs and xfs.** Large files copy in no time.
+- **Drag and drop** within Kestrel and to or from other apps. Copy and paste files to and from other file managers too.
+- **Matches your Omarchy theme.** Kestrel uses your current theme's colors, light or dark, and updates live when you switch themes.
+- **Bookmarks shared with GTK,** so they also show up in Nautilus and in file pickers.
+- **Live updates.** The view refreshes on its own when files change.
+
+## Keyboard shortcuts
+
+| Key | Action |
+|---|---|
+| <kbd>Ctrl</kbd>+<kbd>P</kbd> | Command palette |
+| *start typing* | Filter the current folder (<kbd>Esc</kbd> clears) |
+| <kbd>Ctrl</kbd>+<kbd>F</kbd> | Search subfolders |
+| <kbd>Enter</kbd> | Open |
+| <kbd>Backspace</kbd> / <kbd>Alt</kbd>+<kbd>↑</kbd> | Go up a folder |
+| <kbd>Alt</kbd>+<kbd>←</kbd> / <kbd>Alt</kbd>+<kbd>→</kbd> | Back / forward |
+| <kbd>Ctrl</kbd>+<kbd>L</kbd> | Type a path (<kbd>Tab</kbd> completes folder names) |
+| <kbd>Ctrl</kbd>+<kbd>C</kbd> / <kbd>X</kbd> / <kbd>V</kbd> | Copy / cut / paste |
+| <kbd>Ctrl</kbd>+<kbd>D</kbd> | Duplicate |
+| <kbd>F2</kbd> | Rename |
+| <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd> | New folder |
+| <kbd>Delete</kbd> / <kbd>Shift</kbd>+<kbd>Delete</kbd> | Move to trash / delete permanently |
+| <kbd>Alt</kbd>+<kbd>C</kbd> | Copy path |
+| <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>T</kbd> | Open a terminal here |
+| <kbd>Ctrl</kbd>+<kbd>T</kbd> / <kbd>Ctrl</kbd>+<kbd>W</kbd> | New / close tab |
+| <kbd>Ctrl</kbd>+<kbd>Tab</kbd>, <kbd>Ctrl</kbd>+<kbd>1</kbd>…<kbd>9</kbd> | Switch tabs |
+| <kbd>F6</kbd> or <kbd>Ctrl</kbd>+<kbd>\\</kbd> | Split view (<kbd>Tab</kbd> switches pane) |
+| <kbd>Ctrl</kbd>+<kbd>G</kbd> | Icons / details view |
+| <kbd>Ctrl</kbd>+scroll | Zoom from details through list to icons |
+| <kbd>Ctrl</kbd>+<kbd>H</kbd> | Show hidden files |
+| <kbd>F3</kbd> | Preview panel |
+| <kbd>Ctrl</kbd>+<kbd>B</kbd> | Sidebar |
+| <kbd>F5</kbd> | Refresh |
+
+Use <kbd>Shift</kbd> with the arrow keys or Ctrl/Shift+click to select several items.
+Hold <kbd>Ctrl</kbd> while dragging to copy instead of move.
+
+## Tips
+
+- **Make Kestrel your default file manager:**
+  `xdg-mime default kestrel.desktop inode/directory`
+- **Bookmark a folder** from its right-click menu, or drag it onto the Bookmarks section of the sidebar.
+- **Optional extras for previews:** Omarchy ships these already. On other systems, install them for PDF, video and SVG previews:
+  `sudo pacman -S poppler ffmpeg librsvg wl-clipboard`
+- **Try out a theme** without switching your desktop:
+  `KESTREL_OMARCHY_THEME=/usr/share/omarchy/themes/gruvbox kestrel`
+
+## Building from source
+
+```sh
+git clone https://github.com/vanyapoker/kestrel.git
+cd kestrel
+./install.sh          # build and install
+cargo run --release   # or just run it
+```
+
+Kestrel is written in Rust with [egui](https://github.com/emilk/egui). It ships a lightly patched
+`egui-winit` (see `vendor/egui-winit/KESTREL_PATCHES.md`) so drag and drop works on Hyprland.
+
+## License
+
+[MIT](LICENSE)

@@ -16,6 +16,17 @@ use eframe::egui;
 use std::path::PathBuf;
 
 fn main() -> eframe::Result {
+    match std::env::args().nth(1).as_deref() {
+        Some("--version" | "-V") => {
+            println!("kestrel {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Some("--help" | "-h") => {
+            println!("Usage: kestrel [FOLDER]\n\nUpdate with `kestrel-update`.");
+            return Ok(());
+        }
+        _ => {}
+    }
     let start = std::env::args_os()
         .nth(1)
         .map(PathBuf::from)
