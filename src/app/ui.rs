@@ -1,6 +1,7 @@
 use super::icons::*;
 use super::{Action, App, Dialog, DragPaths};
 use crate::complete;
+use crate::devices::DevOp;
 use crate::fsops::{self, Entry};
 use crate::palette::{self, COMMANDS, Cmd};
 use crate::preview::{Content, State};
@@ -740,10 +741,11 @@ impl App {
             .unwrap_or_default();
         ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
             let cur = self.tab().path.clone();
+            let device_items: Vec<(String, PathBuf)> = self.devices.iter().map(|d| (d.name.clone(), d.path().to_path_buf())).collect();
             let sections: [(&'static str, &Vec<(String, PathBuf)>); 3] = [
                 ("PLACES", &self.places.places),
                 ("BOOKMARKS", &self.places.bookmarks),
-                ("DEVICES", &self.places.devices),
+                ("DEVICES", &device_items),
             ];
             for (title, items) in sections {
                 let bookmarks = title == "BOOKMARKS";
@@ -777,11 +779,20 @@ impl App {
                     continue;
                 }
                 for (name, path) in items {
+                    let device = if title == "DEVICES" { self.devices.iter().find(|d| d.path() == path.as_path()) } else { None };
+                    let unmounted = device.is_some_and(|d| d.mount.is_none());
+                    let busy = device.is_some_and(|d| self.dev_busy.contains(&d.dev));
+                    let ejectable = device.is_some_and(|d| d.removable && d.mount.is_some());
                     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
-                    let painter = ui.painter();
                     let selected = *path == cur;
-                    let drop_target = drop_hover(&resp, path);
-                    record_folder(ui.ctx(), rect, path);
+                    let drop_target = !unmounted && drop_hover(&resp, path);
+                    if !unmounted {
+                        record_folder(ui.ctx(), rect, path);
+                    }
+                    // Eject sits on top of the row, so its click doesn't open the drive.
+                    let eject_rect = Rect::from_center_size(Pos2::new(rect.right() - 13.0, rect.center().y), vec2(20.0, 20.0));
+                    let eject = (ejectable && !busy).then(|| ui.interact(eject_rect, ui.id().with(("eject", path)), Sense::click()));
+                    let painter = ui.painter();
                     if selected {
                         painter.rect_filled(rect, CornerRadius::same(5), pal().select);
                     } else if resp.hovered() || drop_target {
@@ -794,22 +805,59 @@ impl App {
                         "DEVICES" => Some(fsops::Special::Drive),
                         _ => fsops::special(path),
                     };
-                    let icon_color = if selected { pal().accent } else { pal().dim };
+                    let icon_color = if selected { pal().accent } else if unmounted { pal().faint } else { pal().dim };
                     draw_place(painter, Pos2::new(rect.left() + 14.0, rect.center().y), kind, icon_color);
-                    painter.with_clip_rect(rect.shrink(2.0)).text(
+                    let mut text_rect = rect.shrink(2.0);
+                    if ejectable || busy {
+                        text_rect.max.x = eject_rect.left();
+                    }
+                    painter.with_clip_rect(text_rect).text(
                         Pos2::new(rect.left() + 30.0, rect.center().y),
                         Align2::LEFT_CENTER,
                         name,
                         FontId::proportional(BODY),
-                        if selected { pal().text } else { pal().dim },
+                        if selected { pal().text } else if unmounted { pal().faint } else { pal().dim },
                     );
-                    if let Some(paths) = resp.dnd_release_payload::<DragPaths>() {
+                    if busy {
+                        let spin = egui::Spinner::new().size(11.0).color(pal().dim);
+                        ui.put(eject_rect, spin);
+                    }
+                    if let Some(eject) = eject {
+                        if eject.hovered() {
+                            ui.painter().rect_filled(eject_rect, CornerRadius::same(4), pal().select_dim);
+                        }
+                        let color = if eject.hovered() { pal().text } else { pal().dim };
+                        eject_icon(ui.painter(), eject_rect.center(), color);
+                        if eject.on_hover_text("Eject").clicked() {
+                            actions.push(Action::Device(DevOp::Eject, device.unwrap().dev.clone()));
+                        }
+                    }
+                    if !unmounted && let Some(paths) = resp.dnd_release_payload::<DragPaths>() {
                         let copy = ui.input(|i| i.modifiers.ctrl);
                         actions.push(Action::Drop { paths: paths.0.clone(), dest: path.clone(), copy });
                     }
-                    let resp = resp.on_hover_text(path.display().to_string());
-                    if resp.clicked() {
-                        actions.push(Action::Navigate(path.clone()));
+                    let hover = if unmounted { format!("{} is not mounted. Click to mount", path.display()) } else { path.display().to_string() };
+                    let resp = resp.on_hover_text(hover);
+                    if resp.clicked() && !busy {
+                        actions.push(match device {
+                            Some(d) if unmounted => Action::Device(DevOp::Mount, d.dev.clone()),
+                            _ => Action::Navigate(path.clone()),
+                        });
+                    }
+                    if unmounted {
+                        resp.context_menu(|ui| {
+                            ui.set_min_width(180.0);
+                            let d = device.unwrap();
+                            if ui.add_enabled(!busy, egui::Button::new("Mount")).clicked() {
+                                actions.push(Action::Device(DevOp::Mount, d.dev.clone()));
+                                ui.close();
+                            }
+                            if d.removable && ui.add_enabled(!busy, egui::Button::new("Eject")).clicked() {
+                                actions.push(Action::Device(DevOp::Eject, d.dev.clone()));
+                                ui.close();
+                            }
+                        });
+                        continue;
                     }
                     if resp.middle_clicked() {
                         actions.push(Action::NewTab(path.clone()));
@@ -826,6 +874,17 @@ impl App {
                             ui.close();
                         }
                         ui.separator();
+                        if let Some(d) = device {
+                            if ui.add_enabled(!busy, egui::Button::new("Unmount")).clicked() {
+                                actions.push(Action::Device(DevOp::Unmount, d.dev.clone()));
+                                ui.close();
+                            }
+                            if d.removable && ui.add_enabled(!busy, egui::Button::new("Eject")).clicked() {
+                                actions.push(Action::Device(DevOp::Eject, d.dev.clone()));
+                                ui.close();
+                            }
+                            ui.separator();
+                        }
                         if marked {
                             if ui.button("Remove from bookmarks").clicked() {
                                 actions.push(Action::Unbookmark(path.clone()));
@@ -1197,8 +1256,18 @@ impl App {
         // Commands, then places to jump to.
         let mut items: Vec<(String, String, Action)> =
             COMMANDS.iter().map(|&(c, name, keys)| (name.to_string(), keys.to_string(), Action::Cmd(c))).collect();
-        for (name, path) in self.places.places.iter().chain(&self.places.bookmarks).chain(&self.places.devices) {
+        for (name, path) in self.places.places.iter().chain(&self.places.bookmarks) {
             items.push((format!("Go to {name}"), path.display().to_string(), Action::Navigate(path.clone())));
+        }
+        for d in &self.devices {
+            let action = match &d.mount {
+                Some(m) => Action::Navigate(m.clone()),
+                None => Action::Device(DevOp::Mount, d.dev.clone()),
+            };
+            items.push((format!("Go to {}", d.name), d.path().display().to_string(), action));
+        }
+        for d in self.devices.iter().filter(|d| d.removable && d.mount.is_some()) {
+            items.push((format!("Eject {}", d.name), d.dev.display().to_string(), Action::Device(DevOp::Eject, d.dev.clone())));
         }
         let q = self.palette.query.trim().to_string();
         let mut scored: Vec<(i32, usize)> = items
@@ -1448,6 +1517,13 @@ fn bookmark_zone(ui: &Ui, resp: &egui::Response, dirs: &[PathBuf], actions: &mut
 
 fn bookmark_hover_id() -> egui::Id {
     egui::Id::new("kestrel_bookmark_hover")
+}
+
+/// A triangle over a bar.
+fn eject_icon(p: &Painter, c: Pos2, color: Color32) {
+    let tri = vec![c + vec2(-4.5, 1.0), c + vec2(0.0, -4.5), c + vec2(4.5, 1.0)];
+    p.add(egui::Shape::convex_polygon(tri, color, Stroke::NONE));
+    p.rect_filled(Rect::from_min_max(c + vec2(-4.5, 2.8), c + vec2(4.5, 4.6)), CornerRadius::same(1), color);
 }
 
 fn chevron(p: &Painter, c: Pos2, open: bool, color: Color32) {

@@ -88,6 +88,7 @@ enum Action {
     OpenWith(crate::apps::DesktopApp, Vec<PathBuf>),
     /// App id, file type, and a label for the toast (".md files").
     SetDefaultApp(crate::apps::DesktopApp, String, String),
+    Device(crate::devices::DevOp, PathBuf),
 }
 
 pub struct App {
@@ -111,6 +112,13 @@ pub struct App {
     theme_reload_at: Option<Instant>,
     ops: Ops,
     places: Places,
+    devices: Vec<crate::devices::Device>,
+    /// Rescans from the device watcher (`None` in tests).
+    devices_rx: Option<Receiver<Vec<crate::devices::Device>>>,
+    dev_tx: Sender<crate::devices::DevResult>,
+    dev_rx: Receiver<crate::devices::DevResult>,
+    /// Devices with a mount, unmount or eject in progress.
+    dev_busy: HashSet<PathBuf>,
     show_hidden: bool,
     show_preview: bool,
     show_sidebar: bool,
@@ -166,6 +174,8 @@ impl App {
             app.saved_session = s.to_text();
         }
         app.session_file = crate::session::file();
+        app.devices = crate::devices::scan();
+        app.devices_rx = Some(crate::devices::watch(app.ctx.clone()));
         app
     }
 
@@ -174,6 +184,7 @@ impl App {
         let (list_tx, list_rx) = channel();
         let (size_tx, size_rx) = channel();
         let (search_tx, search_rx) = channel();
+        let (dev_tx, dev_rx) = channel();
         let mut app = Self {
             preview: Preview::new(ctx.clone()),
             thumbs: Thumbs::new(ctx.clone()),
@@ -194,6 +205,11 @@ impl App {
             sizes: HashMap::new(),
             sizing: HashSet::new(),
             places: fsops::places(),
+            devices: Vec::new(),
+            devices_rx: None,
+            dev_tx,
+            dev_rx,
+            dev_busy: HashSet::new(),
             show_hidden: false,
             show_preview: true,
             show_sidebar: true,
@@ -539,6 +555,15 @@ impl App {
 
     fn poll(&mut self, ctx: &egui::Context) {
         let now = Instant::now();
+
+        if let Some(rx) = &self.devices_rx
+            && let Some(devices) = rx.try_iter().last()
+        {
+            self.devices = devices;
+        }
+        while let Ok(r) = self.dev_rx.try_recv() {
+            self.device_done(r);
+        }
 
         while let Ok(l) = self.list_rx.try_recv() {
             let (sizes, hidden) = (&self.sizes, self.show_hidden);
@@ -1159,11 +1184,73 @@ impl App {
                     _ => {}
                 }
             }
+            Action::Device(op, dev) => self.device_op(op, &dev),
             Action::Unbookmark(p) => {
                 if let Err(e) = fsops::remove_bookmark(&p) {
                     self.toast(format!("Could not remove bookmark: {e}"), true);
                 }
                 self.places = fsops::places();
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ devices
+
+    fn device_op(&mut self, op: crate::devices::DevOp, dev: &Path) {
+        use crate::devices::DevOp;
+        let Some(device) = self.devices.iter().find(|d| d.dev == dev) else { return };
+        if !self.dev_busy.insert(device.dev.clone()) {
+            return;
+        }
+        // Eject unmounts every mounted partition of the disk first.
+        let siblings = match op {
+            DevOp::Eject => self.devices.iter().filter(|d| d.disk == device.disk && d.mount.is_some()).map(|d| d.dev.clone()).collect(),
+            _ => Vec::new(),
+        };
+        crate::devices::run(op, device, siblings, self.dev_tx.clone(), self.ctx.clone());
+    }
+
+    fn device_done(&mut self, r: crate::devices::DevResult) {
+        use crate::devices::DevOp;
+        self.dev_busy.remove(&r.dev);
+        let left = self.devices.iter().find(|d| d.dev == r.dev).and_then(|d| d.mount.clone());
+        // Rescan now rather than wait for the watcher, so the sidebar updates at once.
+        self.devices = crate::devices::scan();
+        let verb = match r.op {
+            DevOp::Mount => "mount",
+            DevOp::Unmount => "unmount",
+            DevOp::Eject => "eject",
+        };
+        match r.result {
+            Err(e) => self.toast(format!("Could not {verb} {}: {e}", r.name), true),
+            Ok(mounted) => {
+                match r.op {
+                    DevOp::Mount if r.read_only => {
+                        self.toast(format!("{} was not safely removed, so it is read-only. Run ntfsfix -d {} to fix", r.name, r.dev.display()), true)
+                    }
+                    DevOp::Mount => {}
+                    DevOp::Unmount => self.toast(format!("Unmounted {}", r.name), false),
+                    DevOp::Eject => self.toast(format!("{} can be unplugged", r.name), false),
+                }
+                if let Some(p) = mounted {
+                    self.navigate(p, true);
+                }
+                // Tabs left on the drive go home.
+                if let Some(old) = left.filter(|_| r.op != DevOp::Mount) {
+                    let home = fsops::home_dir();
+                    for pi in 0..self.panes.len() {
+                        for ti in 0..self.panes[pi].tabs.len() {
+                            if self.panes[pi].tabs[ti].path.starts_with(&old) {
+                                let (ap, at) = (self.active_pane, self.panes[pi].active);
+                                self.active_pane = pi;
+                                self.panes[pi].active = ti;
+                                self.navigate(home.clone(), true);
+                                self.active_pane = ap;
+                                self.panes[pi].active = at;
+                            }
+                        }
+                    }
+                }
             }
         }
     }

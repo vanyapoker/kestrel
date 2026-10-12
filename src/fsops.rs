@@ -118,7 +118,6 @@ pub fn disk_space(path: &Path) -> Option<(u64, u64)> {
 pub struct Places {
     pub places: Vec<(String, PathBuf)>,
     pub bookmarks: Vec<(String, PathBuf)>,
-    pub devices: Vec<(String, PathBuf)>,
 }
 
 pub fn home_dir() -> PathBuf {
@@ -211,25 +210,7 @@ pub fn places() -> Places {
         }
     }
 
-    let mut devices = Vec::new();
-    if let Ok(s) = fs::read_to_string("/proc/mounts") {
-        for line in s.lines() {
-            let mut it = line.split_whitespace();
-            let (Some(src), Some(mnt)) = (it.next(), it.next()) else { continue };
-            let mnt = mnt.replace("\\040", " ");
-            if src.starts_with("/dev/")
-                && (mnt.starts_with("/mnt") || mnt.starts_with("/media") || mnt.starts_with("/run/media"))
-            {
-                let p = PathBuf::from(&mnt);
-                let name = p
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or(mnt.clone());
-                devices.push((name, p));
-            }
-        }
-    }
-    Places { places, bookmarks, devices }
+    Places { places, bookmarks }
 }
 
 /// Bookmarks live in GTK's file, so they are shared with Nautilus and file pickers.

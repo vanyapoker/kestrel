@@ -1,6 +1,7 @@
 mod app;
 mod apps;
 mod complete;
+mod devices;
 mod fsops;
 mod ops;
 mod palette;
