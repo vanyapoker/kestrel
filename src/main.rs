@@ -1,4 +1,5 @@
 mod app;
+mod complete;
 mod fsops;
 mod ops;
 mod palette;

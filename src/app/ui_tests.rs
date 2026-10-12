@@ -236,3 +236,33 @@ fn sidebars_hide() {
     assert!(after.right() > before.right() + 100.0, "{before:?} -> {after:?}");
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn path_bar_completes_folders() {
+    let dir = sandbox("complete");
+    fs::create_dir_all(dir.join("dest/inner")).unwrap();
+    fs::create_dir_all(dir.join("deep")).unwrap();
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| a.row_rects.contains_key(&dir.join("a.txt")));
+    d.app.run_cmd(Cmd::EditPath);
+    d.frame(Vec::new());
+    d.frame(Vec::new());
+    let key = |key| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE };
+    let text = |d: &Driver| d.app.path_edit.as_ref().map(|(_, t)| t.clone());
+    let base = format!("{}/", dir.display());
+    assert_eq!(text(&d), Some(base.clone()));
+
+    d.frame(vec![Event::Text("de".into())]);
+    // "deep" and "dest" share only "de": Tab falls back to the first match.
+    d.frame(vec![key(Key::Tab)]);
+    assert_eq!(text(&d), Some(format!("{base}deep/")));
+    // Arrow keys pick from the dropdown; Enter goes there.
+    d.frame(vec![key(Key::Backspace); 3]);
+    d.frame(vec![Event::Text("s".into())]);
+    d.frame(vec![key(Key::ArrowDown)]);
+    assert_eq!(d.app.path_hl, Some(0));
+    d.frame(vec![key(Key::Enter)]);
+    d.until("navigate", |a| a.tab().path.as_os_str() == dir.join("dest").as_os_str());
+    assert!(d.app.path_edit.is_none());
+    fs::remove_dir_all(dir).unwrap();
+}

@@ -108,6 +108,9 @@ pub struct App {
     zoom_accum: f32,
     path_edit: Option<(usize, String)>,
     path_edit_focus: bool,
+    completer: crate::complete::Completer,
+    /// Highlighted path completion, an index into the dropdown.
+    path_hl: Option<usize>,
     search_focus: bool,
     clip: Option<Clip>,
     dialog: Option<Dialog>,
@@ -167,6 +170,8 @@ impl App {
             zoom_accum: 0.0,
             path_edit: None,
             path_edit_focus: false,
+            completer: Default::default(),
+            path_hl: None,
             search_focus: false,
             clip: None,
             dialog: None,
@@ -844,7 +849,11 @@ impl App {
             }
             Cmd::OpenTerminal => fsops::open_terminal(&self.tab().path.clone()),
             Cmd::EditPath => {
-                self.path_edit = Some((self.active_pane, self.tab().path.display().to_string()));
+                // A trailing slash lists the subfolders straight away.
+                let path = self.tab().path.display().to_string();
+                let text = if path.ends_with('/') { path } else { format!("{path}/") };
+                self.path_edit = Some((self.active_pane, text));
+                self.completer = Default::default(); // pick up folders created since
                 self.path_edit_focus = true;
             }
             Cmd::GoHome => self.navigate(fsops::home_dir(), true),

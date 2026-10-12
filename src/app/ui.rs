@@ -1,4 +1,5 @@
 use super::{Action, App, Dialog, DragPaths};
+use crate::complete;
 use crate::fsops::{self, Entry};
 use crate::palette::{self, COMMANDS, Cmd};
 use crate::preview::{Content, State};
@@ -94,6 +95,135 @@ impl App {
         if title != self.window_title {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.window_title = title;
+        }
+    }
+
+    /// The editable path field with a dropdown of matching folders.
+    fn path_editor(&mut self, ui: &mut Ui, p: usize, actions: &mut Vec<Action>) {
+        let id = egui::Id::new(("path_edit", p));
+        let Some((_, text)) = self.path_edit.as_mut() else { return };
+        let cands = self.completer.candidates(text, self.show_hidden);
+        let shown = cands.len().min(complete::SHOWN);
+        if self.path_hl.is_some_and(|h| h >= shown) {
+            self.path_hl = None;
+        }
+        // Take the keys the completion uses before the text field sees them.
+        let focused = ui.memory(|m| m.has_focus(id));
+        let (tab, down, up) = if focused && shown > 0 {
+            ui.input_mut(|i| {
+                (
+                    i.consume_key(Modifiers::NONE, Key::Tab),
+                    i.consume_key(Modifiers::NONE, Key::ArrowDown),
+                    i.consume_key(Modifiers::NONE, Key::ArrowUp),
+                )
+            })
+        } else {
+            (false, false, false)
+        };
+        if down {
+            self.path_hl = Some(self.path_hl.map_or(0, |h| (h + 1) % shown));
+        }
+        if up {
+            self.path_hl = Some(self.path_hl.map_or(shown - 1, |h| (h + shown - 1) % shown));
+        }
+        let mut replaced = None;
+        if tab {
+            // Tab takes the highlighted folder, else the shared prefix, else the first match.
+            replaced = Some(match self.path_hl {
+                Some(h) => cands[h].clone(),
+                None => complete::common_prefix(&cands)
+                    .filter(|c| c.chars().count() > text.chars().count())
+                    .unwrap_or_else(|| cands[0].clone()),
+            });
+        }
+        if let Some(new) = replaced {
+            *text = new;
+            self.path_hl = None;
+            if let Some(mut st) = egui::TextEdit::load_state(ui.ctx(), id) {
+                let end = egui::text::CCursor::new(text.chars().count());
+                st.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
+                st.store(ui.ctx(), id);
+            }
+        }
+
+        let resp = ui.add(
+            egui::TextEdit::singleline(text)
+                .id(id)
+                .lock_focus(true) // Tab completes instead of moving focus
+                .frame(Frame::NONE)
+                .desired_width(f32::INFINITY)
+                .vertical_align(Align::Center),
+        );
+        if resp.changed() {
+            self.path_hl = None;
+        }
+        if self.path_edit_focus {
+            resp.request_focus();
+            self.path_edit_focus = false;
+        }
+
+        // Dropdown. Items react on press: the click would otherwise end editing first.
+        let mut picked = None;
+        if shown > 0 && (resp.has_focus() || resp.lost_focus()) {
+            let field = ui.min_rect().expand2(vec2(6.0, 2.0));
+            let screen = ui.ctx().content_rect();
+            let width = field.width().max(320.0_f32.min(screen.width() - 16.0));
+            let x = field.left().min(screen.right() - width - 8.0).max(screen.left() + 8.0);
+            egui::Area::new(id.with("popup"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(Pos2::new(x, field.bottom() + 4.0))
+                .show(ui.ctx(), |ui| {
+                    Frame::new()
+                        .fill(PANEL)
+                        .stroke(Stroke::new(1.0, BORDER))
+                        .corner_radius(CornerRadius::same(6))
+                        .inner_margin(Margin::same(4))
+                        .show(ui, |ui| {
+                            ui.set_width(width - 8.0);
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            for (n, c) in cands.iter().take(shown).enumerate() {
+                                let (rect, item) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
+                                let lit = self.path_hl == Some(n);
+                                if lit || item.hovered() {
+                                    ui.painter().rect_filled(rect, CornerRadius::same(4), if lit { SELECT } else { HOVER });
+                                }
+                                draw_folder(ui.painter(), Pos2::new(rect.left() + 14.0, rect.center().y), 0.8);
+                                let name = c.trim_end_matches('/').rsplit('/').next().unwrap_or(c);
+                                ui.painter().with_clip_rect(rect).text(
+                                    Pos2::new(rect.left() + 28.0, rect.center().y),
+                                    Align2::LEFT_CENTER,
+                                    name,
+                                    FontId::proportional(BODY),
+                                    TEXT,
+                                );
+                                if item.hovered() && ui.input(|i| i.pointer.primary_pressed()) {
+                                    picked = Some(c.clone());
+                                }
+                            }
+                            if cands.len() > shown {
+                                ui.label(RichText::new(format!("  {} more…", cands.len() - shown)).size(12.0).color(FAINT));
+                            }
+                        });
+                });
+        }
+
+        let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+        let target = picked.or_else(|| enter.then(|| self.path_hl.map_or_else(|| text.clone(), |h| cands[h].clone())));
+        if let Some(t) = target {
+            // Rebuilding from components drops trailing slashes and "./".
+            let target: PathBuf = complete::expand_tilde(t.trim()).components().collect();
+            if target.is_dir() {
+                actions.push(Action::FocusPane(p));
+                actions.push(Action::Navigate(target));
+            } else if target.is_file() {
+                fsops::open_default(&target);
+            }
+            self.path_edit = None;
+        } else if resp.lost_focus() {
+            self.path_edit = None;
+        }
+        if self.path_edit.is_none() {
+            self.path_hl = None;
         }
     }
 
@@ -255,27 +385,36 @@ impl App {
             ui.add_space(6.0);
 
             // Right-aligned controls first, so the path bar takes the remaining width.
+            // Narrow panes drop the buttons that have shortcuts, so the path stays usable.
+            let editing = self.path_edit.as_ref().is_some_and(|(ep, _)| *ep == p);
+            let compact = ui.available_width() < if editing { 560.0 } else { 400.0 };
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if last_pane {
                     let tip = if self.show_preview { "Hide preview (F3)" } else { "Show preview (F3)" };
                     if glyph_button(ui, Glyph::Panel, true, self.show_preview, tip) {
                         actions.push(Action::Cmd(Cmd::TogglePreview));
                     }
-                    if glyph_button(ui, Glyph::Eye, true, self.show_hidden, "Show hidden files (Ctrl+H)") {
-                        actions.push(Action::Cmd(Cmd::ToggleHidden));
-                    }
-                    if glyph_button(ui, Glyph::Split, true, self.panes.len() > 1, "Split view (F6)") {
-                        actions.push(Action::Cmd(Cmd::ToggleSplit));
+                    if !compact {
+                        if glyph_button(ui, Glyph::Eye, true, self.show_hidden, "Show hidden files (Ctrl+H)") {
+                            actions.push(Action::Cmd(Cmd::ToggleHidden));
+                        }
+                        if glyph_button(ui, Glyph::Split, true, self.panes.len() > 1, "Split view (F6)") {
+                            actions.push(Action::Cmd(Cmd::ToggleSplit));
+                        }
                     }
                 }
                 let pane = &self.panes[p];
                 let tab = &pane.tabs[pane.active];
                 let grid = tab.mode.is_grid();
-                if glyph_button(ui, Glyph::Grid, true, grid, "Icons / details view (Ctrl+G, Ctrl+scroll to resize)") {
+                if !compact
+                    && glyph_button(ui, Glyph::Grid, true, grid, "Icons / details view (Ctrl+G, Ctrl+scroll to resize)")
+                {
                     actions.push(Action::FocusPane(p));
                     actions.push(Action::Cmd(Cmd::ToggleGrid));
                 }
-                if glyph_button(ui, Glyph::Search, true, tab.search.is_some(), "Search subfolders (Ctrl+F)") {
+                if (!compact || tab.search.is_some())
+                    && glyph_button(ui, Glyph::Search, true, tab.search.is_some(), "Search subfolders (Ctrl+F)")
+                {
                     actions.push(Action::FocusPane(p));
                     actions.push(if tab.search.is_some() { Action::StopSearch } else { Action::Cmd(Cmd::Search) });
                 }
@@ -337,32 +476,9 @@ impl App {
                 return;
             }
 
-            if let Some((ep, text)) = &mut self.path_edit {
-                if *ep == p {
-                    let resp = ui.add(
-                        egui::TextEdit::singleline(text)
-                            .frame(Frame::NONE)
-                            .desired_width(f32::INFINITY)
-                            .vertical_align(Align::Center),
-                    );
-                    if self.path_edit_focus {
-                        resp.request_focus();
-                        self.path_edit_focus = false;
-                    }
-                    if resp.lost_focus() {
-                        if ui.input(|i| i.key_pressed(Key::Enter)) {
-                            let target = expand_tilde(text.trim());
-                            if target.is_dir() {
-                                actions.push(Action::FocusPane(p));
-                                actions.push(Action::Navigate(target));
-                            } else if target.is_file() {
-                                fsops::open_default(&target);
-                            }
-                        }
-                        self.path_edit = None;
-                    }
-                    return;
-                }
+            if self.path_edit.as_ref().is_some_and(|(ep, _)| *ep == p) {
+                self.path_editor(ui, p, actions);
+                return;
             }
 
             let path = self.tab_in(p).path.clone();
@@ -1686,9 +1802,4 @@ fn draw_checker(p: &Painter, r: Rect) {
     }
 }
 
-fn expand_tilde(s: &str) -> PathBuf {
-    if let Some(rest) = s.strip_prefix('~') {
-        return fsops::home_dir().join(rest.trim_start_matches('/'));
-    }
-    PathBuf::from(s)
-}
+

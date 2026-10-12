@@ -34,7 +34,7 @@ Optional tools for previews: `pdftoppm`/`pdfinfo` (poppler), `ffmpeg`/`ffprobe`,
 | Delete / Shift+Delete | Move to trash / delete permanently |
 | Alt+C | Copy path |
 | Ctrl+Alt+T | Open terminal here |
-| Ctrl+L / click path bar | Edit path (`~` works) |
+| Ctrl+L / click path bar | Edit path (`~` works); folders autocomplete: Tab completes, ↑ ↓ pick, Enter goes |
 | Ctrl+T / Ctrl+W | New / close tab (middle-click also works) |
 | Ctrl+Tab, Ctrl+1..9 | Switch tabs |
 | F6 or Ctrl+\\ | Toggle split view; Tab switches pane |
