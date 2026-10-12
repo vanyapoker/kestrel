@@ -79,6 +79,8 @@ enum Action {
     Drop { paths: Vec<PathBuf>, dest: PathBuf, copy: bool },
     Reveal(PathBuf),
     StopSearch,
+    /// Step the active tab's view mode (Ctrl+wheel).
+    Zoom(i32),
 }
 
 pub struct App {
@@ -101,6 +103,9 @@ pub struct App {
     places: Places,
     show_hidden: bool,
     show_preview: bool,
+    show_sidebar: bool,
+    /// Fractional Ctrl+wheel steps not yet applied to the view mode.
+    zoom_accum: f32,
     path_edit: Option<(usize, String)>,
     path_edit_focus: bool,
     search_focus: bool,
@@ -158,6 +163,8 @@ impl App {
             places: fsops::places(),
             show_hidden: false,
             show_preview: true,
+            show_sidebar: true,
+            zoom_accum: 0.0,
             path_edit: None,
             path_edit_focus: false,
             search_focus: false,
@@ -819,10 +826,13 @@ impl App {
                 }
             }
             Cmd::TogglePreview => self.show_preview = !self.show_preview,
+            Cmd::ToggleSidebar => self.show_sidebar = !self.show_sidebar,
+            Cmd::ZoomIn => self.zoom(1),
+            Cmd::ZoomOut => self.zoom(-1),
             Cmd::ToggleSplit => self.toggle_split(),
             Cmd::ToggleGrid => {
                 let tab = self.tab_mut();
-                tab.mode = if tab.mode == ViewMode::List { ViewMode::Grid } else { ViewMode::List };
+                tab.mode = if tab.mode.is_grid() { ViewMode::Details } else { ViewMode::Icons(2) };
                 tab.scroll_to_cursor = true;
             }
             Cmd::CopyPath => {
@@ -912,7 +922,14 @@ impl App {
                 }
             }
             Action::StopSearch => self.stop_search(),
+            Action::Zoom(steps) => self.zoom(steps),
         }
+    }
+
+    fn zoom(&mut self, steps: i32) {
+        let tab = self.tab_mut();
+        tab.mode = tab.mode.zoom(steps);
+        tab.scroll_to_cursor = true;
     }
 
     // ------------------------------------------------------------ keyboard
@@ -939,7 +956,7 @@ impl App {
         }
         let mut actions: Vec<Action> = Vec::new();
         let mut filter_changed = false;
-        let grid_cols = if self.tab().mode == ViewMode::Grid { self.tab().grid_cols.max(1) as isize } else { 0 };
+        let grid_cols = if self.tab().mode.is_grid() { self.tab().grid_cols.max(1) as isize } else { 0 };
         let split = self.panes.len() > 1;
         ctx.input_mut(|i| {
             use Cmd::*;
@@ -1035,6 +1052,7 @@ impl App {
                 (ctrl, Key::A, SelectAll),
                 (ctrl, Key::D, Duplicate),
                 (ctrl, Key::F, Cmd::Search),
+                (ctrl, Key::B, ToggleSidebar),
                 (ctrl, Key::G, ToggleGrid),
                 (ctrl, Key::H, ToggleHidden),
                 (ctrl, Key::L, EditPath),

@@ -2,7 +2,7 @@ use super::{Action, App, Dialog, DragPaths};
 use crate::fsops::{self, Entry};
 use crate::palette::{self, COMMANDS, Cmd};
 use crate::preview::{Content, State};
-use crate::tab::{SortKey, Tab, ViewMode};
+use crate::tab::{ICON_SIZES, SortKey, Tab, ViewMode};
 use crate::theme::*;
 use crate::thumbs::{self, Thumbs};
 use crate::util::{self, Category};
@@ -15,7 +15,6 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 const ROW_H: f32 = 26.0;
-const TILE: egui::Vec2 = egui::Vec2::new(124.0, 142.0);
 
 impl App {
     pub(super) fn draw(&mut self, ui: &mut Ui) {
@@ -34,20 +33,25 @@ impl App {
             .show(ui, |ui| self.status_bar(ui));
         // Side panels yield to the file list in narrow windows.
         let width = ui.available_width();
+        // Both can be toggled, or dragged closed past their minimum width and back open.
+        let mut show = self.show_sidebar;
         Panel::left("sidebar")
             .default_size(190.0)
             .min_size(120.0_f32.min(width * 0.25))
             .max_size((width * 0.25).max(120.0))
+            .drag_to_open(true)
             .frame(Frame::new().fill(PANEL).inner_margin(Margin::symmetric(8, 4)))
-            .show(ui, |ui| self.sidebar(ui, &mut actions));
-        if self.show_preview {
-            Panel::right("preview")
-                .default_size(360.0)
-                .min_size(160.0_f32.min(width * 0.4))
-                .max_size((width * 0.4).max(160.0))
-                .frame(Frame::new().fill(PANEL).inner_margin(Margin::symmetric(12, 4)))
-                .show(ui, |ui| self.preview_panel(ui));
-        }
+            .show_collapsible(ui, &mut show, |ui| self.sidebar(ui, &mut actions));
+        self.show_sidebar = show;
+        let mut show = self.show_preview;
+        Panel::right("preview")
+            .default_size(360.0)
+            .min_size(160.0_f32.min(width * 0.4))
+            .max_size((width * 0.4).max(160.0))
+            .drag_to_open(true)
+            .frame(Frame::new().fill(PANEL).inner_margin(Margin::symmetric(12, 4)))
+            .show_collapsible(ui, &mut show, |ui| self.preview_panel(ui));
+        self.show_preview = show;
         CentralPanel::default().frame(Frame::new().fill(BG)).show(ui, |ui| {
             let full = ui.max_rect();
             self.pane_rects.clear();
@@ -116,13 +120,47 @@ impl App {
         CentralPanel::default()
             .frame(Frame::new().fill(BG).inner_margin(Margin::symmetric(4, 0)))
             .show(ui, |ui| {
+                self.zoom_wheel(ui, p, actions);
                 let pane = &self.panes[p];
-                if pane.tabs[pane.active].mode == ViewMode::Grid {
+                if pane.tabs[pane.active].mode.is_grid() {
                     self.file_grid(ui, p, actions);
                 } else {
                     self.file_list(ui, p, actions);
                 }
             });
+    }
+
+    /// Ctrl+wheel over the file area steps through the view modes.
+    fn zoom_wheel(&mut self, ui: &mut Ui, p: usize, actions: &mut Vec<Action>) {
+        let rect = ui.max_rect();
+        let delta = ui.input(|i| {
+            if !i.pointer.hover_pos().is_some_and(|pos| rect.contains(pos)) {
+                return 0.0;
+            }
+            i.raw
+                .events
+                .iter()
+                .map(|e| match e {
+                    egui::Event::MouseWheel { unit, delta, modifiers, .. } if modifiers.ctrl || modifiers.command => match unit {
+                        egui::MouseWheelUnit::Point => delta.y / 60.0,
+                        _ => delta.y.signum(),
+                    },
+                    _ => 0.0,
+                })
+                .sum::<f32>()
+        });
+        if delta == 0.0 {
+            return;
+        }
+        // Touchpads send many small deltas; accumulate them into whole steps.
+        let acc = &mut self.zoom_accum;
+        *acc += delta;
+        let steps = acc.trunc() as i32;
+        if steps != 0 {
+            *acc -= steps as f32;
+            actions.push(Action::FocusPane(p));
+            actions.push(Action::Zoom(steps));
+        }
     }
 
     fn tab_bar(&mut self, ui: &mut Ui, p: usize, actions: &mut Vec<Action>) {
@@ -190,6 +228,12 @@ impl App {
     fn toolbar(&mut self, ui: &mut Ui, p: usize, actions: &mut Vec<Action>) {
         let last_pane = p == self.panes.len() - 1;
         ui.horizontal_centered(|ui| {
+            if p == 0 {
+                let tip = if self.show_sidebar { "Hide sidebar (Ctrl+B)" } else { "Show sidebar (Ctrl+B)" };
+                if glyph_button(ui, Glyph::Sidebar, true, self.show_sidebar, tip) {
+                    actions.push(Action::Cmd(Cmd::ToggleSidebar));
+                }
+            }
             let pane = &self.panes[p];
             let tab = &pane.tabs[pane.active];
             let mut nav = |cmd| {
@@ -226,8 +270,8 @@ impl App {
                 }
                 let pane = &self.panes[p];
                 let tab = &pane.tabs[pane.active];
-                let grid = tab.mode == ViewMode::Grid;
-                if glyph_button(ui, Glyph::Grid, true, grid, "Grid view (Ctrl+G)") {
+                let grid = tab.mode.is_grid();
+                if glyph_button(ui, Glyph::Grid, true, grid, "Icons / details view (Ctrl+G, Ctrl+scroll to resize)") {
                     actions.push(Action::FocusPane(p));
                     actions.push(Action::Cmd(Cmd::ToggleGrid));
                 }
@@ -483,10 +527,20 @@ impl App {
     fn file_grid(&mut self, ui: &mut Ui, p: usize, actions: &mut Vec<Action>) {
         let pane_active = p == self.active_pane;
         let thumbs = &mut self.thumbs;
+        let cut = self.clip.as_ref().filter(|c| c.cut).map(|c| &c.paths);
+        let dragging = self.dragging.as_deref();
         let pane = &mut self.panes[p];
         let tab = &mut pane.tabs[pane.active];
         let full = ui.available_rect_before_wrap();
-        let cols = ((full.width() - 8.0) / TILE.x).floor().max(1.0) as usize;
+        let mode = tab.mode;
+        let (cell, radius) = match mode {
+            ViewMode::Icons(i) => {
+                let s = ICON_SIZES[i.min(ICON_SIZES.len() - 1)];
+                (vec2((s + 28.0).max(96.0), s + 56.0), 8)
+            }
+            _ => (vec2(240.0_f32.min(full.width() - 8.0).max(120.0), ROW_H), 5),
+        };
+        let cols = ((full.width() - 8.0) / cell.x).floor().max(1.0) as usize;
         tab.grid_cols = cols;
         ui.add_space(6.0);
         if tab.view.is_empty() {
@@ -495,10 +549,10 @@ impl App {
             return;
         }
         let rows = tab.view.len().div_ceil(cols);
-        let scroll = scroll_area(tab, ("grid", tab.id), TILE.y, cols);
+        let scroll = scroll_area(tab, ("grid", tab.id), cell.y, cols);
         let ctrl_shift = ui.input(|i| (i.modifiers.ctrl, i.modifiers.shift));
-        let gap = ((full.width() - 8.0) - cols as f32 * TILE.x) / cols as f32;
-        let out = scroll.show_rows(ui, TILE.y, rows, |ui, range| {
+        let gap = ((full.width() - 8.0) - cols as f32 * cell.x) / cols as f32;
+        let out = scroll.show_rows(ui, cell.y, rows, |ui, range| {
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
             for r in range {
                 ui.horizontal(|ui| {
@@ -507,23 +561,35 @@ impl App {
                         let vi = r * cols + c;
                         let Some(&ei) = tab.view.get(vi) else { break };
                         let e = &tab.entries[ei];
-                        let (rect, resp) = ui.allocate_exact_size(vec2(TILE.x + gap, TILE.y), Sense::click_and_drag());
-                        let tile = Rect::from_center_size(rect.center(), TILE - vec2(8.0, 8.0));
+                        let (rect, resp) = ui.allocate_exact_size(vec2(cell.x + gap, cell.y), Sense::click_and_drag());
+                        let tile = match mode {
+                            ViewMode::Icons(_) => Rect::from_center_size(rect.center(), cell - vec2(8.0, 8.0)),
+                            _ => rect.shrink2(vec2(4.0, 1.0)),
+                        };
                         let selected = tab.is_selected(vi);
                         let drop_target = e.is_dir && drop_hover(&resp, &e.path);
                         if e.is_dir {
                             record_folder(ui.ctx(), tile, &e.path);
                         }
                         let painter = ui.painter();
+                        let corner = CornerRadius::same(radius);
                         if selected {
-                            painter.rect_filled(tile, CornerRadius::same(8), if pane_active { SELECT } else { SELECT_DIM });
+                            painter.rect_filled(tile, corner, if pane_active { SELECT } else { SELECT_DIM });
                         } else if resp.hovered() || drop_target {
-                            painter.rect_filled(tile, CornerRadius::same(8), HOVER);
+                            painter.rect_filled(tile, corner, HOVER);
                         }
                         if drop_target {
-                            painter.rect_stroke(tile, CornerRadius::same(8), Stroke::new(1.5, ACCENT), egui::StrokeKind::Inside);
+                            painter.rect_stroke(tile, corner, Stroke::new(1.5, ACCENT), egui::StrokeKind::Inside);
                         }
-                        paint_tile(painter, thumbs, tile, e);
+                        if tab.cursor == Some(vi) && !tab.marked.is_empty() && pane_active {
+                            painter.rect_stroke(tile, corner, Stroke::new(1.0, ACCENT), egui::StrokeKind::Inside);
+                        }
+                        let faded = cut.is_some_and(|c| c.contains(&e.path))
+                            || dragging.is_some_and(|d| d.0.contains(&e.path));
+                        match mode {
+                            ViewMode::Icons(_) => paint_tile(painter, thumbs, tile, e, faded),
+                            _ => paint_cell(painter, tile, e, faded),
+                        }
                         row_interactions(ui, &resp, tab, vi, e, ctrl_shift, actions, p);
                     }
                 });
@@ -1332,8 +1398,28 @@ fn paint_row(
     }
 }
 
-fn paint_tile(painter: &Painter, thumbs: &mut Thumbs, tile: Rect, e: &Entry) {
-    let thumb_area = Rect::from_min_size(tile.min + vec2(8.0, 8.0), vec2(tile.width() - 16.0, 86.0));
+/// A List-mode cell: icon and name on one line.
+fn paint_cell(painter: &Painter, cell: Rect, e: &Entry, faded: bool) {
+    let alpha = if faded { 0.45 } else { 1.0 };
+    let cy = cell.center().y;
+    draw_icon(painter, Pos2::new(cell.left() + 14.0, cy), util::category(&e.ext, e.is_dir));
+    let color = if e.hidden { DIM } else { TEXT };
+    painter.with_clip_rect(cell.shrink2(vec2(6.0, 0.0)).intersect(painter.clip_rect())).text(
+        Pos2::new(cell.left() + 30.0, cy),
+        Align2::LEFT_CENTER,
+        &e.name,
+        FontId::proportional(BODY),
+        color.gamma_multiply(alpha),
+    );
+}
+
+fn paint_tile(painter: &Painter, thumbs: &mut Thumbs, tile: Rect, e: &Entry, faded: bool) {
+    let alpha = if faded { 0.45 } else { 1.0 };
+    let side = tile.width().min(tile.height() - 48.0) - 16.0;
+    let thumb_area = Rect::from_center_size(
+        Pos2::new(tile.center().x, tile.top() + 8.0 + side / 2.0),
+        vec2(tile.width() - 16.0, side),
+    );
     let renderer = if e.is_dir { None } else { thumbs::renderer_for(&e.ext) };
     let mut drew = false;
     if let Some(r) = renderer {
@@ -1341,20 +1427,21 @@ fn paint_tile(painter: &Painter, thumbs: &mut Thumbs, tile: Rect, e: &Entry) {
             let ts = tex.size_vec2();
             let scale = (thumb_area.width() / ts.x).min(thumb_area.height() / ts.y).min(1.0);
             let rect = Rect::from_center_size(thumb_area.center(), ts * scale);
-            painter.image(tex.id(), rect, UV, Color32::WHITE);
+            painter.image(tex.id(), rect, UV, Color32::WHITE.gamma_multiply(alpha));
             drew = true;
         }
     }
     if !drew {
         let cat = util::category(&e.ext, e.is_dir);
-        draw_icon_scaled(painter, thumb_area.center(), cat, 3.6);
+        draw_icon_scaled(painter, thumb_area.center(), cat, side / 24.0);
     }
-    let mut job = egui::text::LayoutJob::simple(e.name.clone(), FontId::proportional(12.5), if e.hidden { DIM } else { TEXT }, tile.width() - 12.0);
+    let color = if e.hidden { DIM } else { TEXT }.gamma_multiply(alpha);
+    let mut job = egui::text::LayoutJob::simple(e.name.clone(), FontId::proportional(12.5), color, tile.width() - 12.0);
     job.wrap.max_rows = 2;
     job.wrap.break_anywhere = true;
     job.halign = Align::Center;
     let galley = painter.layout_job(job);
-    painter.galley(Pos2::new(tile.center().x, thumb_area.bottom() + 8.0), galley, TEXT);
+    painter.galley(Pos2::new(tile.center().x, thumb_area.bottom() + 8.0), galley, color);
 }
 
 // ---------------------------------------------------------------- dialogs
@@ -1454,6 +1541,7 @@ enum Glyph {
     Plus,
     Eye,
     Panel,
+    Sidebar,
     Split,
     Grid,
     Search,
@@ -1522,6 +1610,12 @@ fn paint_glyph(p: &Painter, c: Pos2, glyph: Glyph, color: Color32) {
             p.rect_stroke(r, CornerRadius::same(2), stroke, egui::StrokeKind::Middle);
             let side = Rect::from_min_max(Pos2::new(r.right() - 5.5, r.top()), r.max);
             p.rect_filled(side, CornerRadius { nw: 0, sw: 0, ne: 2, se: 2 }, color);
+        }
+        Glyph::Sidebar => {
+            let r = Rect::from_center_size(c, vec2(15.0, 12.0));
+            p.rect_stroke(r, CornerRadius::same(2), stroke, egui::StrokeKind::Middle);
+            let side = Rect::from_min_max(r.min, Pos2::new(r.left() + 5.5, r.bottom()));
+            p.rect_filled(side, CornerRadius { nw: 2, sw: 2, ne: 0, se: 0 }, color);
         }
         Glyph::Split => {
             let r = Rect::from_center_size(c, vec2(15.0, 12.0));

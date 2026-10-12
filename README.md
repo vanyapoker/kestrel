@@ -5,7 +5,8 @@ Rust + egui (OpenGL); all filesystem work happens off the UI thread.
 
     cargo run --release -- [path]
 
-Features: tabs, split view, list and thumbnail grid views, recursive search,
+Features: tabs, split view, details/list/icon views (Ctrl+wheel to zoom),
+hideable sidebar and preview panel, recursive search,
 command palette, background copy/move with progress (uses `copy_file_range`,
 so copies on btrfs/xfs are instant reflinks), trash, drag and drop, live
 folder sizes, auto-refresh on changes, and previews for images, code/text,
@@ -37,9 +38,11 @@ Optional tools for previews: `pdftoppm`/`pdfinfo` (poppler), `ffmpeg`/`ffprobe`,
 | Ctrl+T / Ctrl+W | New / close tab (middle-click also works) |
 | Ctrl+Tab, Ctrl+1..9 | Switch tabs |
 | F6 or Ctrl+\\ | Toggle split view; Tab switches pane |
-| Ctrl+G | Toggle grid view |
+| Ctrl+G | Toggle icons / details view |
+| Ctrl+wheel | Zoom: details → list → small icons → … → huge icons |
 | Ctrl+H | Toggle hidden files |
 | F3 | Toggle preview panel |
+| Ctrl+B | Toggle sidebar (both panels can also be dragged shut) |
 | F5 | Refresh |
 
 Drag files onto folders, tabs, breadcrumbs or the sidebar to move them

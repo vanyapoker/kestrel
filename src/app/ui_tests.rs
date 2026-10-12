@@ -189,3 +189,50 @@ fn escape_cancels_drag() {
     assert!(dir.join("a.txt").exists(), "cancelled drag must not move the file");
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn ctrl_wheel_steps_view_mode() {
+    let dir = sandbox("zoom");
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| a.row_rects.contains_key(&dir.join("a.txt")));
+    d.move_to(Pos2::new(700.0, 400.0));
+    let wheel = |y: f32, unit| Event::MouseWheel {
+        unit,
+        delta: vec2(0.0, y),
+        modifiers: Modifiers::CTRL,
+        phase: egui::TouchPhase::Move,
+    };
+    d.modifiers = Modifiers::CTRL;
+    d.frame(vec![wheel(1.0, egui::MouseWheelUnit::Line)]);
+    assert_eq!(d.app.tab().mode, ViewMode::List);
+    d.frame(vec![wheel(1.0, egui::MouseWheelUnit::Line)]);
+    d.frame(vec![wheel(1.0, egui::MouseWheelUnit::Line)]);
+    assert_eq!(d.app.tab().mode, ViewMode::Icons(1));
+    // Touchpad: small deltas add up to one step.
+    for _ in 0..3 {
+        d.frame(vec![wheel(-25.0, egui::MouseWheelUnit::Point)]);
+    }
+    assert_eq!(d.app.tab().mode, ViewMode::Icons(0));
+    d.modifiers = Modifiers::NONE;
+    // A plain wheel scrolls instead of zooming.
+    d.frame(vec![wheel(1.0, egui::MouseWheelUnit::Line)]);
+    assert_eq!(d.app.tab().mode, ViewMode::Icons(0));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn sidebars_hide() {
+    let dir = sandbox("panels");
+    let mut d = Driver::new(dir.clone());
+    d.frame(Vec::new());
+    let before = d.app.pane_rects[0];
+    d.app.run_cmd(Cmd::ToggleSidebar);
+    d.app.run_cmd(Cmd::TogglePreview);
+    for _ in 0..30 {
+        d.frame(Vec::new()); // let the slide animation finish
+    }
+    let after = d.app.pane_rects[0];
+    assert!(after.left() < before.left() - 100.0, "{before:?} -> {after:?}");
+    assert!(after.right() > before.right() + 100.0, "{before:?} -> {after:?}");
+    fs::remove_dir_all(dir).unwrap();
+}

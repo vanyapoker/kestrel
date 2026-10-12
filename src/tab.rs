@@ -14,10 +14,42 @@ pub enum SortKey {
     Kind,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ViewMode {
+    /// One row per item with size, date and type columns.
+    Details,
+    /// Compact cells with an icon and name, laid out in a grid.
     List,
-    Grid,
+    /// Thumbnail tiles; the index picks a size from `ICON_SIZES`.
+    Icons(usize),
+}
+
+/// Thumbnail edge length for each icon zoom level.
+pub const ICON_SIZES: [f32; 6] = [48.0, 72.0, 96.0, 128.0, 176.0, 240.0];
+
+impl ViewMode {
+    fn level(self) -> usize {
+        match self {
+            ViewMode::Details => 0,
+            ViewMode::List => 1,
+            ViewMode::Icons(i) => 2 + i.min(ICON_SIZES.len() - 1),
+        }
+    }
+
+    /// Steps through Details → List → icons, smallest to largest.
+    pub fn zoom(self, steps: i32) -> Self {
+        let max = ICON_SIZES.len() as i32 + 1;
+        match (self.level() as i32 + steps).clamp(0, max) {
+            0 => ViewMode::Details,
+            1 => ViewMode::List,
+            l => ViewMode::Icons(l as usize - 2),
+        }
+    }
+
+    /// Whether items flow in a grid (arrow keys move in two dimensions).
+    pub fn is_grid(self) -> bool {
+        self != ViewMode::Details
+    }
 }
 
 pub struct Search {
@@ -80,7 +112,7 @@ impl Tab {
             filter: String::new(),
             sort: SortKey::Name,
             ascending: true,
-            mode: ViewMode::List,
+            mode: ViewMode::Details,
             loading: false,
             error: None,
             generation: 0,
@@ -282,6 +314,16 @@ mod tests {
         t.filter = "a".into();
         t.apply_view(&HashMap::new(), true);
         assert_eq!(t.selection_count(), 1); // hidden items drop out of the selection
+    }
+
+    #[test]
+    fn zoom_levels() {
+        let m = ViewMode::Details;
+        assert_eq!(m.zoom(-1), ViewMode::Details);
+        assert_eq!(m.zoom(1), ViewMode::List);
+        assert_eq!(m.zoom(2), ViewMode::Icons(0));
+        assert_eq!(m.zoom(100), ViewMode::Icons(ICON_SIZES.len() - 1));
+        assert_eq!(ViewMode::Icons(0).zoom(-2), ViewMode::Details);
     }
 
     #[test]
