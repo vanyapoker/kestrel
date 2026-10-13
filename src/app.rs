@@ -488,7 +488,6 @@ impl App {
             self.restart_search();
             return;
         }
-        tab.select_after_load = tab.cursor_entry().map(|e| e.path.clone());
         self.reload_active(true);
     }
 
@@ -575,11 +574,14 @@ impl App {
             }
             tab.loading = false;
             tab.disk = fsops::disk_space(&tab.path);
+            // `view` indexes the old entries; selection is restored by path below.
+            let path_at = |vi: Option<usize>| vi.and_then(|vi| tab.entry(vi)).map(|e| e.path.clone());
+            let kept = (tab.cursor.zip(path_at(tab.cursor)), path_at(tab.anchor));
             if !l.soft {
                 tab.cursor = None;
+                tab.anchor = None;
                 tab.force_offset = Some(0.0);
             }
-            // `view` indexes the old entries; selection is restored by path below.
             tab.view.clear();
             match l.result {
                 Ok(entries) => {
@@ -603,6 +605,8 @@ impl App {
             tab.apply_view(sizes, hidden);
             if let Some(p) = tab.select_after_load.take() {
                 tab.select_path(&p);
+            } else if l.soft {
+                tab.restore_selection(kept.0, kept.1);
             }
             let id = tab.id;
             self.start_sizing(id);
@@ -1570,9 +1574,6 @@ fn start_listing(tab: &mut Tab, tx: &Sender<Listing>, ctx: &egui::Context, soft:
     tab.loading = true;
     tab.cancel.store(true, Ordering::Relaxed);
     tab.cancel = Arc::new(AtomicBool::new(false));
-    if soft && tab.select_after_load.is_none() {
-        tab.select_after_load = tab.cursor_entry().map(|e| e.path.clone());
-    }
     let (tx, ctx) = (tx.clone(), ctx.clone());
     let (tab_id, generation, path) = (tab.id, tab.generation, tab.path.clone());
     std::thread::spawn(move || {

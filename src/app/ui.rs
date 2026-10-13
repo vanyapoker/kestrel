@@ -4,7 +4,7 @@ use crate::complete;
 use crate::devices::DevOp;
 use crate::fsops::{self, Entry};
 use crate::palette::{self, COMMANDS, Cmd};
-use crate::preview::{Content, State};
+use crate::preview::{Content, State, Table, TextLink};
 use crate::tab::{ICON_SIZES, SortKey, Tab, ViewMode};
 use crate::theme::*;
 use crate::thumbs::{self, Thumbs};
@@ -18,6 +18,123 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 const ROW_H: f32 = 26.0;
+
+pub(super) fn preview_text(ui: &mut Ui, job: &egui::text::LayoutJob, links: &[TextLink]) {
+    let (pos, galley, _) = egui::Label::new(job.clone())
+        .wrap_mode(egui::TextWrapMode::Extend)
+        .layout_in_ui(ui);
+    ui.painter().galley(pos, galley.clone(), pal().text);
+    let mut row_start = 0;
+    for (row_index, row) in galley.rows.iter().enumerate() {
+        let row_end = row_start + row.char_count_excluding_newline().0;
+        if ui.is_rect_visible(row.rect().translate(pos.to_vec2())) {
+            let first = links.partition_point(|link| link.chars.end <= row_start);
+            for (index, link) in links.iter().enumerate().skip(first).take_while(|(_, link)| link.chars.start < row_end) {
+                let start = link.chars.start.max(row_start) - row_start;
+                let end = link.chars.end.min(row_end) - row_start;
+                let rect = Rect::from_min_max(
+                    pos + row.pos.to_vec2() + vec2(row.x_offset(egui::text::CharIndex(start)), 0.0),
+                    pos + row.pos.to_vec2() + vec2(row.x_offset(egui::text::CharIndex(end)), row.size.y),
+                );
+                ui.painter().line_segment(
+                    [rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, pal().accent),
+                );
+                let response = ui.interact(rect, ui.id().with(("preview_link", index, row_index)), Sense::click())
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text(&link.url);
+                if response.clicked() {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(&link.url));
+                }
+            }
+        }
+        row_start = row_end + usize::from(row.ends_with_newline);
+    }
+}
+
+/// Draws a CSV/TSV table with a sticky header row and a row-number gutter.
+/// Web links in cells are underlined and open on click.
+pub(super) fn preview_table(ui: &mut Ui, table: &Table) {
+    const MAX_COL_CHARS: usize = 40;
+    const PAD: f32 = 8.0;
+    let font = egui::FontId::monospace(12.5);
+    let row_h = ui.fonts_mut(|f| f.row_height(&font)) + 6.0;
+    let glyph = ui.fonts_mut(|f| f.glyph_width(&font, '0'));
+    let body = table.rows.len().saturating_sub(1);
+    let gutter = body.max(1).to_string().len() as f32 * glyph + 2.0 * PAD;
+    let mut xs = vec![gutter];
+    for &w in &table.widths {
+        xs.push(xs.last().unwrap() + w.clamp(1, MAX_COL_CHARS) as f32 * glyph + 2.0 * PAD);
+    }
+    let total = vec2(*xs.last().unwrap(), row_h * (body + 1) as f32);
+    let p = pal();
+    // Solid bars: floating ones are invisible until hovered, hiding that wide tables scroll sideways.
+    ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+    ScrollArea::both().auto_shrink([false; 2]).id_salt("preview_table").show_viewport(ui, |ui, viewport| {
+        let (rect, response) = ui.allocate_exact_size(total, Sense::hover());
+        let clip = ui.clip_rect();
+        let painter = ui.painter_at(clip);
+        // Rows scroll under the sticky header, which must not pass clicks through.
+        let body_clip = clip.with_min_y(clip.top() + row_h);
+        let hover = response.hover_pos();
+        let (mut tooltip, mut on_link) = (None, false);
+        let mut draw_row = |row_index: usize, y: f32, color: Color32, clip: Rect| {
+            for (col, text) in table.rows[row_index].iter().enumerate().take(xs.len() - 1) {
+                let r = Rect::from_min_max(egui::pos2(rect.left() + xs[col], y), egui::pos2(rect.left() + xs[col + 1], y + row_h));
+                let text_clip = r.shrink2(vec2(PAD, 0.0)).intersect(clip);
+                if !text_clip.is_positive() {
+                    continue;
+                }
+                let galley = painter.layout_no_wrap(text.clone(), font.clone(), color);
+                let pos = egui::pos2(r.left() + PAD, r.center().y - galley.size().y / 2.0);
+                painter.with_clip_rect(text_clip).galley(pos, galley.clone(), color);
+                if row_index > 0 && let Some(line) = galley.rows.first() {
+                    for (i, link) in crate::preview::text_links(text).iter().enumerate() {
+                        let x = |c| pos.x + line.x_offset(egui::text::CharIndex(c));
+                        let link_rect = Rect::from_x_y_ranges(x(link.chars.start)..=x(link.chars.end), r.y_range())
+                            .intersect(text_clip);
+                        if !link_rect.is_positive() {
+                            continue;
+                        }
+                        let underline_y = pos.y + line.size.y;
+                        painter.hline(link_rect.x_range(), underline_y, Stroke::new(1.0, p.accent));
+                        let id = ui.id().with(("csv_link", row_index, col, i));
+                        let link_response = ui.interact(link_rect, id, Sense::click())
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .on_hover_text(&link.url);
+                        on_link |= link_response.hovered();
+                        if link_response.clicked() {
+                            ui.ctx().open_url(egui::OpenUrl::new_tab(&link.url));
+                        }
+                    }
+                }
+                if !on_link && text.chars().count() > MAX_COL_CHARS && hover.is_some_and(|h| text_clip.contains(h)) {
+                    tooltip = Some(text.clone());
+                }
+            }
+        };
+        let first = ((viewport.min.y / row_h) as usize).max(1);
+        let last = ((viewport.max.y / row_h).ceil() as usize + 1).min(body + 1);
+        for i in first..last {
+            let y = rect.top() + i as f32 * row_h;
+            if i % 2 == 0 {
+                painter.rect_filled(Rect::from_min_size(egui::pos2(rect.left(), y), vec2(total.x, row_h)), 0.0, p.panel);
+            }
+            painter.text(
+                egui::pos2(rect.left() + gutter - PAD, y + row_h / 2.0), Align2::RIGHT_CENTER, i.to_string(), font.clone(), p.faint,
+            );
+            draw_row(i, y, p.text, body_clip);
+        }
+        // Header sticks to the top of the viewport.
+        let y = clip.top();
+        let header = Rect::from_min_size(egui::pos2(rect.left(), y), vec2(total.x, row_h));
+        painter.rect_filled(header, 0.0, p.surface);
+        painter.hline(header.x_range(), header.bottom(), Stroke::new(1.0, p.border));
+        draw_row(0, y, p.accent, clip);
+        if let Some(text) = tooltip {
+            response.on_hover_text(text);
+        }
+    });
+}
 
 impl App {
     pub(super) fn draw(&mut self, ui: &mut Ui) {
@@ -1027,6 +1144,11 @@ impl App {
                 Content::Text { lines, truncated, .. } => {
                     rows.push(("Lines".into(), format!("{lines}{}", if *truncated { "+" } else { "" })))
                 }
+                Content::Table(t) => {
+                    let plus = if t.truncated { "+" } else { "" };
+                    rows.push(("Rows".into(), format!("{}{plus}", t.rows.len().saturating_sub(1))));
+                    rows.push(("Columns".into(), t.widths.len().to_string()));
+                }
                 Content::Dir { items: Some(n) } => rows.push(("Items".into(), n.to_string())),
                 _ => {}
             }
@@ -1063,19 +1185,26 @@ impl App {
                     ui.painter().image(tex.id(), r, UV, Color32::WHITE);
                 });
             }
-            State::Ready(Content::Text { job, truncated, .. }) => {
+            State::Ready(Content::Text { job, links, truncated, .. }) => {
                 Frame::new()
                     .fill(pal().bg)
                     .corner_radius(CornerRadius::same(6))
                     .inner_margin(Margin::same(8))
                     .show(ui, |ui| {
                         ScrollArea::both().auto_shrink([false; 2]).id_salt("preview_text").show(ui, |ui| {
-                            ui.add(egui::Label::new(job.clone()).wrap_mode(egui::TextWrapMode::Extend));
+                            preview_text(ui, job, links);
                             if *truncated {
                                 ui.label(RichText::new("… preview truncated").color(pal().faint).italics());
                             }
                         });
                     });
+            }
+            State::Ready(Content::Table(table)) => {
+                Frame::new()
+                    .fill(pal().bg)
+                    .corner_radius(CornerRadius::same(6))
+                    .inner_margin(Margin::same(8))
+                    .show(ui, |ui| preview_table(ui, table));
             }
             State::Ready(Content::Dir { items }) => {
                 ui.add_space(40.0);

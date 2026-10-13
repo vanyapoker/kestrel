@@ -237,6 +237,17 @@ impl Tab {
         }
     }
 
+    /// After a background reload, puts the cursor and anchor back on the same files
+    /// without scrolling or touching the marks. If the cursor's file is gone, the
+    /// cursor stays at the same position, like after a delete.
+    pub fn restore_selection(&mut self, cursor: Option<(usize, PathBuf)>, anchor: Option<PathBuf>) {
+        let find = |p: &PathBuf| self.view.iter().position(|&i| &self.entries[i].path == p);
+        if let Some((vi, path)) = cursor {
+            self.cursor = find(&path).or_else(|| self.view.len().checked_sub(1).map(|last| vi.min(last)));
+        }
+        self.anchor = anchor.and_then(|p| find(&p)).or(self.cursor);
+    }
+
     pub fn apply_view(&mut self, sizes: &HashMap<PathBuf, u64>, show_hidden: bool) {
         let keep = self.cursor_entry().map(|e| e.path.clone());
         let needle = self.filter.to_lowercase();

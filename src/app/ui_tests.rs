@@ -1,7 +1,7 @@
 //! Drives the real UI headlessly with synthetic pointer input.
 
 use super::*;
-use eframe::egui::{Event, PointerButton, Pos2, RawInput, Rect, vec2};
+use eframe::egui::{Color32, Event, FontId, PointerButton, Pos2, RawInput, Rect, vec2};
 use std::fs;
 use std::time::{Duration, Instant};
 
@@ -83,6 +83,142 @@ fn sandbox(name: &str) -> PathBuf {
     fs::write(d.join("a.txt"), "a").unwrap();
     fs::write(d.join("b.txt"), "b").unwrap();
     d
+}
+
+#[test]
+fn folder_updates_keep_selection_and_scroll() {
+    let dir = sandbox("refresh-keep");
+    for i in 0..100 {
+        fs::write(dir.join(format!("file-{i:03}.txt")), "text").unwrap();
+    }
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| !a.tab().loading);
+    let cursor_name = |a: &App| a.tab().cursor_entry().map(|e| e.name.clone());
+    d.app.tab_mut().select_path(&dir.join("file-090.txt"));
+    d.frame(Vec::new());
+    d.frame(Vec::new());
+    let offset = d.app.tab().scroll_offset;
+    assert!(offset > 0.0);
+
+    // A new file sorting above the cursor shifts every row by one.
+    fs::write(dir.join("a-new.txt"), "new").unwrap();
+    d.until("folder update", |a| a.tab().entries.iter().any(|e| e.name == "a-new.txt"));
+    d.frame(Vec::new());
+    assert_eq!(cursor_name(&d.app).as_deref(), Some("file-090.txt"));
+    assert_eq!(d.app.tab().scroll_offset, offset);
+
+    // Marks survive an update too.
+    let vi = d.app.tab().cursor.unwrap() + 2;
+    d.app.tab_mut().toggle_mark(vi);
+    let marked = d.app.tab().marked.clone();
+    assert_eq!(marked.len(), 2);
+    fs::write(dir.join("b-new.txt"), "new").unwrap();
+    d.until("second update", |a| a.tab().entries.iter().any(|e| e.name == "b-new.txt"));
+    assert_eq!(d.app.tab().marked, marked);
+    assert_eq!(cursor_name(&d.app).as_deref(), Some("file-092.txt"));
+
+    // When the cursor's file goes away, the cursor stays in place, on its neighbour.
+    d.app.tab_mut().select_path(&dir.join("file-090.txt"));
+    fs::remove_file(dir.join("file-090.txt")).unwrap();
+    d.until("removal", |a| a.tab().entries.iter().all(|e| e.name != "file-090.txt"));
+    assert_eq!(cursor_name(&d.app).as_deref(), Some("file-091.txt"));
+
+    d.app.refresh();
+    d.until("refresh", |a| !a.tab().loading);
+    assert_eq!(cursor_name(&d.app).as_deref(), Some("file-091.txt"));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn preview_web_link_click_opens_url() {
+    let ctx = egui::Context::default();
+    let url = "https://example.com/?a=1&b=2";
+    let job = egui::text::LayoutJob::simple(
+        format!("Привет {url} trailing"), FontId::monospace(12.5), Color32::WHITE, f32::INFINITY,
+    );
+    let links = vec![crate::preview::TextLink { url: url.into(), chars: 7..7 + url.chars().count() }];
+    let mut target = Pos2::ZERO;
+    for pressed in [None, Some(true), Some(false)] {
+        let mut events = vec![Event::PointerMoved(target)];
+        if let Some(pressed) = pressed {
+            events.push(Event::PointerButton {
+                pos: target, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE,
+            });
+        }
+        let mut out = ctx.run_ui(RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 300.0))),
+            events, ..Default::default()
+        }, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                let galley = ui.fonts_mut(|f| f.layout_job(job.clone()));
+                target = ui.cursor().min + vec2(
+                    galley.rows[0].x_offset(egui::text::CharIndex(8)), galley.rows[0].size.y / 2.0,
+                );
+                super::ui::preview_text(ui, &job, &links);
+            });
+        });
+        out.textures_delta.clear();
+        if pressed == Some(false) {
+            assert!(out.platform_output.commands.iter().any(|command| {
+                matches!(command, egui::OutputCommand::OpenUrl(open) if open.url == url)
+            }));
+        }
+    }
+}
+
+#[test]
+fn csv_preview_scrolls_sideways_and_opens_links() {
+    let ctx = egui::Context::default();
+    let url = "https://example.com/csv";
+    let wide = "x".repeat(40);
+    let table = crate::preview::Table {
+        rows: vec![vec!["a".into(), "url".into(), "wide".into()], vec!["1".into(), url.into(), wide.clone()]],
+        widths: vec![1, url.len(), wide.len()],
+        truncated: false,
+    };
+    let mut time = 0.0;
+    // Returns the frame's output, a point inside the link, and the scroll area's id.
+    let mut run = |mut events: Vec<Event>, modifiers: Modifiers| {
+        time += 1.0 / 60.0;
+        events.insert(0, Event::ModifiersChanged(modifiers));
+        let (mut link_at, mut scroll_id) = (Pos2::ZERO, egui::Id::NULL);
+        let mut out = ctx.run_ui(RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(300.0, 200.0))),
+            time: Some(time), events, ..Default::default()
+        }, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                scroll_id = ui.make_persistent_id(egui::IdSalt::new("preview_table"));
+                let font = FontId::monospace(12.5);
+                let (row_h, glyph) = ui.fonts_mut(|f| (f.row_height(&font) + 6.0, f.glyph_width(&font, '0')));
+                // Inside the URL in the first body row: past the gutter and the one-char column.
+                link_at = ui.cursor().min + vec2(2.0 * (glyph + 16.0) + 8.0 + 5.0 * glyph, row_h * 1.5);
+                super::ui::preview_table(ui, &table);
+            });
+        });
+        out.textures_delta.clear();
+        (out.platform_output, link_at, scroll_id)
+    };
+    let (_, link_at, scroll_id) = run(Vec::new(), Modifiers::NONE);
+
+    let press = |pressed| Event::PointerButton {
+        pos: link_at, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE,
+    };
+    run(vec![Event::PointerMoved(link_at)], Modifiers::NONE);
+    run(vec![Event::PointerMoved(link_at), press(true)], Modifiers::NONE);
+    let (out, ..) = run(vec![press(false)], Modifiers::NONE);
+    assert!(out.commands.iter().any(|c| matches!(c, egui::OutputCommand::OpenUrl(open) if open.url == url)));
+
+    // Shift + mouse wheel scrolls sideways.
+    let wheel = Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point, delta: vec2(0.0, -200.0), modifiers: Modifiers::SHIFT,
+        phase: egui::TouchPhase::Move,
+    };
+    run(vec![Event::PointerMoved(link_at), wheel], Modifiers::SHIFT);
+    for _ in 0..30 {
+        run(Vec::new(), Modifiers::NONE);
+    }
+    let offset = egui::scroll_area::State::load(&ctx, scroll_id).unwrap().offset;
+    assert!(offset.x > 0.0, "no horizontal scroll: {offset:?}");
 }
 
 #[test]

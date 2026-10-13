@@ -1,6 +1,6 @@
 [package]
 name = "kestrel"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "A fast, keyboard-friendly file manager for Omarchy, inspired by File Pilot"
 license = "MIT"
@@ -8,7 +8,7 @@ repository = "https://github.com/vanyapoker/kestrel"
 
 [dependencies]
 chrono = "0.4.45"
-eframe = { version = "0.36.2", default-features = false, features = ["glow", "wayland", "x11", "default_fonts"] }
+eframe = { version = "0.36.2", default-features = false, features = ["glow", "wayland", "x11", "default_fonts", "links"] }
 ignore = "0.4.33"
 image = "0.25.10"
 libc = "0.2.190"

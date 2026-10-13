@@ -2,6 +2,7 @@ use crate::theme;
 use crate::thumbs::{self, Renderer};
 use eframe::egui::{self, text::LayoutJob, Color32, ColorImage, FontId, TextFormat};
 use std::io::Read;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -14,13 +15,16 @@ const MAX_TEXT_BYTES: usize = 256 * 1024;
 const MAX_TEXT_LINES: usize = 3000;
 const MAX_LINE_CHARS: usize = 1000;
 const MAX_IMAGE_SIDE: u32 = 1600;
+const MAX_TABLE_ROWS: usize = 5000;
+const MAX_CELL_CHARS: usize = 200;
 
 /// Extra metadata rows shown under the preview (dimensions, duration, pages…).
 pub type Info = Vec<(String, String)>;
 
 pub enum Content {
     Image { tex: egui::TextureHandle, info: Info },
-    Text { job: LayoutJob, lines: usize, truncated: bool },
+    Text { job: LayoutJob, links: Vec<TextLink>, lines: usize, truncated: bool },
+    Table(Table),
     Dir { items: Option<usize> },
     Binary { info: Info },
     Error(String),
@@ -33,7 +37,8 @@ pub enum State {
 
 enum Payload {
     Image(ColorImage, Info),
-    Text(LayoutJob, usize, bool),
+    Text(LayoutJob, Vec<TextLink>, usize, bool),
+    Table(Table),
     Dir(Option<usize>),
     Binary(Info),
     Error(String),
@@ -43,6 +48,82 @@ struct Request {
     id: u64,
     path: PathBuf,
     is_dir: bool,
+}
+
+/// A parsed CSV/TSV file; the first row is the header.
+pub struct Table {
+    pub rows: Vec<Vec<String>>,
+    /// Widest cell per column, in chars.
+    pub widths: Vec<usize>,
+    pub truncated: bool,
+}
+
+pub struct TextLink {
+    pub url: String,
+    pub chars: Range<usize>,
+}
+
+/// Find web URLs in the rendered text, including its line-number gutters.
+pub fn text_links(text: &str) -> Vec<TextLink> {
+    let mut links = Vec::new();
+    let mut offset = 0;
+    let mut char_offset = 0;
+    while let Some(start) = text[offset..].find("http://").into_iter()
+        .chain(text[offset..].find("https://")).min()
+    {
+        let start = offset + start;
+        let rest = &text[start..];
+        let end = rest.find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '\'' | '`'))
+            .unwrap_or(rest.len());
+        let mut url = rest[..end].trim_end_matches(['.', ',', ';', ':', '!', '?']);
+        // Strip prose/Markdown closing delimiters, retaining balanced URL parentheses.
+        while let Some(close) = url.chars().last().filter(|c| matches!(c, ')' | ']' | '}')) {
+            let open = match close { ')' => '(', ']' => '[', _ => '{' };
+            if url.matches(close).count() <= url.matches(open).count() {
+                break;
+            }
+            url = &url[..url.len() - 1];
+        }
+        let scheme_len = if url.starts_with("https://") { 8 } else { 7 };
+        if url.len() > scheme_len && !url[scheme_len..].starts_with(['/', ')', ']', '}']) {
+            let chars = char_offset + text[offset..start].chars().count();
+            links.push(TextLink { url: url.to_owned(), chars: chars..chars + url.chars().count() });
+        }
+        char_offset += text[offset..start + end].chars().count();
+        offset = start + end;
+    }
+    links
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn web_links_handle_unicode_and_surrounding_punctuation() {
+        let text = "   1  Привет [site](https://example.com/a_(b)).\n   2  <http://example.org/?a=1&b=2>, file:///tmp/a https://";
+        let links = text_links(text);
+        assert_eq!(links.iter().map(|l| l.url.as_str()).collect::<Vec<_>>(),
+            vec!["https://example.com/a_(b)", "http://example.org/?a=1&b=2"]);
+        for link in links {
+            let selected: String = text.chars().skip(link.chars.start).take(link.chars.len()).collect();
+            assert_eq!(selected, link.url);
+        }
+    }
+
+    #[test]
+    fn csv_quotes_newlines_and_delimiters() {
+        let text = "name,note\r\n\"Smith, J\",\"said \"\"hi\"\"\nthen left\"\nДоe,\n";
+        let (rows, complete) = parse_table(text, sniff_delimiter(text));
+        assert!(complete);
+        assert_eq!(rows, vec![
+            vec!["name", "note"],
+            vec!["Smith, J", "said \"hi\" then left"],
+            vec!["Доe", ""],
+        ]);
+        assert_eq!(sniff_delimiter("a;b;\"c,d,e\"\n"), ';');
+        assert_eq!(sniff_delimiter("a\tb\n"), '\t');
+    }
 }
 
 struct Response {
@@ -111,7 +192,8 @@ impl Preview {
                     tex: ctx.load_texture("preview", img, egui::TextureOptions::LINEAR),
                     info,
                 },
-                Payload::Text(job, lines, truncated) => Content::Text { job, lines, truncated },
+                Payload::Text(job, links, lines, truncated) => Content::Text { job, links, lines, truncated },
+                Payload::Table(table) => Content::Table(table),
                 Payload::Dir(items) => Content::Dir { items },
                 Payload::Binary(info) => Content::Binary { info },
                 Payload::Error(e) => Content::Error(e),
@@ -152,6 +234,11 @@ fn load(path: &Path, is_dir: bool) -> Payload {
     }
     if matches!(crate::util::category(&ext, false), crate::util::Category::Audio) {
         return Payload::Binary(media_rows(path));
+    }
+    if matches!(ext.as_str(), "csv" | "tsv")
+        && let Some(table) = load_table(path, ext == "tsv")
+    {
+        return table;
     }
     load_text(path)
 }
@@ -258,7 +345,95 @@ fn load_text(path: &Path) -> Payload {
             ),
         }
     }
-    Payload::Text(job, lines, truncated)
+    let links = text_links(&job.text);
+    Payload::Text(job, links, lines, truncated)
+}
+
+/// Parses a CSV/TSV file, or `None` to fall back to the plain-text preview.
+fn load_table(path: &Path, tsv: bool) -> Option<Payload> {
+    let file_len = std::fs::metadata(path).ok()?.len();
+    let mut buf = Vec::new();
+    std::fs::File::open(path).ok()?.take(MAX_TEXT_BYTES as u64).read_to_end(&mut buf).ok()?;
+    if buf[..buf.len().min(8192)].contains(&0) {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&buf);
+    let delim = if tsv { '\t' } else { sniff_delimiter(&text) };
+    let (rows, complete) = parse_table(&text, delim);
+    if rows.is_empty() {
+        return None;
+    }
+    let mut widths = vec![0; rows.iter().map(Vec::len).max().unwrap_or(0)];
+    for row in &rows {
+        for (w, cell) in widths.iter_mut().zip(row) {
+            *w = (*w).max(cell.chars().count());
+        }
+    }
+    let truncated = !complete || file_len as usize > buf.len();
+    Some(Payload::Table(Table { rows, widths, truncated }))
+}
+
+/// Picks the separator that occurs most on the first line (`,` `;` tab or `|`).
+fn sniff_delimiter(text: &str) -> char {
+    let first = text.lines().next().unwrap_or("");
+    let mut quoted = false;
+    let mut counts = [(',', 0), (';', 0), ('\t', 0), ('|', 0)];
+    for c in first.chars() {
+        if c == '"' {
+            quoted = !quoted;
+        } else if !quoted && let Some(n) = counts.iter_mut().find(|(d, _)| *d == c) {
+            n.1 += 1;
+        }
+    }
+    counts.iter().fold((',', 0), |best, &n| if n.1 > best.1 { n } else { best }).0
+}
+
+/// RFC 4180-style parsing: quoted fields may hold separators, `""` and newlines.
+/// Returns the rows and whether the whole text was consumed.
+fn parse_table(text: &str, delim: char) -> (Vec<Vec<String>>, bool) {
+    let mut rows = Vec::new();
+    let mut row = Vec::new();
+    let mut cell = String::new();
+    let mut chars = text.chars().peekable();
+    let mut quoted = false;
+    let push = |cell: &mut String, row: &mut Vec<String>| {
+        let mut c = std::mem::take(cell);
+        if c.chars().count() > MAX_CELL_CHARS {
+            c = c.chars().take(MAX_CELL_CHARS).collect::<String>() + "…";
+        }
+        row.push(c);
+    };
+    while let Some(c) = chars.next() {
+        if quoted {
+            match c {
+                '"' if chars.peek() == Some(&'"') => {
+                    chars.next();
+                    cell.push('"');
+                }
+                '"' => quoted = false,
+                '\r' => {}
+                '\n' | '\t' => cell.push(' '),
+                c => cell.push(c),
+            }
+        } else if c == '"' && cell.is_empty() {
+            quoted = true;
+        } else if c == delim {
+            push(&mut cell, &mut row);
+        } else if c == '\n' {
+            push(&mut cell, &mut row);
+            rows.push(std::mem::take(&mut row));
+            if rows.len() >= MAX_TABLE_ROWS {
+                return (rows, chars.peek().is_none());
+            }
+        } else if c != '\r' {
+            cell.push(if c == '\t' { ' ' } else { c });
+        }
+    }
+    if !cell.is_empty() || !row.is_empty() {
+        push(&mut cell, &mut row);
+        rows.push(row);
+    }
+    (rows, true)
 }
 
 /// A highlighting theme in the current palette's colors, rebuilt when the palette changes.
