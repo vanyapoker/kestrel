@@ -983,6 +983,19 @@ impl App {
                         FontId::proportional(BODY),
                         if selected { pal().text } else if unmounted { pal().faint } else { pal().dim },
                     );
+                    // Thin usage bar along the bottom of a mounted drive's row.
+                    let usage = device.filter(|_| !unmounted).and_then(|_| disk_usage(ui.ctx(), path));
+                    if let Some((free, total)) = usage.filter(|u| u.1 > 0) {
+                        let used = 1.0 - free as f32 / total as f32;
+                        let track = Rect::from_min_max(
+                            Pos2::new(rect.left() + 10.0, rect.bottom() - 3.0),
+                            Pos2::new(rect.right() - 10.0, rect.bottom() - 1.5),
+                        );
+                        let fill = Rect::from_min_size(track.min, vec2(track.width() * used.clamp(0.0, 1.0), track.height()));
+                        let color = if used > 0.9 { pal().danger } else { pal().accent };
+                        ui.painter().rect_filled(track, CornerRadius::same(1), pal().border);
+                        ui.painter().rect_filled(fill, CornerRadius::same(1), color);
+                    }
                     if busy {
                         let spin = egui::Spinner::new().size(11.0).color(pal().dim);
                         ui.put(eject_rect, spin);
@@ -1001,7 +1014,13 @@ impl App {
                         let copy = ui.input(|i| i.modifiers.ctrl);
                         actions.push(Action::Drop { paths: paths.0.clone(), dest: path.clone(), copy });
                     }
-                    let hover = if unmounted { format!("{} is not mounted. Click to mount", path.display()) } else { path.display().to_string() };
+                    let hover = if unmounted {
+                        format!("{} is not mounted. Click to mount", path.display())
+                    } else if let Some((free, total)) = usage {
+                        format!("{}\n{} free of {}", path.display(), util::human_size(free), util::human_size(total))
+                    } else {
+                        path.display().to_string()
+                    };
                     let resp = resp.on_hover_text(hover);
                     if resp.clicked() && !busy {
                         actions.push(match device {
@@ -1759,6 +1778,20 @@ fn rubber_band(ui: &Ui, p: usize, tab: &mut Tab, inner: Rect, over_item: bool, c
         tab.force_offset = Some((tab.scroll_offset + speed * 0.4).max(0.0));
     }
     ctx.request_repaint();
+}
+
+/// (free, total) bytes of the filesystem at `path`, cached for a few seconds.
+fn disk_usage(ctx: &egui::Context, path: &Path) -> Option<(u64, u64)> {
+    const TTL: std::time::Duration = std::time::Duration::from_secs(5);
+    let id = egui::Id::new(("disk_usage", path));
+    if let Some((at, usage)) = ctx.data(|d| d.get_temp::<(Instant, Option<(u64, u64)>)>(id)) {
+        if at.elapsed() < TTL {
+            return usage;
+        }
+    }
+    let usage = fsops::disk_space(path);
+    ctx.data_mut(|d| d.insert_temp(id, (Instant::now(), usage)));
+    usage
 }
 
 /// Scrolls the list while a drag hovers near its top or bottom edge.
