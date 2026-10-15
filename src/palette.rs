@@ -38,7 +38,10 @@ pub enum Cmd {
     CancelJob,
     Undo,
     Extract,
+    ExtractFolder,
+    ExtractOther,
     Compress,
+    CompressAs,
 }
 
 pub const COMMANDS: &[(Cmd, &str, &str)] = &[
@@ -62,7 +65,10 @@ pub const COMMANDS: &[(Cmd, &str, &str)] = &[
     (Cmd::Paste, "Paste", "Ctrl+V"),
     (Cmd::Duplicate, "Duplicate", "Ctrl+D"),
     (Cmd::Extract, "Extract here", ""),
+    (Cmd::ExtractFolder, "Extract to a folder named after the archive", ""),
+    (Cmd::ExtractOther, "Extract to the other pane's folder", ""),
     (Cmd::Compress, "Compress to .zip", ""),
+    (Cmd::CompressAs, "Compress… (format, level, name)", ""),
     (Cmd::Trash, "Move to trash", "Delete"),
     (Cmd::DeletePermanently, "Delete permanently", "Shift+Delete"),
     (Cmd::SelectAll, "Select all", "Ctrl+A"),

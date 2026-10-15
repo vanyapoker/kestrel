@@ -13,7 +13,7 @@ use eframe::egui::{
     self, Align, Align2, CentralPanel, Color32, CornerRadius, DragAndDrop, FontId, Frame, Key, Layout, Margin,
     Modifiers, Painter, Panel, Pos2, Rect, RichText, ScrollArea, Sense, Stroke, Ui, UiBuilder, vec2,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -76,6 +76,16 @@ pub(super) fn preview_table(ui: &mut Ui, table: &Table) {
         // Rows scroll under the sticky header, which must not pass clicks through.
         let body_clip = clip.with_min_y(clip.top() + row_h);
         let hover = response.hover_pos();
+        let hover_row = hover
+            .filter(|h| clip.contains(*h) && h.y > clip.top() + row_h)
+            .map(|h| ((h.y - rect.top()) / row_h) as usize);
+        // Columns whose first rows are all numbers are right-aligned.
+        let numeric: Vec<bool> = (0..xs.len() - 1)
+            .map(|c| {
+                let mut cells = table.rows.iter().skip(1).take(50).filter_map(|r| r.get(c)).filter(|t| !t.is_empty()).peekable();
+                cells.peek().is_some() && cells.all(|t| t.trim().replace(',', "").parse::<f64>().is_ok())
+            })
+            .collect();
         let (mut tooltip, mut on_link) = (None, false);
         let mut draw_row = |row_index: usize, y: f32, color: Color32, clip: Rect| {
             for (col, text) in table.rows[row_index].iter().enumerate().take(xs.len() - 1) {
@@ -85,7 +95,12 @@ pub(super) fn preview_table(ui: &mut Ui, table: &Table) {
                     continue;
                 }
                 let galley = painter.layout_no_wrap(text.clone(), font.clone(), color);
-                let pos = egui::pos2(r.left() + PAD, r.center().y - galley.size().y / 2.0);
+                let x = if numeric[col] && galley.size().x <= r.width() - 2.0 * PAD {
+                    r.right() - PAD - galley.size().x
+                } else {
+                    r.left() + PAD
+                };
+                let pos = egui::pos2(x, r.center().y - galley.size().y / 2.0);
                 painter.with_clip_rect(text_clip).galley(pos, galley.clone(), color);
                 if row_index > 0 && let Some(line) = galley.rows.first() {
                     for (i, link) in crate::preview::text_links(text).iter().enumerate() {
@@ -116,8 +131,11 @@ pub(super) fn preview_table(ui: &mut Ui, table: &Table) {
         let last = ((viewport.max.y / row_h).ceil() as usize + 1).min(body + 1);
         for i in first..last {
             let y = rect.top() + i as f32 * row_h;
-            if i % 2 == 0 {
-                painter.rect_filled(Rect::from_min_size(egui::pos2(rect.left(), y), vec2(total.x, row_h)), 0.0, p.panel);
+            let stripe = Rect::from_min_size(egui::pos2(rect.left(), y), vec2(total.x, row_h));
+            if hover_row == Some(i) {
+                painter.rect_filled(stripe, 0.0, p.select_dim);
+            } else if i % 2 == 0 {
+                painter.rect_filled(stripe, 0.0, p.panel);
             }
             painter.text(
                 egui::pos2(rect.left() + gutter - PAD, y + row_h / 2.0), Align2::RIGHT_CENTER, i.to_string(), font.clone(), p.faint,
@@ -129,6 +147,9 @@ pub(super) fn preview_table(ui: &mut Ui, table: &Table) {
         let header = Rect::from_min_size(egui::pos2(rect.left(), y), vec2(total.x, row_h));
         painter.rect_filled(header, 0.0, p.surface);
         painter.hline(header.x_range(), header.bottom(), Stroke::new(1.0, p.border));
+        for &x in &xs[1..xs.len() - 1] {
+            painter.vline(rect.left() + x, header.y_range(), Stroke::new(1.0, p.border));
+        }
         draw_row(0, y, p.accent, clip);
         if let Some(text) = tooltip {
             response.on_hover_text(text);
@@ -147,6 +168,7 @@ impl App {
             d.remove_temp::<Vec<(Rect, PathBuf)>>(folder_rects_id());
         });
         self.dragging = DragAndDrop::payload::<DragPaths>(ui.ctx());
+        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("is_split"), self.panes.len() > 1));
 
         Panel::bottom("status")
             .exact_size(26.0)
@@ -201,6 +223,10 @@ impl App {
                         self.pane(ui, p, &mut actions);
                     });
                 }
+                // Mark which pane has focus.
+                let active = rects[self.active_pane.min(1)];
+                let accent = pal().accent;
+                ui.painter().rect_stroke(active.shrink(1.0), 0.0, Stroke::new(2.0, accent.gamma_multiply(0.7)), egui::StrokeKind::Inside);
             }
         });
 
@@ -211,6 +237,10 @@ impl App {
         self.dialog_ui(ui.ctx());
         self.toasts_ui(ui.ctx());
 
+        // An action can open a dialog or change the view; draw that without waiting for input.
+        if !actions.is_empty() {
+            ui.ctx().request_repaint();
+        }
         for a in actions {
             self.apply(a);
         }
@@ -368,7 +398,7 @@ impl App {
         }
         Panel::top(egui::Id::new(("tabs", p)))
             .exact_size(36.0)
-            .frame(Frame::new().fill(pal().bg).inner_margin(Margin::symmetric(8, 4)))
+            .frame(Frame::new().fill(pal().bg).inner_margin(Margin { left: 8, right: 8, top: 4, bottom: 0 }))
             .show_separator_line(false)
             .show(ui, |ui| self.tab_bar(ui, p, actions));
         Panel::top(egui::Id::new(("toolbar", p)))
@@ -424,47 +454,49 @@ impl App {
     fn tab_bar(&mut self, ui: &mut Ui, p: usize, actions: &mut Vec<Action>) {
         let pane_active = p == self.active_pane;
         ui.horizontal_centered(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.spacing_mut().item_spacing.x = 2.0;
             let pane = &self.panes[p];
+            let top_round = CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 };
             for (i, tab) in pane.tabs.iter().enumerate() {
                 let active = i == pane.active;
-                let galley = ui.painter().layout_no_wrap(tab.title(), FontId::proportional(13.0), pal().text);
-                let w = (galley.size().x + 44.0).clamp(90.0, 220.0);
-                let (rect, resp) = ui.allocate_exact_size(vec2(w, 26.0), Sense::click());
+                let color = if active { pal().text } else { pal().dim };
+                let galley = ui.painter().layout_no_wrap(tab.title(), FontId::proportional(13.0), color);
+                let w = (galley.size().x + 52.0).clamp(100.0, 230.0);
+                let (rect, resp) = ui.allocate_exact_size(vec2(w, ui.available_height()), Sense::click());
                 let close_rect =
-                    Rect::from_center_size(Pos2::new(rect.right() - 13.0, rect.center().y), vec2(16.0, 16.0));
+                    Rect::from_center_size(Pos2::new(rect.right() - 15.0, rect.center().y), vec2(18.0, 18.0));
                 let close = ui.interact(close_rect, ui.id().with(("tab_close", tab.id)), Sense::click());
                 let painter = ui.painter();
                 let drop_hover = resp.dnd_hover_payload::<DragPaths>().is_some();
-                let bg = if active || drop_hover {
-                    pal().surface
-                } else if resp.hovered() {
-                    pal().hover
-                } else {
-                    Color32::TRANSPARENT
-                };
-                painter.rect_filled(rect, CornerRadius::same(6), bg);
+                // The active tab flows into the toolbar below it.
+                let body = if active { rect.expand2(vec2(0.0, 0.0)).with_max_y(rect.bottom() + 4.0) } else { rect };
                 if active {
-                    let line = Rect::from_min_size(
-                        Pos2::new(rect.left() + 8.0, rect.bottom() - 2.0),
-                        vec2(rect.width() - 16.0, 2.0),
-                    );
-                    painter.rect_filled(line, CornerRadius::same(1), if pane_active { pal().accent } else { pal().faint });
+                    painter.rect_filled(body, top_round, pal().panel);
+                    let line = Rect::from_min_size(rect.min + vec2(0.0, 0.0), vec2(rect.width(), 2.0));
+                    painter.rect_filled(line, CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 }, if pane_active { pal().accent } else { pal().faint });
+                } else if resp.hovered() || drop_hover {
+                    painter.rect_filled(rect.shrink2(vec2(0.0, 3.0)).with_max_y(rect.bottom() - 3.0), CornerRadius::same(6), pal().hover);
                 }
-                draw_folder(painter, Pos2::new(rect.left() + 14.0, rect.center().y), 0.8);
+                if drop_hover {
+                    painter.rect_stroke(body, top_round, Stroke::new(1.5, pal().accent), egui::StrokeKind::Inside);
+                }
+                draw_folder(painter, Pos2::new(rect.left() + 16.0, rect.center().y + 1.0), 0.8);
                 let text_rect = Rect::from_min_max(
-                    Pos2::new(rect.left() + 24.0, rect.top()),
-                    Pos2::new(rect.right() - 24.0, rect.bottom()),
+                    Pos2::new(rect.left() + 28.0, rect.top()),
+                    Pos2::new(rect.right() - 28.0, rect.bottom()),
                 );
-                let color = if active { pal().text } else { pal().dim };
                 painter
                     .with_clip_rect(text_rect)
-                    .galley(Pos2::new(text_rect.left(), rect.center().y - galley.size().y / 2.0), galley, color);
+                    .galley(Pos2::new(text_rect.left(), rect.center().y - galley.size().y / 2.0 + 1.0), galley, color);
                 if resp.hovered() || close.hovered() || active {
                     if close.hovered() {
-                        painter.rect_filled(close_rect, CornerRadius::same(4), pal().hover);
+                        painter.circle_filled(close_rect.center(), 9.0, pal().select);
                     }
-                    painter.text(close_rect.center(), Align2::CENTER_CENTER, "×", FontId::proportional(14.0), pal().dim);
+                    let c = close_rect.center();
+                    let arm = 3.0;
+                    let stroke = Stroke::new(1.4, if close.hovered() { pal().text } else { pal().dim });
+                    painter.line_segment([c + vec2(-arm, -arm), c + vec2(arm, arm)], stroke);
+                    painter.line_segment([c + vec2(-arm, arm), c + vec2(arm, -arm)], stroke);
                 }
                 if let Some(paths) = resp.dnd_release_payload::<DragPaths>() {
                     let copy = ui.input(|i| i.modifiers.ctrl);
@@ -730,11 +762,14 @@ impl App {
 
         let scroll = scroll_area(tab, ("list", tab.id), ROW_H, 1);
         let ctrl_shift = ui.input(|i| (i.modifiers.ctrl, i.modifiers.shift));
+        let pointer = ui.input(|i| i.pointer.hover_pos());
+        let mut over_item = false;
         let out = scroll.show_rows(ui, ROW_H, tab.view.len(), |ui, range| {
             ui.spacing_mut().item_spacing.y = 0.0;
             for vi in range {
                 let e = &tab.entries[tab.view[vi]];
                 let (rect, resp) = ui.allocate_exact_size(vec2(full.width(), ROW_H), Sense::click_and_drag());
+                over_item |= pointer.is_some_and(|pos| rect.contains(pos));
                 let selected = tab.is_selected(vi);
                 let painter = ui.painter();
                 let row = rect.shrink2(vec2(4.0, 1.0));
@@ -764,6 +799,10 @@ impl App {
         tab.scroll_offset = out.state.offset.y;
         tab.viewport_h = out.inner_rect.height();
         drag_autoscroll(ui, tab, out.inner_rect);
+        let (inner, offset) = (out.inner_rect, out.state.offset.y);
+        rubber_band(ui, p, tab, inner, over_item, ctrl_shift.0, |vi| {
+            Rect::from_min_size(inner.min + vec2(0.0, vi as f32 * ROW_H - offset), vec2(inner.width(), ROW_H))
+        });
         background_drop(ui, p, tab, out.inner_rect, actions);
     }
 
@@ -798,6 +837,8 @@ impl App {
         let scroll = scroll_area(tab, ("grid", tab.id), cell.y, cols);
         let ctrl_shift = ui.input(|i| (i.modifiers.ctrl, i.modifiers.shift));
         let gap = ((full.width() - 8.0) - cols as f32 * cell.x) / cols as f32;
+        let pointer = ui.input(|i| i.pointer.hover_pos());
+        let mut over_item = false;
         let out = scroll.show_rows(ui, cell.y, rows, |ui, range| {
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
             for r in range {
@@ -812,6 +853,7 @@ impl App {
                             ViewMode::Icons(_) => Rect::from_center_size(rect.center(), cell - vec2(8.0, 8.0)),
                             _ => rect.shrink2(vec2(4.0, 1.0)),
                         };
+                        over_item |= pointer.is_some_and(|pos| tile.contains(pos));
                         let selected = tab.is_selected(vi);
                         let drop_target = e.is_dir && drop_hover(&resp, &e.path);
                         if e.is_dir {
@@ -844,6 +886,12 @@ impl App {
         tab.scroll_offset = out.state.offset.y;
         tab.viewport_h = out.inner_rect.height();
         drag_autoscroll(ui, tab, out.inner_rect);
+        let (inner, offset) = (out.inner_rect, out.state.offset.y);
+        let step = cell.x + gap;
+        rubber_band(ui, p, tab, inner, over_item, ctrl_shift.0, |vi| {
+            let min = inner.min + vec2(4.0 + (vi % cols) as f32 * step, (vi / cols) as f32 * cell.y - offset);
+            Rect::from_min_size(min, cell).shrink2(vec2(4.0, 1.0))
+        });
         background_drop(ui, p, tab, out.inner_rect, actions);
     }
 
@@ -1098,7 +1146,8 @@ impl App {
                     if job.bytes_total > 0 {
                         ui.add(egui::ProgressBar::new(frac).desired_width(140.0).desired_height(8.0).fill(pal().accent));
                         ui.label(small(format!(
-                            "{} / {}",
+                            "{:.0}%  ·  {} / {}",
+                            frac * 100.0,
                             util::human_size(job.bytes_done),
                             util::human_size(job.bytes_total)
                         )));
@@ -1501,6 +1550,32 @@ impl App {
                     name_field(ui, title, name, focus, all, &mut confirm);
                     dialog_buttons(ui, "Create", false, &mut confirm, &mut cancel);
                 }
+                Dialog::Compress { name, format, level, focus, .. } => {
+                    let all = name.chars().count();
+                    name_field(ui, "Compress", name, focus, all, &mut confirm);
+                    ui.add_space(8.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new("Format").color(pal().dim));
+                        for f in crate::ops::Format::ALL {
+                            ui.selectable_value(format, f, f.label());
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Level ").color(pal().dim));
+                        if *format != crate::ops::Format::Zip && *level == crate::ops::Level::Store {
+                            *level = crate::ops::Level::Normal;
+                        }
+                        if *format == crate::ops::Format::Zip {
+                            ui.selectable_value(level, crate::ops::Level::Store, "Store");
+                        }
+                        ui.selectable_value(level, crate::ops::Level::Fast, "Fast");
+                        ui.selectable_value(level, crate::ops::Level::Normal, "Normal");
+                        ui.selectable_value(level, crate::ops::Level::Best, "Best");
+                    });
+                    ui.add_space(2.0);
+                    ui.label(RichText::new(format!("{}{}", name, format.ext())).size(12.0).color(pal().faint));
+                    dialog_buttons(ui, "Compress", false, &mut confirm, &mut cancel);
+                }
                 Dialog::ConfirmDelete { paths } => {
                     ui.label(RichText::new("Delete permanently?").size(15.0).strong());
                     ui.add_space(6.0);
@@ -1530,6 +1605,15 @@ impl App {
             match self.dialog.take() {
                 Some(Dialog::Rename { path, name, .. }) => self.rename(&path, &name),
                 Some(Dialog::Create { dir, name, folder, .. }) => self.create(&dir, &name, folder),
+                Some(Dialog::Compress { srcs, dest, name, format, level, .. }) => {
+                    let name = name.trim();
+                    if !name.is_empty() {
+                        let mut job = crate::ops::Job::new(crate::ops::JobKind::Compress, srcs, Some(dest));
+                        job.name = Some(if name.ends_with(format.ext()) { name.to_string() } else { format!("{name}{}", format.ext()) });
+                        (job.format, job.level) = (format, level);
+                        self.ops.submit(job);
+                    }
+                }
                 Some(Dialog::ConfirmDelete { paths }) => {
                     self.ops.submit(crate::ops::Job::new(crate::ops::JobKind::Delete, paths, None))
                 }
@@ -1609,6 +1693,72 @@ fn empty_state(ui: &mut Ui, tab: &Tab) {
     };
     ui.add_space(40.0);
     ui.vertical_centered(|ui| ui.label(RichText::new(msg).color(pal().dim)));
+}
+
+/// Rubber-band selection: dragging from empty space selects every item the box touches.
+/// `item_rect` gives an item's current on-screen rect; ctrl adds to the existing selection.
+fn rubber_band(ui: &Ui, p: usize, tab: &mut Tab, inner: Rect, over_item: bool, ctrl: bool, item_rect: impl Fn(usize) -> Rect) {
+    struct Band {
+        /// Start point: x on screen, y relative to the content top.
+        start: Pos2,
+        base: HashSet<PathBuf>,
+    }
+    let id = ui.id().with(("rubber", p));
+    let ctx = ui.ctx();
+    let (pos, pressed, down) = ctx.input(|i| (i.pointer.latest_pos(), i.pointer.primary_pressed(), i.pointer.primary_down()));
+    let mut band = ctx.data(|d| d.get_temp::<Option<std::sync::Arc<Band>>>(id)).flatten();
+    if !down {
+        if band.is_some() {
+            ctx.data_mut(|d| d.insert_temp::<Option<std::sync::Arc<Band>>>(id, None));
+        }
+        return;
+    }
+    let offset = tab.scroll_offset;
+    if band.is_none() && pressed {
+        let Some(pos) = pos else { return };
+        let on_scrollbar = pos.x > inner.right() - 14.0;
+        // Menus and dialogs float above the list; clicks on them are not ours.
+        let covered = ctx.layer_id_at(pos).is_some_and(|l| l != ui.layer_id());
+        if !inner.contains(pos) || over_item || on_scrollbar || covered || DragAndDrop::has_any_payload(ctx) {
+            return;
+        }
+        let base = if ctrl { tab.targets().into_iter().collect() } else { HashSet::new() };
+        if !ctrl {
+            tab.marked.clear();
+            tab.cursor = None;
+        }
+        let b = std::sync::Arc::new(Band { start: Pos2::new(pos.x, pos.y - inner.top() + offset), base });
+        ctx.data_mut(|d| d.insert_temp(id, Some(b.clone())));
+        band = Some(b);
+    }
+    let (Some(band), Some(pos)) = (band, pos) else { return };
+    let start = Pos2::new(band.start.x, inner.top() + band.start.y - offset);
+    let cur = pos.clamp(inner.min, inner.max);
+    let boxr = Rect::from_two_pos(start, cur).intersect(inner);
+    let mut hits: Vec<usize> = (0..tab.view.len()).filter(|&vi| item_rect(vi).intersects(boxr)).collect();
+    hits.sort_unstable();
+    let mut marked = band.base.clone();
+    marked.extend(hits.iter().map(|&vi| tab.entries[tab.view[vi]].path.clone()));
+    tab.cursor = hits.last().copied().or(tab.cursor);
+    tab.anchor = tab.cursor;
+    tab.marked = marked;
+    let accent = pal().accent;
+    let painter = ui.painter().with_clip_rect(inner);
+    painter.rect_filled(boxr, 0.0, accent.gamma_multiply(0.18));
+    painter.rect_stroke(boxr, 0.0, Stroke::new(1.0, accent), egui::StrokeKind::Inside);
+    // Scroll while the pointer is held beyond the top or bottom edge.
+    const EDGE: f32 = 24.0;
+    let speed = if pos.y < inner.top() + EDGE {
+        pos.y - (inner.top() + EDGE)
+    } else if pos.y > inner.bottom() - EDGE {
+        pos.y - (inner.bottom() - EDGE)
+    } else {
+        0.0
+    };
+    if speed != 0.0 {
+        tab.force_offset = Some((tab.scroll_offset + speed * 0.4).max(0.0));
+    }
+    ctx.request_repaint();
 }
 
 /// Scrolls the list while a drag hovers near its top or bottom edge.
@@ -1790,8 +1940,13 @@ fn row_interactions(
         let targets = if tab.is_selected(vi) { tab.targets() } else { vec![e.path.clone()] };
         if targets.iter().any(|t| crate::ops::is_archive(t)) {
             item(ui, "Extract here", "", Action::Cmd(Cmd::Extract));
+            item(ui, "Extract to folder", "", Action::Cmd(Cmd::ExtractFolder));
+            if ui.ctx().data(|d| d.get_temp::<bool>(egui::Id::new("is_split"))).unwrap_or(false) {
+                item(ui, "Extract to other pane", "", Action::Cmd(Cmd::ExtractOther));
+            }
         }
         item(ui, "Compress to .zip", "", Action::Cmd(Cmd::Compress));
+        item(ui, "Compress…", "", Action::Cmd(Cmd::CompressAs));
         ui.separator();
         item(ui, "Copy path", "Alt+C", Action::CopyPath(e.path.clone()));
         let term = if e.is_dir { e.path.clone() } else { tab.path.clone() };

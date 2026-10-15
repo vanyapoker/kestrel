@@ -301,6 +301,9 @@ fn apply_visuals(ctx: &egui::Context) {
         s.spacing.item_spacing = vec2(6.0, 4.0);
         s.spacing.button_padding = vec2(7.0, 3.0);
         s.spacing.interact_size.y = 24.0;
+        // Tooltips appear almost immediately, and stay while moving between neighbours.
+        s.interaction.tooltip_delay = 0.12;
+        s.interaction.tooltip_grace_time = 0.4;
         s.text_styles = [
             (TextStyle::Heading, FontId::proportional(16.0)),
             (TextStyle::Body, FontId::proportional(BODY)),

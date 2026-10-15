@@ -53,6 +53,7 @@ enum Dialog {
     Rename { path: PathBuf, name: String, focus: bool },
     Create { dir: PathBuf, name: String, folder: bool, focus: bool },
     ConfirmDelete { paths: Vec<PathBuf> },
+    Compress { srcs: Vec<PathBuf>, dest: PathBuf, name: String, format: ops::Format, level: ops::Level, focus: bool },
 }
 
 struct Toast {
@@ -250,6 +251,11 @@ impl App {
 
     fn tab(&self) -> &Tab {
         let pane = &self.panes[self.active_pane];
+        &pane.tabs[pane.active]
+    }
+
+    fn tab_in_pane(&self, p: usize) -> &Tab {
+        let pane = &self.panes[p];
         &pane.tabs[pane.active]
     }
 
@@ -1016,12 +1022,24 @@ impl App {
                 }
             }
             Cmd::Undo => self.undo(),
-            Cmd::Extract => {
+            Cmd::Extract | Cmd::ExtractFolder | Cmd::ExtractOther => {
                 let archives: Vec<PathBuf> = self.tab().targets().into_iter().filter(|p| ops::is_archive(p)).collect();
+                let other = (self.panes.len() > 1).then(|| self.tab_in_pane(1 - self.active_pane).path.clone());
                 if archives.is_empty() {
                     self.toast("Select an archive to extract", false);
+                } else if cmd == Cmd::ExtractOther && other.is_none() {
+                    self.toast("Open split view (F6) to extract into the other pane", false);
                 } else {
-                    self.ops.submit(Job::new(JobKind::Extract, archives, None));
+                    let mut job = Job::new(JobKind::Extract, archives, None);
+                    match cmd {
+                        Cmd::ExtractFolder => job.extract_to = ops::ExtractTo::Folder,
+                        Cmd::ExtractOther => {
+                            job.extract_to = ops::ExtractTo::Dir;
+                            job.dest = other;
+                        }
+                        _ => {}
+                    }
+                    self.ops.submit(job);
                 }
             }
             Cmd::Compress => {
@@ -1031,6 +1049,13 @@ impl App {
                     let mut job = Job::new(JobKind::Compress, srcs, Some(dest));
                     job.name = Some(ops::zip_name(&job.srcs));
                     self.ops.submit(job);
+                }
+            }
+            Cmd::CompressAs => {
+                let srcs = self.tab().targets();
+                if let Some(dest) = srcs.first().and_then(|p| p.parent()).map(Path::to_path_buf) {
+                    let name = ops::archive_base_name(&srcs);
+                    self.dialog = Some(Dialog::Compress { srcs, dest, name, format: ops::Format::Zip, level: ops::Level::Normal, focus: true });
                 }
             }
             Cmd::Copy => self.copy_to_clipboard(false),

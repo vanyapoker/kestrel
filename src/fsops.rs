@@ -357,8 +357,14 @@ mod tests {
             println!("list_dir {dir}: {n} entries in {:?}", t.elapsed());
         }
         let dir = Path::new("/usr");
-        let t = Instant::now();
-        let size = dir_size(dir, device_of(dir).unwrap(), &AtomicBool::new(false)).unwrap();
-        println!("dir_size /usr: {} in {:?}", crate::util::human_size(size), t.elapsed());
+        let mut times = Vec::new();
+        let mut size = 0;
+        for _ in 0..15 {
+            let t = Instant::now();
+            size = dir_size(dir, device_of(dir).unwrap(), &AtomicBool::new(false)).unwrap();
+            times.push(t.elapsed());
+        }
+        times.sort();
+        println!("dir_size /usr: {} median {:?} min {:?}", crate::util::human_size(size), times[times.len() / 2], times[0]);
     }
 }

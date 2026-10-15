@@ -11,13 +11,15 @@ struct Driver {
     time: f64,
     pointer: Pos2,
     modifiers: Modifiers,
+    /// Text drawn in the last frame, with its on-screen rect.
+    texts: Vec<(String, Rect)>,
 }
 
 impl Driver {
     fn new(dir: PathBuf) -> Self {
         let ctx = egui::Context::default();
         let app = App::with_ctx(ctx.clone(), dir);
-        Self { ctx, app, time: 0.0, pointer: Pos2::ZERO, modifiers: Modifiers::NONE }
+        Self { ctx, app, time: 0.0, pointer: Pos2::ZERO, modifiers: Modifiers::NONE, texts: Vec::new() }
     }
 
     fn frame(&mut self, mut events: Vec<Event>) {
@@ -37,6 +39,14 @@ impl Driver {
             app.draw(ui);
         });
         out.textures_delta.clear(); // no renderer in tests
+        self.texts = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::epaint::Shape::Text(t) => Some((t.galley.text().to_string(), t.visual_bounding_rect())),
+                _ => None,
+            })
+            .collect();
     }
 
     /// Runs frames until `cond` holds (background work needs real time).
@@ -453,5 +463,46 @@ fn create_dialog_field_is_focused() {
     d.frame(vec![Event::Key { key: Key::N, physical_key: None, pressed: true, repeat: false, modifiers: cs }]);
     d.frame(Vec::new());
     assert!(d.ctx.memory(|m| m.has_focus(egui::Id::new("dialog_name"))));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn compress_dialog_creates_archive() {
+    let dir = sandbox("compress-dialog");
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| a.row_rects.contains_key(&dir.join("a.txt")));
+    let r = d.row(&dir.join("a.txt"));
+    d.move_to(r.center());
+    d.button(true);
+    d.button(false);
+    d.app.run_cmd(Cmd::CompressAs);
+    d.frame(Vec::new());
+    d.frame(Vec::new());
+    assert!(matches!(d.app.dialog, Some(Dialog::Compress { .. })), "dialog not open");
+    d.frame(vec![Event::Key { key: Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }]);
+    d.frame(Vec::new());
+    assert!(d.app.dialog.is_none(), "dialog still open");
+    d.until("archive", |_| dir.join("a.zip").exists());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn compress_from_context_menu() {
+    let dir = sandbox("ctx-compress");
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| a.row_rects.contains_key(&dir.join("a.txt")));
+    let start = d.row(&dir.join("a.txt")).center();
+    d.move_to(start);
+    let ev = |pressed| Event::PointerButton { pos: start, button: PointerButton::Secondary, pressed, modifiers: Modifiers::NONE };
+    d.frame(vec![ev(true)]);
+    d.frame(vec![ev(false)]);
+    d.frame(Vec::new());
+    let target = d.texts.iter().find(|(t, _)| t == "Compress…").map(|(_, r)| r.center()).expect("menu has no Compress… item");
+    d.move_to(target);
+    d.button(true);
+    d.button(false);
+    d.frame(Vec::new());
+    d.frame(Vec::new());
+    assert!(matches!(d.app.dialog, Some(Dialog::Compress { .. })), "no dialog after menu click");
     fs::remove_dir_all(dir).unwrap();
 }

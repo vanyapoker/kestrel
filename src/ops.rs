@@ -29,6 +29,84 @@ pub enum JobKind {
     Compress,
 }
 
+/// Archive format for `Compress`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Format {
+    Zip,
+    TarGz,
+    TarXz,
+    TarZst,
+    TarBz2,
+    SevenZip,
+}
+
+impl Format {
+    pub const ALL: [Format; 6] = [Format::Zip, Format::TarGz, Format::TarXz, Format::TarZst, Format::TarBz2, Format::SevenZip];
+
+    pub fn ext(self) -> &'static str {
+        match self {
+            Format::Zip => ".zip",
+            Format::TarGz => ".tar.gz",
+            Format::TarXz => ".tar.xz",
+            Format::TarZst => ".tar.zst",
+            Format::TarBz2 => ".tar.bz2",
+            Format::SevenZip => ".7z",
+        }
+    }
+
+    /// bsdtar arguments selecting this format at `level`.
+    fn args(self, level: Level) -> Vec<String> {
+        // (fast, normal, best) in each codec's own scale.
+        let pick = |lv: (u8, u8, u8)| match level {
+            Level::Store | Level::Fast => lv.0,
+            Level::Normal => lv.1,
+            Level::Best => lv.2,
+        };
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        match self {
+            Format::Zip if level == Level::Store => a(&["--format", "zip", "--options", "zip:compression=store"]),
+            Format::Zip => a(&["--format", "zip", "--options", &format!("zip:compression-level={}", pick((1, 6, 9)))]),
+            Format::TarGz => a(&["--gzip", "--options", &format!("gzip:compression-level={}", pick((1, 6, 9)))]),
+            Format::TarXz => a(&["--xz", "--options", &format!("xz:compression-level={}", pick((1, 6, 9)))]),
+            Format::TarZst => a(&["--zstd", "--options", &format!("zstd:compression-level={}", pick((3, 10, 19)))]),
+            Format::TarBz2 => a(&["--bzip2", "--options", &format!("bzip2:compression-level={}", pick((1, 6, 9)))]),
+            Format::SevenZip => a(&["--format", "7zip", "--options", &format!("7zip:compression-level={}", pick((1, 6, 9)))]),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Format::Zip => "zip",
+            Format::TarGz => "tar.gz",
+            Format::TarXz => "tar.xz",
+            Format::TarZst => "tar.zst",
+            Format::TarBz2 => "tar.bz2",
+            Format::SevenZip => "7z",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Level {
+    /// No compression (zip only).
+    Store,
+    Fast,
+    Normal,
+    Best,
+}
+
+/// Where `Extract` puts its output.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub enum ExtractTo {
+    /// Next to the archive; a lone top-level item comes out as is.
+    #[default]
+    Here,
+    /// Next to the archive, always inside a folder named after it.
+    Folder,
+    /// Into another folder (`Job::dest`), like `Here`.
+    Dir,
+}
+
 pub struct Job {
     pub kind: JobKind,
     pub srcs: Vec<PathBuf>,
@@ -40,11 +118,24 @@ pub struct Job {
     pub undoing: bool,
     /// File name for `Compress`.
     pub name: Option<String>,
+    pub format: Format,
+    pub level: Level,
+    pub extract_to: ExtractTo,
 }
 
 impl Job {
     pub fn new(kind: JobKind, srcs: Vec<PathBuf>, dest: Option<PathBuf>) -> Self {
-        Self { kind, srcs, dest, pairs: Vec::new(), undoing: false, name: None }
+        Self {
+            kind,
+            srcs,
+            dest,
+            pairs: Vec::new(),
+            undoing: false,
+            name: None,
+            format: Format::Zip,
+            level: Level::Normal,
+            extract_to: ExtractTo::Here,
+        }
     }
 
     /// The job that reverses `undo`.
@@ -253,7 +344,7 @@ impl Worker {
                         break;
                     }
                     self.update(|p| p.current = file_name(src));
-                    self.extract(src, &mut done);
+                    self.extract(src, job.dest.as_deref(), job.extract_to == ExtractTo::Folder, &mut done);
                 }
                 if !done.created.is_empty() {
                     done.undo = Some(Undo::TrashCreated(done.created.clone()));
@@ -262,8 +353,8 @@ impl Worker {
             }
             JobKind::Compress => {
                 let dest = job.dest.clone().expect("compress needs a destination");
-                let name = job.name.clone().unwrap_or_else(|| "Archive.zip".into());
-                self.compress(&job.srcs, &dest, &name, &mut done);
+                let name = job.name.clone().unwrap_or_else(|| format!("Archive{}", job.format.ext()));
+                self.compress(&job.srcs, &dest, &name, job.format, job.level, &mut done);
                 if !done.created.is_empty() {
                     done.undo = Some(Undo::TrashCreated(done.created.clone()));
                 }
@@ -369,7 +460,9 @@ impl Worker {
     }
 
     /// Runs an archive tool, killing it if the job is cancelled. Errors carry its stderr.
-    fn run_tool(&self, cmd: &mut std::process::Command) -> Result<(), String> {
+    /// `total` is the number of input bytes the tool is expected to read; its progress is
+    /// taken from the bytes it has read so far (/proc/<pid>/io).
+    fn run_tool(&mut self, cmd: &mut std::process::Command, total: u64) -> Result<(), String> {
         use std::process::Stdio;
         let mut child = cmd
             .stdin(Stdio::null())
@@ -386,6 +479,11 @@ impl Worker {
             }
             s
         });
+        let io = format!("/proc/{}/io", child.id());
+        self.update(|p| {
+            p.bytes_total = total;
+            p.bytes_done = 0;
+        });
         let status = loop {
             if self.cancelled() {
                 let _ = child.kill();
@@ -394,7 +492,12 @@ impl Worker {
             }
             match child.try_wait() {
                 Ok(Some(status)) => break status,
-                Ok(None) => std::thread::sleep(Duration::from_millis(30)),
+                Ok(None) => {
+                    if total > 0 && let Some(read) = read_chars(&io) {
+                        self.update(|p| p.bytes_done = read.min(total));
+                    }
+                    std::thread::sleep(Duration::from_millis(30));
+                }
                 Err(e) => return Err(e.to_string()),
             }
         };
@@ -406,15 +509,16 @@ impl Worker {
         }
     }
 
-    /// Unpacks `archive` next to itself. A single top-level item comes out as
-    /// is; anything else goes into a folder named after the archive.
-    fn extract(&mut self, archive: &Path, done: &mut Done) {
-        let Some(dir) = archive.parent() else { return };
+    /// Unpacks `archive` into `out` (default: next to itself). A single top-level item comes
+    /// out as is, unless `into_folder`; anything else goes into a folder named after the archive.
+    fn extract(&mut self, archive: &Path, out: Option<&Path>, into_folder: bool, done: &mut Done) {
+        let Some(dir) = out.or_else(|| archive.parent()) else { return };
         let tmp = unique_dest(dir, &format!(".kestrel-extract-{}", file_name(archive)));
         if let Err(e) = fs::create_dir(&tmp) {
             return done.errors.push(format!("{}: {e}", file_name(archive)));
         }
-        let res = self.run_tool(std::process::Command::new("bsdtar").arg("-xf").arg(archive).arg("-C").arg(&tmp));
+        let total = fs::metadata(archive).map(|m| m.len()).unwrap_or(0);
+        let res = self.run_tool(std::process::Command::new("bsdtar").arg("-xf").arg(archive).arg("-C").arg(&tmp), total);
         let items: Vec<PathBuf> = fs::read_dir(&tmp).map(|rd| rd.flatten().map(|d| d.path()).collect()).unwrap_or_default();
         if let Err(e) = &res {
             if e != "cancelled" {
@@ -426,15 +530,18 @@ impl Worker {
                 return;
             }
         }
-        let placed = if let [single] = items.as_slice() {
-            let target = unique_dest(dir, &file_name(single));
-            fs::rename(single, &target).map(|()| {
-                let _ = fs::remove_dir(&tmp);
-                target
-            })
-        } else {
-            let target = unique_dest(dir, &archive_stem(archive));
-            fs::rename(&tmp, &target).map(|()| target)
+        let placed = match items.as_slice() {
+            [single] if !into_folder => {
+                let target = unique_dest(dir, &file_name(single));
+                fs::rename(single, &target).map(|()| {
+                    let _ = fs::remove_dir(&tmp);
+                    target
+                })
+            }
+            _ => {
+                let target = unique_dest(dir, &archive_stem(archive));
+                fs::rename(&tmp, &target).map(|()| target)
+            }
         };
         match placed {
             Ok(target) => done.created.push(target),
@@ -442,16 +549,16 @@ impl Worker {
         }
     }
 
-    /// Zips `srcs` into `dest/name`, writing to a temporary file first so a
+    /// Archives `srcs` into `dest/name`, writing to a temporary file first so a
     /// failed or cancelled run leaves nothing half-written behind.
-    fn compress(&mut self, srcs: &[PathBuf], dest: &Path, name: &str, done: &mut Done) {
+    fn compress(&mut self, srcs: &[PathBuf], dest: &Path, name: &str, format: Format, level: Level, done: &mut Done) {
         let target = unique_dest(dest, name);
         let part = dest.join(format!(".{}.part", file_name(&target)));
         let mut cmd = std::process::Command::new("bsdtar");
-        cmd.args(["--format", "zip", "-cf"]).arg(&part);
+        cmd.args(format.args(level)).arg("-cf").arg(&part);
         for src in srcs {
             let (Some(parent), Some(base)) = (src.parent(), src.file_name()) else { continue };
-            // `-C` per item lets search results from different folders go in one zip.
+            // `-C` per item lets search results from different folders go in one archive.
             let mut entry = std::ffi::OsString::new();
             if base.to_string_lossy().starts_with('-') {
                 entry.push("./"); // not an option
@@ -459,7 +566,8 @@ impl Worker {
             entry.push(base);
             cmd.arg("-C").arg(parent).arg(entry);
         }
-        match self.run_tool(&mut cmd).and_then(|()| fs::rename(&part, &target).map_err(|e| e.to_string())) {
+        let total: u64 = srcs.iter().map(|s| tree_size(s)).sum();
+        match self.run_tool(&mut cmd, total).and_then(|()| fs::rename(&part, &target).map_err(|e| e.to_string())) {
             Ok(()) => done.created.push(target),
             Err(e) => {
                 let _ = fs::remove_file(&part);
@@ -657,6 +765,20 @@ pub fn is_archive(path: &Path) -> bool {
     ARCHIVE_EXTS.iter().any(|ext| name.len() > ext.len() && name.ends_with(ext))
 }
 
+/// Bytes read so far by a process, from its /proc io file.
+fn read_chars(path: &str) -> Option<u64> {
+    fs::read_to_string(path).ok()?.lines().find_map(|l| l.strip_prefix("rchar: ")?.trim().parse().ok())
+}
+
+/// Total size of the files under `path` (not following symlinks).
+fn tree_size(path: &Path) -> u64 {
+    match fs::symlink_metadata(path) {
+        Ok(m) if m.is_dir() => fs::read_dir(path).map(|rd| rd.flatten().map(|d| tree_size(&d.path())).sum()).unwrap_or(0),
+        Ok(m) => m.len(),
+        Err(_) => 0,
+    }
+}
+
 /// "photos.tar.gz" → "photos".
 fn archive_stem(path: &Path) -> String {
     let name = file_name(path);
@@ -668,13 +790,17 @@ fn archive_stem(path: &Path) -> String {
         .unwrap_or(name)
 }
 
-/// The zip name for compressing `srcs`: the item's name for one item, else "Archive.zip".
-pub fn zip_name(srcs: &[PathBuf]) -> String {
+/// The archive name without extension for compressing `srcs`: the item's name for one item, else "Archive".
+pub fn archive_base_name(srcs: &[PathBuf]) -> String {
     match srcs {
-        [one] if one.is_dir() => format!("{}.zip", file_name(one)),
-        [one] => format!("{}.zip", one.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| file_name(one))),
-        _ => "Archive.zip".into(),
+        [one] if one.is_dir() => file_name(one),
+        [one] => one.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| file_name(one)),
+        _ => "Archive".into(),
     }
+}
+
+pub fn zip_name(srcs: &[PathBuf]) -> String {
+    format!("{}.zip", archive_base_name(srcs))
 }
 
 /// Restores each of `paths` (original locations) from the trash, taking the
@@ -717,6 +843,68 @@ mod tests {
         let ops = Ops::new(egui::Context::default());
         ops.submit(job);
         ops.done_rx.recv_timeout(Duration::from_secs(10)).unwrap()
+    }
+
+    #[test]
+    fn every_format_and_level_round_trips() {
+        let d = tmpdir("formats");
+        fs::create_dir_all(d.join("proj")).unwrap();
+        fs::write(d.join("proj/a.txt"), "hello ".repeat(1000)).unwrap();
+        for format in Format::ALL {
+            for level in [Level::Store, Level::Fast, Level::Normal, Level::Best] {
+                if level == Level::Store && format != Format::Zip {
+                    continue;
+                }
+                let mut job = Job::new(JobKind::Compress, vec![d.join("proj")], Some(d.clone()));
+                job.name = Some(format!("out-{}-{level:?}{}", format.label(), format.ext()));
+                (job.format, job.level) = (format, level);
+                let done = run(job);
+                assert!(done.errors.is_empty(), "{format:?} {level:?}: {:?}", done.errors);
+                let archive = done.created[0].clone();
+                assert!(is_archive(&archive), "{archive:?}");
+                // Extract into a folder named after the archive, whatever the layout.
+                let mut job = Job::new(JobKind::Extract, vec![archive.clone()], None);
+                job.extract_to = ExtractTo::Folder;
+                let done = run(job);
+                assert!(done.errors.is_empty(), "{format:?}: {:?}", done.errors);
+                let out = done.created[0].clone();
+                assert_eq!(out, d.join(archive_stem(&archive)));
+                assert_eq!(fs::read_to_string(out.join("proj/a.txt")).unwrap().len(), 6000);
+            }
+        }
+        // Extracting into another folder.
+        fs::create_dir(d.join("elsewhere")).unwrap();
+        let mut job = Job::new(JobKind::Extract, vec![d.join("out-zip-Normal.zip")], Some(d.join("elsewhere")));
+        job.extract_to = ExtractTo::Dir;
+        let done = run(job);
+        assert_eq!(done.created, vec![d.join("elsewhere/proj")]);
+        assert!(done.dirs.contains(&d.join("elsewhere")));
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn archive_jobs_report_progress() {
+        let d = tmpdir("progress");
+        fs::write(d.join("big.bin"), vec![7u8; 40 << 20]).unwrap();
+        let ops = Ops::new(egui::Context::default());
+        let mut job = Job::new(JobKind::Compress, vec![d.join("big.bin")], Some(d.clone()));
+        job.name = Some("big.tar.xz".into());
+        job.format = Format::TarXz;
+        job.level = Level::Best;
+        ops.submit(job);
+        let mut max_done = 0;
+        let mut total = 0;
+        let start = Instant::now();
+        while ops.done_rx.try_recv().is_err() && start.elapsed() < Duration::from_secs(30) {
+            if let Some(p) = ops.snapshot() {
+                total = total.max(p.bytes_total);
+                max_done = max_done.max(p.bytes_done);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(total, 40 << 20);
+        assert!(max_done > 0, "no progress reported");
+        fs::remove_dir_all(d).unwrap();
     }
 
     #[test]
