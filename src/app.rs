@@ -90,6 +90,20 @@ enum Action {
     /// App id, file type, and a label for the toast (".md files").
     SetDefaultApp(crate::apps::DesktopApp, String, String),
     Device(crate::devices::DevOp, PathBuf),
+    PickConfirm,
+    /// Choose the folder being viewed (folder pickers).
+    PickHere,
+    PickCancel,
+}
+
+/// State of a file-picker window (`kestrel --pick`).
+struct Picker {
+    req: crate::picker::Request,
+    /// File name being typed when saving.
+    name: String,
+    focus: bool,
+    /// What was chosen; printed on exit.
+    chosen: Vec<PathBuf>,
 }
 
 pub struct App {
@@ -165,11 +179,25 @@ pub struct App {
     /// Panel widths to restore, and the last widths seen while shown.
     sidebar_width: f32,
     preview_width: f32,
+    picker: Option<Picker>,
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext, start: Option<PathBuf>, session: Option<crate::session::Session>) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext,
+        start: Option<PathBuf>,
+        session: Option<crate::session::Session>,
+        picker: Option<crate::picker::Request>,
+    ) -> Self {
+        let start = start.or_else(|| picker.as_ref().and_then(|p| p.dir.clone()));
         let mut app = Self::with_ctx(cc.egui_ctx.clone(), start.clone().unwrap_or_else(fsops::home_dir));
+        if let Some(req) = picker {
+            app.show_preview = false;
+            app.picker = Some(Picker { name: req.name.clone(), focus: true, chosen: Vec::new(), req });
+            app.devices = crate::devices::scan();
+            app.devices_rx = Some(crate::devices::watch(app.ctx.clone()));
+            return app;
+        }
         if let Some(s) = session {
             app.restore(&s, start.is_none());
             app.saved_session = s.to_text();
@@ -242,6 +270,7 @@ impl App {
             next_session_check: Instant::now(),
             sidebar_width: 190.0,
             preview_width: 360.0,
+            picker: None,
         };
         app.open_tab(start);
         app
@@ -1117,6 +1146,73 @@ impl App {
         }
     }
 
+    /// Finishes the picker with one file.
+    fn pick_file(&mut self, path: PathBuf) {
+        let Some(p) = &mut self.picker else { return };
+        match p.req.kind {
+            // A double-clicked file fills in the name; the Save button decides.
+            crate::picker::Kind::Save => {
+                p.name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            }
+            crate::picker::Kind::Folder => {}
+            crate::picker::Kind::Open => {
+                p.chosen = vec![path];
+                self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
+    }
+
+    /// The paths the Select / Save button would return right now.
+    fn pick_choice(&self) -> Vec<PathBuf> {
+        use crate::picker::Kind;
+        let Some(p) = &self.picker else { return Vec::new() };
+        let tab = self.tab();
+        match p.req.kind {
+            Kind::Open => {
+                let mut files: Vec<PathBuf> = tab
+                    .targets()
+                    .into_iter()
+                    .filter(|f| tab.entries.iter().any(|e| &e.path == f && !e.is_dir))
+                    .collect();
+                if !p.req.multiple {
+                    files.truncate(1);
+                }
+                files
+            }
+            Kind::Folder => {
+                let dirs: Vec<PathBuf> = tab
+                    .targets()
+                    .into_iter()
+                    .filter(|f| tab.entries.iter().any(|e| &e.path == f && e.is_dir))
+                    .collect();
+                if p.req.multiple {
+                    dirs
+                } else {
+                    dirs.into_iter().take(1).collect()
+                }
+            }
+            Kind::Save => {
+                let name = p.name.trim();
+                if name.is_empty() || name.contains('/') || name == "." || name == ".." {
+                    Vec::new()
+                } else {
+                    vec![tab.path.join(name)]
+                }
+            }
+        }
+    }
+
+    fn pick_confirm(&mut self) {
+        let chosen = self.pick_choice();
+        if chosen.is_empty() {
+            return;
+        }
+        if let Some(p) = &mut self.picker {
+            p.chosen = chosen;
+        }
+        self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
     fn apply(&mut self, action: Action) {
         match action {
             Action::Navigate(p) => self.navigate(p, true),
@@ -1125,10 +1221,23 @@ impl App {
                 if e.is_dir {
                     let p = e.path.clone();
                     self.navigate(p, true);
+                } else if self.picker.is_some() {
+                    // Opening a file in a picker means choosing it.
+                    let path = e.path.clone();
+                    self.pick_file(path);
                 } else {
                     fsops::open_default(&e.path);
                 }
             }
+            Action::PickConfirm => self.pick_confirm(),
+            Action::PickHere => {
+                let here = self.tab().path.clone();
+                if let Some(p) = &mut self.picker {
+                    p.chosen = vec![here];
+                    self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+            Action::PickCancel => self.ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Action::Click { vi, ctrl, shift } => {
                 let tab = self.tab_mut();
                 if shift {
@@ -1139,6 +1248,13 @@ impl App {
                     tab.select_only(vi);
                 }
                 tab.scroll_to_cursor = false;
+                // Clicking a file while saving reuses its name.
+                let clicked = tab.entry(vi).filter(|e| !e.is_dir).map(|e| e.name.clone());
+                if let (Some(p), Some(name)) = (&mut self.picker, clicked)
+                    && p.req.kind == crate::picker::Kind::Save
+                {
+                    p.name = name;
+                }
             }
             Action::NewTab(p) => self.open_tab(p),
             Action::CloseTab(p, i) => self.close_tab(p, i),
@@ -1372,6 +1488,8 @@ impl App {
                     tab.marked.clear();
                 } else if tab.search.is_some() {
                     actions.push(Action::StopSearch);
+                } else if self.picker.is_some() {
+                    actions.push(Action::PickCancel);
                 }
             }
             if split && take(i, none, Key::Tab) {
@@ -1532,6 +1650,14 @@ impl App {
 
 impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if let Some(p) = &self.picker {
+            use std::io::Write;
+            let mut out = std::io::stdout().lock();
+            for path in &p.chosen {
+                let _ = writeln!(out, "{}", path.display());
+            }
+            let _ = out.flush();
+        }
         self.save_session(true);
         // Stop the drag-and-drop thread while winit's display is still alive.
         self.wl = None;

@@ -174,6 +174,12 @@ impl App {
             .exact_size(26.0)
             .frame(Frame::new().fill(pal().panel).inner_margin(Margin::symmetric(12, 2)))
             .show(ui, |ui| self.status_bar(ui));
+        if self.picker.is_some() {
+            Panel::bottom("picker")
+                .exact_size(44.0)
+                .frame(Frame::new().fill(pal().panel).inner_margin(Margin::symmetric(12, 6)))
+                .show(ui, |ui| self.picker_bar(ui, &mut actions));
+        }
         // Side panels yield to the file list in narrow windows.
         let width = ui.available_width();
         // Both can be toggled, or dragged closed past their minimum width and back open.
@@ -1104,6 +1110,48 @@ impl App {
                 }
             }
         });
+    }
+
+    /// The bar at the bottom of a file-picker window: heading, name field when saving, buttons.
+    fn picker_bar(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
+        let choice = self.pick_choice();
+        let dir = self.tab().path.clone();
+        let Some(p) = &mut self.picker else { return };
+        let saving = p.req.kind == crate::picker::Kind::Save;
+        let replacing = saving && choice.first().is_some_and(|c| c.exists());
+        let label = if replacing { "Replace" } else { p.req.confirm_label() };
+        let mut enter = false;
+        ui.horizontal_centered(|ui| {
+            ui.label(RichText::new(p.req.heading()).strong());
+            ui.add_space(8.0);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.button("Cancel").clicked() {
+                    actions.push(Action::PickCancel);
+                }
+                let text = match choice.len() {
+                    n if n > 1 => format!("{label} {n}"),
+                    _ => label.to_string(),
+                };
+                if ui.add_enabled(!choice.is_empty(), egui::Button::new(text)).clicked() {
+                    actions.push(Action::PickConfirm);
+                }
+                if saving {
+                    let r = ui.add(egui::TextEdit::singleline(&mut p.name).hint_text("File name").desired_width(f32::INFINITY));
+                    if std::mem::take(&mut p.focus) {
+                        r.request_focus();
+                    }
+                    enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                } else if p.req.kind == crate::picker::Kind::Folder {
+                    let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "/".into());
+                    if ui.button(format!("Use “{name}”")).clicked() {
+                        actions.push(Action::PickHere);
+                    }
+                }
+            });
+        });
+        if enter {
+            actions.push(Action::PickConfirm);
+        }
     }
 
     fn status_bar(&mut self, ui: &mut Ui) {

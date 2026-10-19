@@ -5,6 +5,8 @@ mod devices;
 mod fsops;
 mod ops;
 mod palette;
+mod picker;
+mod portal;
 mod preview;
 mod search;
 mod session;
@@ -28,21 +30,36 @@ fn main() -> eframe::Result {
             println!("Usage: kestrel [FOLDER]\n\nUpdate with `kestrel-update`.");
             return Ok(());
         }
+        Some("--portal") => {
+            if let Err(e) = portal::run() {
+                eprintln!("kestrel: portal backend failed: {e}");
+                std::process::exit(1);
+            }
+            return Ok(());
+        }
         _ => {}
     }
+    let args: Vec<String> = std::env::args().collect();
+    let picker = picker::parse_args(&args);
     // With a folder argument, open just that folder; otherwise restore the last session.
     let start = std::env::args_os()
         .nth(1)
+        .filter(|_| picker.is_none())
         .map(PathBuf::from)
         .and_then(|p| p.canonicalize().ok())
         .filter(|p| p.is_dir());
-    let session = session::load();
+    // A picker is a throwaway window: it neither restores nor overwrites the session.
+    let session = if picker.is_some() { None } else { session::load() };
+    let (title, app_id, size) = match &picker {
+        Some(p) => (p.heading(), "kestrel-picker", [980.0, 640.0]),
+        None => ("Kestrel".to_string(), "kestrel", [1280.0, 800.0]),
+    };
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Kestrel")
-            .with_app_id("kestrel")
-            .with_inner_size([1280.0, 800.0])
+            .with_title(title)
+            .with_app_id(app_id)
+            .with_inner_size(size)
             .with_min_inner_size([640.0, 400.0]),
         // With vsync, Mesa blocks in eglSwapBuffers until the compositor's frame
         // callback, which never comes while the window sits on a hidden workspace,
@@ -53,6 +70,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "kestrel",
         options,
-        Box::new(move |cc| Ok(Box::new(app::App::new(cc, start, session)))),
+        Box::new(move |cc| Ok(Box::new(app::App::new(cc, start, session, picker)))),
     )
 }

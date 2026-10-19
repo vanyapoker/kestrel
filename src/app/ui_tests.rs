@@ -506,3 +506,36 @@ fn compress_from_context_menu() {
     assert!(matches!(d.app.dialog, Some(Dialog::Compress { .. })), "no dialog after menu click");
     fs::remove_dir_all(dir).unwrap();
 }
+
+fn picker_app(dir: &Path, kind: crate::picker::Kind, name: &str) -> Driver {
+    let mut d = Driver::new(dir.to_path_buf());
+    let req = crate::picker::Request { kind, multiple: false, title: String::new(), dir: None, name: name.into() };
+    d.app.picker = Some(Picker { name: req.name.clone(), focus: false, chosen: Vec::new(), req });
+    d.until("listing", |a| a.row_rects.contains_key(&dir.join("a.txt")));
+    d
+}
+
+#[test]
+fn picker_chooses_files_folders_and_save_names() {
+    let dir = sandbox("picker");
+    let (file, sub) = (dir.join("a.txt"), dir.join("dest"));
+
+    let mut d = picker_app(&dir, crate::picker::Kind::Open, "");
+    assert!(d.app.pick_choice().is_empty(), "nothing selected yet");
+    d.app.apply(Action::Click { vi: d.app.tab().view.iter().position(|&i| d.app.tab().entries[i].path == sub).unwrap(), ctrl: false, shift: false });
+    assert!(d.app.pick_choice().is_empty(), "a folder is not a file");
+    d.app.apply(Action::Click { vi: d.app.tab().view.iter().position(|&i| d.app.tab().entries[i].path == file).unwrap(), ctrl: false, shift: false });
+    assert_eq!(d.app.pick_choice(), vec![file.clone()]);
+
+    let mut d = picker_app(&dir, crate::picker::Kind::Folder, "");
+    d.app.apply(Action::Click { vi: d.app.tab().view.iter().position(|&i| d.app.tab().entries[i].path == sub).unwrap(), ctrl: false, shift: false });
+    assert_eq!(d.app.pick_choice(), vec![sub]);
+
+    let mut d = picker_app(&dir, crate::picker::Kind::Save, "new.txt");
+    assert_eq!(d.app.pick_choice(), vec![dir.join("new.txt")]);
+    d.app.picker.as_mut().unwrap().name = "a/b".into();
+    assert!(d.app.pick_choice().is_empty(), "slashes are not allowed in a name");
+    d.app.picker.as_mut().unwrap().name = "  ".into();
+    assert!(d.app.pick_choice().is_empty());
+    fs::remove_dir_all(dir).unwrap();
+}

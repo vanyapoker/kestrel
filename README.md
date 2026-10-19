@@ -54,6 +54,7 @@ If you installed from your own clone, run `./install.sh --uninstall` there inste
 - **Matches your Omarchy theme.** Kestrel uses your current theme's colors, light or dark, and updates live when you switch themes.
 - **Archives.** Extract zip, tar.gz/xz/zst, 7z and rar files right where they are, or compress a selection to .zip.
 - **Open with any app.** Right-click a file for every app that can open it, and change which one opens that type by default.
+- **File dialogs.** Kestrel registers as the file chooser for apps that use xdg-desktop-portal, so uploads and saves in Firefox open Kestrel with a Select / Save bar. In Firefox, set `widget.use-xdg-desktop-portal.file-picker` to `1` in `about:config`. The picker window has the class `kestrel-picker`, so you can float it with a window rule.
 - **Bookmarks shared with GTK,** so they also show up in Nautilus and in file pickers.
 - **Picks up where you left off.** Tabs, split view, view modes, sorting and panel layout are restored on the next launch. Opening a specific folder (`kestrel ~/Downloads`) opens just that folder.
 - **Live updates.** The view refreshes on its own when files change.

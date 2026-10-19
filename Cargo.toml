@@ -1,12 +1,13 @@
 [package]
 name = "kestrel"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 description = "A fast, keyboard-friendly file manager for Omarchy, inspired by File Pilot"
 license = "MIT"
 repository = "https://github.com/vanyapoker/kestrel"
 
 [dependencies]
+async-channel = "2"
 chrono = "0.4.45"
 eframe = { version = "0.36.2", default-features = false, features = ["glow", "wayland", "x11", "default_fonts", "links"] }
 ignore = "0.4.33"
@@ -19,6 +20,7 @@ syntect = "5.3.0"
 trash = "5.2.9"
 wayland-backend = { version = "0.3", features = ["client_system"] }
 wayland-client = "0.31"
+zbus = "5"
 
 [profile.release]
 opt-level = 3
