@@ -756,7 +756,7 @@ impl App {
 
         if tab.view.is_empty() {
             empty_state(ui, tab);
-            background_drop(ui, p, tab, full, actions);
+            background_drop(ui, tab, full, actions);
             return;
         }
 
@@ -803,7 +803,7 @@ impl App {
         rubber_band(ui, p, tab, inner, over_item, ctrl_shift.0, |vi| {
             Rect::from_min_size(inner.min + vec2(0.0, vi as f32 * ROW_H - offset), vec2(inner.width(), ROW_H))
         });
-        background_drop(ui, p, tab, out.inner_rect, actions);
+        background_drop(ui, tab, out.inner_rect, actions);
     }
 
     // ------------------------------------------------------------ grid view
@@ -830,7 +830,7 @@ impl App {
         ui.add_space(6.0);
         if tab.view.is_empty() {
             empty_state(ui, tab);
-            background_drop(ui, p, tab, full, actions);
+            background_drop(ui, tab, full, actions);
             return;
         }
         let rows = tab.view.len().div_ceil(cols);
@@ -892,7 +892,7 @@ impl App {
             let min = inner.min + vec2(4.0 + (vi % cols) as f32 * step, (vi / cols) as f32 * cell.y - offset);
             Rect::from_min_size(min, cell).shrink2(vec2(4.0, 1.0))
         });
-        background_drop(ui, p, tab, out.inner_rect, actions);
+        background_drop(ui, tab, out.inner_rect, actions);
     }
 
     // ------------------------------------------------------------ sidebar / status / preview
@@ -1878,23 +1878,30 @@ fn drop_hover(resp: &egui::Response, target: &Path) -> bool {
 }
 
 /// Dropping onto empty space in a pane moves/copies into that pane's folder.
-fn background_drop(ui: &mut Ui, p: usize, tab: &Tab, rect: Rect, actions: &mut Vec<Action>) {
+fn background_drop(ui: &mut Ui, tab: &Tab, rect: Rect, actions: &mut Vec<Action>) {
     if tab.search.is_some() {
         return;
     }
-    let resp = ui.interact(rect, ui.id().with(("pane_drop", p)), Sense::hover());
-    // Rows are checked first; only claim the hint if no folder row did.
-    let claimed = ui.ctx().data(|d| d.get_temp::<PathBuf>(drop_target_id()).is_some());
-    if !claimed {
-        let into_other_folder = resp
-            .dnd_hover_payload::<DragPaths>()
-            .is_some_and(|d| d.0.iter().any(|s| s.parent() != Some(tab.path.as_path())));
-        if into_other_folder {
-            ui.ctx().data_mut(|d| d.insert_temp(drop_target_id(), tab.path.clone()));
-        }
+    // Not `Response::contains_pointer`: it is false whenever a file row covers the pointer, which
+    // would restrict the drop to empty space. Rows that are folders take the payload first.
+    let ctx = ui.ctx();
+    let over = ctx.input(|i| i.pointer.interact_pos()).is_some_and(|pos| rect.contains(pos))
+        && ctx.layer_id_at(ctx.input(|i| i.pointer.interact_pos()).unwrap_or_default()) == Some(ui.layer_id());
+    if !over {
+        return;
     }
-    if let Some(paths) = resp.dnd_release_payload::<DragPaths>() {
-        let copy = ui.input(|i| i.modifiers.ctrl);
+    // Rows are checked first; only claim the hint if no folder row did.
+    let claimed = ctx.data(|d| d.get_temp::<PathBuf>(drop_target_id()).is_some());
+    if !claimed
+        && let Some(d) = DragAndDrop::payload::<DragPaths>(ctx)
+        && d.0.iter().any(|s| s.parent() != Some(tab.path.as_path()))
+    {
+        ctx.data_mut(|d| d.insert_temp(drop_target_id(), tab.path.clone()));
+    }
+    if ctx.input(|i| i.pointer.any_released())
+        && let Some(paths) = DragAndDrop::take_payload::<DragPaths>(ctx)
+    {
+        let copy = ctx.input(|i| i.modifiers.ctrl);
         actions.push(Action::Drop { paths: paths.0.clone(), dest: tab.path.clone(), copy });
     }
 }
