@@ -1756,7 +1756,7 @@ dependencies = [
 
 [[package]]
 name = "kestrel"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "async-channel",
  "chrono",
@@ -1767,6 +1767,7 @@ dependencies = [
  "notify",
  "raw-window-handle",
  "rayon",
+ "serde_json",
  "syntect",
  "trash",
  "wayland-backend",

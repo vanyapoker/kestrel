@@ -678,3 +678,75 @@ fn dragging_over_preview_link_selects_without_opening() {
     assert_eq!(copies, ["tmp"]);
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn preview_wraps_to_width_with_logical_line_numbers() {
+    let ctx = egui::Context::default();
+    let text = format!("{}\nsecond line", "Привет world ".repeat(30));
+    let job = egui::text::LayoutJob::simple(text.clone(), FontId::monospace(12.5), Color32::WHITE, f32::INFINITY);
+    let draw = |width| {
+        let mut out = ctx.run_ui(RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(width, 1200.0))),
+            ..Default::default()
+        }, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| super::ui::preview_code(ui, &job, &[]));
+        });
+        out.textures_delta.clear();
+        let labels: Vec<_> = out.shapes.iter().filter_map(|c| match &c.shape {
+            egui::epaint::Shape::Text(t) => Some(t), _ => None,
+        }).collect();
+        let code = labels.iter().find(|t| t.galley.text() == text).unwrap();
+        assert!(code.galley.size().x <= width - 16.0 - 40.0, "overflow: {:?}", code.galley.size());
+        assert_eq!(labels.iter().filter(|t| t.galley.text() == "1").count(), 1);
+        assert_eq!(labels.iter().filter(|t| t.galley.text() == "2").count(), 1);
+        assert!(!labels.iter().any(|t| t.galley.text() == "3"), "soft wraps were numbered as source lines");
+        code.galley.rows.len()
+    };
+    let narrow = draw(260.0);
+    let wide = draw(500.0);
+    assert!(narrow > wide && wide > 2, "rows: narrow={narrow}, wide={wide}");
+}
+
+#[test]
+fn wrapped_links_are_clickable_and_copy_without_soft_newlines() {
+    let ctx = egui::Context::default();
+    let url = format!("https://example.com/{}", "long-path-".repeat(10));
+    let job = egui::text::LayoutJob::simple(url.clone(), FontId::monospace(12.5), Color32::WHITE, f32::INFINITY);
+    let links = crate::preview::text_links(&url);
+    let mut time = 0.0;
+    let mut run = |events| {
+        time += 1.0 / 60.0;
+        let mut out = ctx.run_ui(RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(200.0, 700.0))),
+            time: Some(time), events, ..Default::default()
+        }, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| super::ui::preview_text(ui, &job, &links));
+        });
+        out.textures_delta.clear();
+        let code = out.shapes.iter().find_map(|c| match &c.shape {
+            egui::epaint::Shape::Text(t) if t.galley.text() == url => Some(t), _ => None,
+        }).unwrap();
+        assert!(code.galley.rows.len() > 1);
+        let row = &code.galley.rows[1];
+        let link_at = code.pos + row.pos.to_vec2() + vec2(8.0, row.size.y / 2.0);
+        let start = code.pos + vec2(0.0, code.galley.rows[0].size.y / 2.0);
+        let last = code.galley.rows.last().unwrap();
+        let end = code.pos + last.pos.to_vec2() + vec2(last.size.x + 1.0, last.size.y / 2.0);
+        (out.platform_output, link_at, start, end)
+    };
+    let (_, link_at, start, end) = run(Vec::new());
+    let button = |pos, pressed| Event::PointerButton {
+        pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE,
+    };
+    run(vec![Event::PointerMoved(link_at)]);
+    run(vec![button(link_at, true)]);
+    let (out, ..) = run(vec![button(link_at, false)]);
+    assert!(out.commands.iter().any(|c| matches!(c, egui::OutputCommand::OpenUrl(open) if open.url == url)));
+    run(vec![Event::PointerMoved(start)]);
+    run(vec![button(start, true)]);
+    run(vec![Event::PointerMoved(end)]);
+    let (out, ..) = run(vec![button(end, false)]);
+    assert!(!out.commands.iter().any(|c| matches!(c, egui::OutputCommand::OpenUrl(_))));
+    let (out, ..) = run(vec![Event::Copy]);
+    assert!(out.commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(t) if t == &url)), "{:?}", out.commands);
+}

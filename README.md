@@ -43,7 +43,7 @@ If you installed from your own clone, run `./install.sh --uninstall` there inste
 
 - **Fast.** All disk work runs in the background, so the window never freezes, even on huge folders or slow drives.
 - **Folder sizes.** Every folder shows its real size, worked out live as you browse.
-- **Preview panel.** See images, code with syntax highlighting, text, PDFs, videos, SVGs and audio details without opening anything.
+- **Preview panel.** See images, code with syntax highlighting, text, PDFs, videos, SVGs and audio details without opening anything. Text wraps to the panel width, and JSON is automatically formatted for reading without changing the file.
 - **Tabs and split view.** Work in several folders at once, and drag files between panes.
 - **Find anything.** Type to filter the current folder, or press Ctrl+F to search all its subfolders.
 - **Command palette.** Ctrl+P reaches every action.

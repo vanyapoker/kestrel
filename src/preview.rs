@@ -13,7 +13,6 @@ use syntect::util::LinesWithEndings;
 
 const MAX_TEXT_BYTES: usize = 256 * 1024;
 const MAX_TEXT_LINES: usize = 3000;
-const MAX_LINE_CHARS: usize = 1000;
 const MAX_IMAGE_SIDE: u32 = 1600;
 const MAX_TABLE_ROWS: usize = 5000;
 const MAX_CELL_CHARS: usize = 200;
@@ -63,7 +62,7 @@ pub struct TextLink {
     pub chars: Range<usize>,
 }
 
-/// Find web URLs in the rendered text, including its line-number gutters.
+/// Find web URLs in the rendered text.
 pub fn text_links(text: &str) -> Vec<TextLink> {
     let mut links = Vec::new();
     let mut offset = 0;
@@ -98,6 +97,66 @@ pub fn text_links(text: &str) -> Vec<TextLink> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_formatting_preserves_tokens_and_rejects_invalid_input() {
+        let raw = r#"{"z":123456789012345678901234567890,"z":1e+400,"a":[{},[],"Привет\\\"",true,null]}"#;
+        let formatted = pretty_json(raw).unwrap();
+        assert_eq!(formatted, concat!(
+            "{\n",
+            "  \"z\": 123456789012345678901234567890,\n",
+            "  \"z\": 1e+400,\n",
+            "  \"a\": [\n",
+            "    {},\n",
+            "    [],\n",
+            "    \"Привет\\\\\\\"\",\n",
+            "    true,\n",
+            "    null\n",
+            "  ]\n",
+            "}",
+        ));
+        assert_eq!(pretty_json(&formatted).unwrap(), formatted);
+        for raw in ["", "{", "[1,]", "{} {}", "{\"x\": NaN}"] {
+            assert!(pretty_json(raw).is_none(), "accepted {raw:?}");
+        }
+        assert_eq!(pretty_json(" [ ] ").as_deref(), Some("[]"));
+        assert_eq!(pretty_json(" true ").as_deref(), Some("true"));
+    }
+
+    #[test]
+    fn json_preview_formats_only_complete_json_without_writing_the_file() {
+        let dir = std::env::temp_dir().join(format!("kestrel-json-preview-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, raw, expected) in [
+            ("data.json", "{\"b\":1,\"a\":[2,3]}", "{\n  \"b\": 1,\n  \"a\": [\n    2,\n    3\n  ]\n}"),
+            ("data.JSON", "{\"a\":true}", "{\n  \"a\": true\n}"),
+            ("invalid.json", "{\"a\":", "{\"a\":"),
+            ("raw.txt", "{\"a\":true}", "{\"a\":true}"),
+        ] {
+            let path = dir.join(name);
+            std::fs::write(&path, raw).unwrap();
+            let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+            let Payload::Text(job, _, _, truncated) = load_text(&path) else { panic!("no text preview for {name}") };
+            assert_eq!(job.text, expected);
+            assert!(!truncated);
+            assert_eq!(std::fs::read(&path).unwrap(), raw.as_bytes());
+            assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), modified);
+        }
+        // A bounded read ending in valid JSON must still not format a partial file.
+        let path = dir.join("large.json");
+        let raw = format!("{{\"a\":1}}{}trailing", " ".repeat(MAX_TEXT_BYTES));
+        std::fs::write(&path, &raw).unwrap();
+        let Payload::Text(job, _, _, truncated) = load_text(&path) else { panic!("no text preview") };
+        assert!(truncated);
+        assert_eq!(job.text, &raw[..MAX_TEXT_BYTES]);
+        let path = dir.join("long.txt");
+        let raw = "слово ".repeat(500);
+        std::fs::write(&path, &raw).unwrap();
+        let Payload::Text(job, _, _, truncated) = load_text(&path) else { panic!("no text preview") };
+        assert_eq!(job.text, raw, "long lines must wrap without losing content");
+        assert!(!truncated);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn web_links_handle_unicode_and_surrounding_punctuation() {
@@ -278,6 +337,59 @@ fn media_rows(path: &Path) -> Info {
     info
 }
 
+/// Validate first, then change only whitespace outside strings. Keeping the raw
+/// tokens preserves key order, duplicate keys, number precision and escapes.
+fn pretty_json(text: &str) -> Option<String> {
+    serde_json::from_str::<&serde_json::value::RawValue>(text).ok()?;
+    let mut out = String::new();
+    let (mut depth, mut quoted, mut escaped) = (0usize, false, false);
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if quoted {
+            out.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                quoted = false;
+            }
+        } else {
+            match c {
+                '"' => { quoted = true; out.push(c); }
+                '{' | '[' => {
+                    out.push(c);
+                    while chars.peek().is_some_and(|c| c.is_ascii_whitespace()) { chars.next(); }
+                    let close = if c == '{' { '}' } else { ']' };
+                    if chars.peek() == Some(&close) {
+                        out.push(chars.next().unwrap());
+                    } else {
+                        depth += 1;
+                        out.push('\n');
+                        out.push_str(&"  ".repeat(depth));
+                    }
+                }
+                '}' | ']' => {
+                    depth -= 1;
+                    out.push('\n');
+                    out.push_str(&"  ".repeat(depth));
+                    out.push(c);
+                }
+                ',' => {
+                    out.push_str(",\n");
+                    out.push_str(&"  ".repeat(depth));
+                }
+                ':' => out.push_str(": "),
+                c if c.is_ascii_whitespace() => {}
+                _ => out.push(c),
+            }
+        }
+        // Deeply nested input can expand considerably when indented.
+        if out.len() > MAX_TEXT_BYTES * 4 { return None; }
+    }
+    Some(out)
+}
+
 fn load_text(path: &Path) -> Payload {
     let mut buf = Vec::new();
     let file_len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
@@ -292,8 +404,14 @@ fn load_text(path: &Path) -> Payload {
     if buf[..buf.len().min(8192)].contains(&0) {
         return Payload::Binary(Info::new());
     }
-    let text = String::from_utf8_lossy(&buf).replace('\t', "    ");
     let mut truncated = file_len as usize > buf.len();
+    let raw = String::from_utf8_lossy(&buf);
+    let formatted = if !truncated && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("json")) {
+        pretty_json(&raw)
+    } else {
+        None
+    };
+    let text = formatted.as_deref().unwrap_or(&raw).replace('\t', "    ");
 
     static SYNTAX: OnceLock<SyntaxSet> = OnceLock::new();
     let ss = SYNTAX.get_or_init(SyntaxSet::load_defaults_newlines);
@@ -315,13 +433,7 @@ fn load_text(path: &Path) -> Payload {
             break;
         }
         lines += 1;
-        let line = if line.chars().count() > MAX_LINE_CHARS {
-            let cut: String = line.chars().take(MAX_LINE_CHARS).collect();
-            std::borrow::Cow::Owned(cut + "…\n")
-        } else {
-            std::borrow::Cow::Borrowed(line)
-        };
-        match hl.highlight_line(&line, ss) {
+        match hl.highlight_line(line, ss) {
             Ok(ranges) => {
                 for (style, piece) in ranges {
                     let c = style.foreground;
@@ -337,7 +449,7 @@ fn load_text(path: &Path) -> Payload {
                 }
             }
             Err(_) => job.append(
-                &line,
+                line,
                 0.0,
                 TextFormat { font_id: font.clone(), color: theme::pal().text, ..Default::default() },
             ),

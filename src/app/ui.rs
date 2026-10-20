@@ -19,25 +19,31 @@ use std::time::Instant;
 
 const ROW_H: f32 = 26.0;
 
-fn preview_code(ui: &mut Ui, job: &egui::text::LayoutJob, links: &[TextLink]) {
+pub(super) fn preview_code(ui: &mut Ui, job: &egui::text::LayoutJob, links: &[TextLink]) {
     // Line numbers are decoration: copied selections contain only file text.
-    let galley = ui.fonts_mut(|f| f.layout_job(job.clone()));
     let font = FontId::monospace(12.5);
     let glyph = ui.fonts_mut(|f| f.glyph_width(&font, '0'));
+    let mut job = job.clone();
+    job.wrap.max_width = (ui.available_width() - glyph * 6.0).max(1.0);
+    let galley = ui.fonts_mut(|f| f.layout_job(job.clone()));
     ui.scope(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         ui.horizontal_top(|ui| {
             let (rect, _) = ui.allocate_exact_size(vec2(glyph * 6.0, galley.size().y), Sense::hover());
-            for (i, row) in galley.rows.iter().enumerate() {
+            let mut line = 1;
+            let mut starts_line = true;
+            for row in &galley.rows {
                 let y = rect.top() + row.pos.y + row.size.y / 2.0;
-                if ui.clip_rect().y_range().contains(y) {
+                if starts_line && ui.clip_rect().y_range().contains(y) {
                     ui.painter().text(
                         egui::pos2(rect.right() - glyph * 2.0, y), Align2::RIGHT_CENTER,
-                        (i + 1).to_string(), font.clone(), pal().faint,
+                        line.to_string(), font.clone(), pal().faint,
                     );
                 }
+                starts_line = row.ends_with_newline;
+                if starts_line { line += 1; }
             }
-            preview_text(ui, job, links);
+            preview_text(ui, &job, links);
         });
     });
 }
@@ -45,7 +51,7 @@ fn preview_code(ui: &mut Ui, job: &egui::text::LayoutJob, links: &[TextLink]) {
 pub(super) fn preview_text(ui: &mut Ui, job: &egui::text::LayoutJob, links: &[TextLink]) {
     let (pos, galley, response) = egui::Label::new(job.clone())
         .selectable(true)
-        .wrap_mode(egui::TextWrapMode::Extend)
+        .wrap_mode(egui::TextWrapMode::Wrap)
         .layout_in_ui(ui);
     egui::text_selection::LabelSelectionState::label_text_selection(
         ui, &response, pos, galley.clone(), pal().text, Stroke::NONE,
@@ -1348,7 +1354,7 @@ impl App {
                     .corner_radius(CornerRadius::same(6))
                     .inner_margin(Margin::same(8))
                     .show(ui, |ui| {
-                        ScrollArea::both().auto_shrink([false; 2]).id_salt("preview_text").show(ui, |ui| {
+                        ScrollArea::vertical().auto_shrink([false; 2]).id_salt("preview_text").show(ui, |ui| {
                             preview_code(ui, job, links);
                             if *truncated {
                                 ui.label(RichText::new("… preview truncated").color(pal().faint).italics());
