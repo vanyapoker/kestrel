@@ -308,7 +308,6 @@ fn load_text(path: &Path) -> Payload {
 
     let font = FontId::monospace(12.5);
     let mut job = LayoutJob::default();
-    let gutter = TextFormat { font_id: font.clone(), color: theme::pal().faint, ..Default::default() };
     let mut lines = 0;
     for (n, line) in LinesWithEndings::from(&text).enumerate() {
         if n >= MAX_TEXT_LINES {
@@ -316,7 +315,6 @@ fn load_text(path: &Path) -> Payload {
             break;
         }
         lines += 1;
-        job.append(&format!("{:>4}  ", n + 1), 0.0, gutter.clone());
         let line = if line.chars().count() > MAX_LINE_CHARS {
             let cut: String = line.chars().take(MAX_LINE_CHARS).collect();
             std::borrow::Cow::Owned(cut + "…\n")

@@ -71,6 +71,7 @@ struct Shared {
     own_selection: Option<u64>,
     /// Plain text of the clipboard source we own.
     own_text: String,
+    own_files: bool,
     selection_gen: u64,
     /// The current selection (clipboard) offer from another client.
     selection: Option<WlDataOffer>,
@@ -98,7 +99,71 @@ struct OfferData {
     mimes: Mutex<Vec<String>>,
 }
 
+/// Shares the existing data device; opening another one would steal drag-and-drop.
+struct ClipboardWriter {
+    conn: Connection,
+    qh: QueueHandle<State>,
+    shared: Arc<Mutex<Shared>>,
+    manager: WlDataDeviceManager,
+    device: WlDataDevice,
+}
+
+impl ClipboardWriter {
+    fn set_text(&self, text: &str) -> bool {
+        let data = SourceData {
+            uri_list: String::new(),
+            plain: text.to_string(),
+            gnome: String::new(),
+            clipboard: None,
+            icon: Mutex::new(None),
+        };
+        self.set_selection(data, &[])
+    }
+
+    fn set_selection(&self, mut data: SourceData, extra: &[&str]) -> bool {
+        let mut shared = self.shared.lock().unwrap();
+        let Some(serial) = shared.input_serial else { return false };
+        shared.selection_gen += 1;
+        let generation = shared.selection_gen;
+        data.clipboard = Some(generation);
+        let plain = data.plain.clone();
+        let files = !data.uri_list.is_empty();
+        let source = self.manager.create_data_source(&self.qh, Arc::new(data));
+        for mime in extra.iter().copied().chain(["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING", "TEXT"]) {
+            source.offer(mime.into());
+        }
+        self.device.set_selection(Some(&source), serial);
+        shared.own_selection = Some(generation);
+        shared.own_text = plain;
+        shared.own_files = files;
+        drop(shared);
+        self.conn.flush().is_ok()
+    }
+}
+
+struct ClipboardOutput {
+    writer: Option<ClipboardWriter>,
+}
+
+impl egui::Plugin for ClipboardOutput {
+    fn debug_name(&self) -> &'static str { "Kestrel clipboard" }
+
+    fn output_hook(&mut self, _ctx: &egui::Context, output: &mut egui::FullOutput) {
+        // This runs after label selection's end-of-pass copy output, too.
+        if let Some(writer) = &self.writer {
+            route_text_output(output, |text| writer.set_text(text));
+        }
+    }
+}
+
+fn route_text_output(output: &mut egui::FullOutput, mut write: impl FnMut(&str) -> bool) {
+    output.platform_output.commands.retain(|command| {
+        !matches!(command, egui::OutputCommand::CopyText(text) if write(text))
+    });
+}
+
 pub struct WlDnd {
+    ctx: egui::Context,
     conn: Connection,
     qh: QueueHandle<State>,
     shared: Arc<Mutex<Shared>>,
@@ -117,6 +182,8 @@ impl Drop for WlDnd {
     /// Stops the dispatch thread while the display is still alive, so its
     /// proxies aren't destroyed after winit has freed the connection.
     fn drop(&mut self) {
+        // The output plugin must release its proxies before winit frees the display.
+        self.ctx.plugin::<ClipboardOutput>().lock().writer = None;
         let _ = unsafe { libc::write(std::os::fd::AsRawFd::as_raw_fd(&self.wake_tx), [1u8].as_ptr().cast(), 1) };
         if let Some(t) = self.thread.take() {
             let _ = t.join();
@@ -183,7 +250,7 @@ impl WlDnd {
             our_surface: surface.id(),
             shared: shared.clone(),
             tx,
-            ctx,
+            ctx: ctx.clone(),
             offer: None,
             pos: Pos2::ZERO,
         };
@@ -197,7 +264,9 @@ impl WlDnd {
             .spawn(move || dispatch_loop(queue, state, wake_rx))
             .map_err(|e| e.to_string())?;
         conn.flush().map_err(|e| e.to_string())?;
-        Ok(Self { conn, qh, shared, manager, device, surface, compositor, shm, rx, wake_tx, thread: Some(thread) })
+        let wl = Self { ctx, conn, qh, shared, manager, device, surface, compositor, shm, rx, wake_tx, thread: Some(thread) };
+        wl.ctx.add_plugin(ClipboardOutput { writer: Some(wl.clipboard_writer()) });
+        Ok(wl)
     }
 
     pub fn poll(&self) -> Vec<DndEvent> {
@@ -263,32 +332,18 @@ impl WlDnd {
     }
 
     pub fn set_clipboard_text(&self, text: &str) -> bool {
-        let data = SourceData {
-            uri_list: String::new(),
-            plain: text.to_string(),
-            gnome: String::new(),
-            clipboard: None,
-            icon: Mutex::new(None),
-        };
-        self.set_selection(data, &[])
+        self.clipboard_writer().set_text(text)
     }
 
-    fn set_selection(&self, mut data: SourceData, extra: &[&str]) -> bool {
-        let mut shared = self.shared.lock().unwrap();
-        let Some(serial) = shared.input_serial else { return false };
-        shared.selection_gen += 1;
-        let generation = shared.selection_gen;
-        data.clipboard = Some(generation);
-        let plain = data.plain.clone();
-        let source = self.manager.create_data_source(&self.qh, Arc::new(data));
-        for mime in extra.iter().copied().chain(["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING", "TEXT"]) {
-            source.offer(mime.into());
+    fn clipboard_writer(&self) -> ClipboardWriter {
+        ClipboardWriter {
+            conn: self.conn.clone(), qh: self.qh.clone(), shared: self.shared.clone(),
+            manager: self.manager.clone(), device: self.device.clone(),
         }
-        self.device.set_selection(Some(&source), serial);
-        shared.own_selection = Some(generation);
-        shared.own_text = plain;
-        drop(shared);
-        self.conn.flush().is_ok()
+    }
+
+    fn set_selection(&self, data: SourceData, extra: &[&str]) -> bool {
+        self.clipboard_writer().set_selection(data, extra)
     }
 
     /// Reads text from the clipboard. egui-winit's own clipboard is X11-only here
@@ -318,7 +373,11 @@ impl WlDnd {
         let offer = {
             let shared = self.shared.lock().unwrap();
             if shared.own_selection.is_some() {
-                return ClipRead::Ours;
+                if shared.own_files {
+                    return ClipRead::Ours;
+                }
+                let paths = crate::app::parse_path_list(&shared.own_text);
+                return if paths.is_empty() { ClipRead::Nothing } else { ClipRead::Files { paths, cut: false } };
             }
             match &shared.selection {
                 Some(o) => o.clone(),
@@ -676,6 +735,25 @@ impl Dispatch<WlDataOffer, OfferData> for State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_output_uses_wayland_and_keeps_backend_fallback() {
+        let mut output = egui::FullOutput::default();
+        output.platform_output.commands = vec![
+            egui::OutputCommand::CopyText("Привет\nworld".into()),
+            egui::OutputCommand::OpenUrl(egui::OpenUrl::new_tab("https://example.com")),
+            egui::OutputCommand::CopyText("fallback".into()),
+        ];
+        let mut copied = Vec::new();
+        route_text_output(&mut output, |text| {
+            copied.push(text.to_owned());
+            text != "fallback"
+        });
+        assert_eq!(copied, ["Привет\nworld", "fallback"]);
+        assert_eq!(output.platform_output.commands.len(), 2);
+        assert!(matches!(&output.platform_output.commands[0], egui::OutputCommand::OpenUrl(url) if url.url == "https://example.com"));
+        assert!(matches!(&output.platform_output.commands[1], egui::OutputCommand::CopyText(text) if text == "fallback"));
+    }
 
     #[test]
     fn uri_round_trip() {

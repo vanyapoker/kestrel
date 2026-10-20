@@ -19,17 +19,43 @@ use std::time::Instant;
 
 const ROW_H: f32 = 26.0;
 
+fn preview_code(ui: &mut Ui, job: &egui::text::LayoutJob, links: &[TextLink]) {
+    // Line numbers are decoration: copied selections contain only file text.
+    let galley = ui.fonts_mut(|f| f.layout_job(job.clone()));
+    let font = FontId::monospace(12.5);
+    let glyph = ui.fonts_mut(|f| f.glyph_width(&font, '0'));
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.horizontal_top(|ui| {
+            let (rect, _) = ui.allocate_exact_size(vec2(glyph * 6.0, galley.size().y), Sense::hover());
+            for (i, row) in galley.rows.iter().enumerate() {
+                let y = rect.top() + row.pos.y + row.size.y / 2.0;
+                if ui.clip_rect().y_range().contains(y) {
+                    ui.painter().text(
+                        egui::pos2(rect.right() - glyph * 2.0, y), Align2::RIGHT_CENTER,
+                        (i + 1).to_string(), font.clone(), pal().faint,
+                    );
+                }
+            }
+            preview_text(ui, job, links);
+        });
+    });
+}
+
 pub(super) fn preview_text(ui: &mut Ui, job: &egui::text::LayoutJob, links: &[TextLink]) {
-    let (pos, galley, _) = egui::Label::new(job.clone())
+    let (pos, galley, response) = egui::Label::new(job.clone())
+        .selectable(true)
         .wrap_mode(egui::TextWrapMode::Extend)
         .layout_in_ui(ui);
-    ui.painter().galley(pos, galley.clone(), pal().text);
+    egui::text_selection::LabelSelectionState::label_text_selection(
+        ui, &response, pos, galley.clone(), pal().text, Stroke::NONE,
+    );
     let mut row_start = 0;
-    for (row_index, row) in galley.rows.iter().enumerate() {
+    for row in &galley.rows {
         let row_end = row_start + row.char_count_excluding_newline().0;
         if ui.is_rect_visible(row.rect().translate(pos.to_vec2())) {
             let first = links.partition_point(|link| link.chars.end <= row_start);
-            for (index, link) in links.iter().enumerate().skip(first).take_while(|(_, link)| link.chars.start < row_end) {
+            for link in links.iter().skip(first).take_while(|link| link.chars.start < row_end) {
                 let start = link.chars.start.max(row_start) - row_start;
                 let end = link.chars.end.min(row_end) - row_start;
                 let rect = Rect::from_min_max(
@@ -39,11 +65,11 @@ pub(super) fn preview_text(ui: &mut Ui, job: &egui::text::LayoutJob, links: &[Te
                 ui.painter().line_segment(
                     [rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, pal().accent),
                 );
-                let response = ui.interact(rect, ui.id().with(("preview_link", index, row_index)), Sense::click())
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .on_hover_text(&link.url);
-                if response.clicked() {
-                    ui.ctx().open_url(egui::OpenUrl::new_tab(&link.url));
+                if response.hovered() && ui.rect_contains_pointer(rect) {
+                    response.clone().on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(&link.url);
+                    if response.clicked() {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(&link.url));
+                    }
                 }
             }
         }
@@ -101,9 +127,16 @@ pub(super) fn preview_table(ui: &mut Ui, table: &Table) {
                     r.left() + PAD
                 };
                 let pos = egui::pos2(x, r.center().y - galley.size().y / 2.0);
-                painter.with_clip_rect(text_clip).galley(pos, galley.clone(), color);
+                let mut cell_ui = ui.new_child(UiBuilder::new().id_salt(("csv_cell", row_index, col)).max_rect(r));
+                cell_ui.set_clip_rect(text_clip);
+                let cell_response = cell_ui.interact(
+                    r.intersect(text_clip), cell_ui.id(), Sense::click_and_drag() - Sense::FOCUSABLE,
+                );
+                egui::text_selection::LabelSelectionState::label_text_selection(
+                    &cell_ui, &cell_response, pos, galley.clone(), color, Stroke::NONE,
+                );
                 if row_index > 0 && let Some(line) = galley.rows.first() {
-                    for (i, link) in crate::preview::text_links(text).iter().enumerate() {
+                    for link in &crate::preview::text_links(text) {
                         let x = |c| pos.x + line.x_offset(egui::text::CharIndex(c));
                         let link_rect = Rect::from_x_y_ranges(x(link.chars.start)..=x(link.chars.end), r.y_range())
                             .intersect(text_clip);
@@ -112,13 +145,12 @@ pub(super) fn preview_table(ui: &mut Ui, table: &Table) {
                         }
                         let underline_y = pos.y + line.size.y;
                         painter.hline(link_rect.x_range(), underline_y, Stroke::new(1.0, p.accent));
-                        let id = ui.id().with(("csv_link", row_index, col, i));
-                        let link_response = ui.interact(link_rect, id, Sense::click())
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                            .on_hover_text(&link.url);
-                        on_link |= link_response.hovered();
-                        if link_response.clicked() {
-                            ui.ctx().open_url(egui::OpenUrl::new_tab(&link.url));
+                        if cell_response.hovered() && cell_ui.rect_contains_pointer(link_rect) {
+                            on_link = true;
+                            cell_response.clone().on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(&link.url);
+                            if cell_response.clicked() {
+                                ui.ctx().open_url(egui::OpenUrl::new_tab(&link.url));
+                            }
                         }
                     }
                 }
@@ -1231,6 +1263,15 @@ impl App {
     }
 
     fn preview_panel(&mut self, ui: &mut Ui) {
+        // Keep label selections scoped to the file whose content was selected.
+        let path = self.tab().cursor_entry().map(|e| e.path.clone());
+        let selection_id = ui.id().with("selection_path");
+        let previous = ui.data_mut(|d| d.get_temp::<Option<PathBuf>>(selection_id));
+        if previous.as_ref() != Some(&path) {
+            ui.ctx().plugin::<egui::text_selection::LabelSelectionState>().lock().clear_selection();
+            ui.data_mut(|d| d.insert_temp(selection_id, path));
+        }
+        ui.style_mut().interaction.selectable_labels = true;
         let tab = self.tab();
         let Some(e) = tab.cursor_entry() else {
             ui.add_space(40.0);
@@ -1308,7 +1349,7 @@ impl App {
                     .inner_margin(Margin::same(8))
                     .show(ui, |ui| {
                         ScrollArea::both().auto_shrink([false; 2]).id_salt("preview_text").show(ui, |ui| {
-                            preview_text(ui, job, links);
+                            preview_code(ui, job, links);
                             if *truncated {
                                 ui.label(RichText::new("… preview truncated").color(pal().faint).italics());
                             }

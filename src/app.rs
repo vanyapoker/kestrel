@@ -893,10 +893,8 @@ impl App {
                     return;
                 }
                 crate::wl_dnd::ClipRead::Nothing => {
-                    if self.clip.is_none() {
-                        self.toast("Clipboard has no files to paste", false);
-                        return;
-                    }
+                    self.toast("Clipboard has no files to paste", false);
+                    return;
                 }
             }
             // Ours: the internal clipboard knows whether it was a cut.
@@ -1409,6 +1407,9 @@ impl App {
     // ------------------------------------------------------------ keyboard
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
+        if self.palette.open || self.dialog.is_some() || ctx.text_edit_focused() {
+            ctx.plugin::<egui::text_selection::LabelSelectionState>().lock().clear_selection();
+        }
         if self.palette.open || self.dialog.is_some() {
             return; // they handle their own keys
         }
@@ -1430,6 +1431,8 @@ impl App {
         }
         let mut actions: Vec<Action> = Vec::new();
         let mut filter_changed = false;
+        let text_selected = ctx.plugin::<egui::text_selection::LabelSelectionState>().lock().has_selection()
+            && !ctx.input(|i| i.pointer.any_pressed());
         let grid_cols = if self.tab().mode.is_grid() { self.tab().grid_cols.max(1) as isize } else { 0 };
         let split = self.panes.len() > 1;
         ctx.input_mut(|i| {
@@ -1550,8 +1553,8 @@ impl App {
             let mut paste = None;
             for ev in &i.events {
                 match ev {
-                    Event::Copy => actions.push(Action::Cmd(Copy)),
-                    Event::Cut => actions.push(Action::Cmd(Cut)),
+                    Event::Copy if !text_selected => actions.push(Action::Cmd(Copy)),
+                    Event::Cut if !text_selected => actions.push(Action::Cmd(Cut)),
                     Event::Paste(t) => paste = Some(t.clone()),
                     _ => {}
                 }

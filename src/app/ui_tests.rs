@@ -13,13 +13,15 @@ struct Driver {
     modifiers: Modifiers,
     /// Text drawn in the last frame, with its on-screen rect.
     texts: Vec<(String, Rect)>,
+    commands: Vec<egui::OutputCommand>,
+    opened_urls: Vec<String>,
 }
 
 impl Driver {
     fn new(dir: PathBuf) -> Self {
         let ctx = egui::Context::default();
         let app = App::with_ctx(ctx.clone(), dir);
-        Self { ctx, app, time: 0.0, pointer: Pos2::ZERO, modifiers: Modifiers::NONE, texts: Vec::new() }
+        Self { ctx, app, time: 0.0, pointer: Pos2::ZERO, modifiers: Modifiers::NONE, texts: Vec::new(), commands: Vec::new(), opened_urls: Vec::new() }
     }
 
     fn frame(&mut self, mut events: Vec<Event>) {
@@ -39,6 +41,10 @@ impl Driver {
             app.draw(ui);
         });
         out.textures_delta.clear(); // no renderer in tests
+        self.commands = out.platform_output.commands;
+        self.opened_urls.extend(self.commands.iter().filter_map(|c| match c {
+            egui::OutputCommand::OpenUrl(url) => Some(url.url.clone()), _ => None,
+        }));
         self.texts = out
             .shapes
             .iter()
@@ -537,5 +543,138 @@ fn picker_chooses_files_folders_and_save_names() {
     assert!(d.app.pick_choice().is_empty(), "slashes are not allowed in a name");
     d.app.picker.as_mut().unwrap().name = "  ".into();
     assert!(d.app.pick_choice().is_empty());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn preview_width_survives_resize_toggle_and_session() {
+    let dir = sandbox("preview-width");
+    let mut d = Driver::new(dir.clone());
+    d.frame(Vec::new());
+    let edge = d.app.pane_rects[0].right();
+    d.drag(egui::pos2(edge, 400.0), egui::pos2(edge - 100.0, 400.0), |_| {});
+    let width = 1400.0 - d.app.pane_rects[0].right();
+    assert!((width - 460.0).abs() < 3.0, "resized to {width}");
+    assert!((d.app.preview_width - width).abs() < 2.0, "remembered {} vs {width}", d.app.preview_width);
+    d.app.run_cmd(Cmd::TogglePreview);
+    for _ in 0..30 { d.frame(Vec::new()); }
+    d.app.run_cmd(Cmd::TogglePreview);
+    for _ in 0..30 { d.frame(Vec::new()); }
+    assert!((1400.0 - d.app.pane_rects[0].right() - width).abs() < 2.0);
+    // Drag closed, release, then pull the collapsed grab handle back open.
+    let edge = d.app.pane_rects[0].right();
+    d.drag(egui::pos2(edge, 400.0), egui::pos2(1390.0, 400.0), |_| {});
+    for _ in 0..30 { d.frame(Vec::new()); }
+    assert!(!d.app.show_preview);
+    assert!((d.app.preview_width - width).abs() < 2.0);
+    d.drag(egui::pos2(1399.0, 400.0), egui::pos2(edge, 400.0), |_| {});
+    for _ in 0..30 { d.frame(Vec::new()); }
+    assert!(d.app.show_preview);
+    assert!((1400.0 - d.app.pane_rects[0].right() - width).abs() < 2.0);
+    let saved = d.app.session();
+    let mut restarted = Driver::new(dir.clone());
+    restarted.app.restore(&saved, false);
+    restarted.frame(Vec::new());
+    assert!((1400.0 - restarted.app.pane_rects[0].right() - width).abs() < 2.0);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn path_editor_copies_selected_text() {
+    let dir = sandbox("path-copy");
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| !a.tab().loading);
+    d.app.run_cmd(Cmd::EditPath);
+    d.frame(Vec::new());
+    d.frame(Vec::new());
+    let id = egui::Id::new(("path_edit", 0usize));
+    let mut state = egui::TextEdit::load_state(&d.ctx, id).unwrap();
+    state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+        egui::text::CCursor::new(1), egui::text::CCursor::new(4),
+    )));
+    state.store(&d.ctx, id);
+    d.frame(vec![Event::Copy]);
+    assert!(d.commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(t) if t == "tmp")), "{:?}", d.commands);
+    assert!(d.app.clip.is_none());
+    assert!(d.app.path_edit.is_some());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn preview_selects_unicode_multiline_text_and_keeps_file_copy_separate() {
+    let dir = sandbox("preview-copy");
+    let text = "Привет world\nsecond line";
+    fs::write(dir.join("a.txt"), text).unwrap();
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| !a.tab().loading);
+    d.app.tab_mut().select_path(&dir.join("a.txt"));
+    d.frame(Vec::new());
+    d.until("preview", |a| matches!(a.preview.state, crate::preview::State::Ready(crate::preview::Content::Text { .. })));
+    d.frame(Vec::new());
+    let rect = d.texts.iter().find(|(t, _)| t.starts_with(text)).unwrap_or_else(|| panic!("texts: {:?}", d.texts)).1;
+    d.drag(rect.left_top() + vec2(0.0, 3.0), rect.right_bottom() + vec2(8.0, -3.0), |_| {});
+    d.frame(vec![Event::Copy]);
+    assert!(d.commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(t) if t == text)), "{:?}", d.commands);
+    assert!(d.app.clip.is_none(), "text copy triggered file copy");
+    d.app.tab_mut().select_path(&dir.join("b.txt"));
+    d.frame(Vec::new());
+    d.frame(vec![Event::Copy]);
+    assert!(d.app.clip.is_some(), "old text selection intercepted file copy");
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn preview_table_cells_and_details_are_selectable() {
+    for (name, filename, text, selected) in [
+        ("csv-copy", "data.csv", "name,value\nПривет,42\n", "Привет"),
+        ("metadata-copy", "a.txt", "body", "Permissions"),
+    ] {
+        let dir = sandbox(name);
+        fs::write(dir.join(filename), text).unwrap();
+        let mut d = Driver::new(dir.clone());
+        d.until("listing", |a| !a.tab().loading);
+        d.app.tab_mut().select_path(&dir.join(filename));
+        d.frame(Vec::new());
+        d.until("preview", |a| matches!(a.preview.state, crate::preview::State::Ready(_)));
+        d.frame(Vec::new());
+        let selected = if name == "metadata-copy" { dir.join(filename).display().to_string() } else { selected.to_string() };
+        let rect = d.texts.iter().find(|(t, _)| t == &selected).unwrap().1;
+        d.drag(rect.left_top() + vec2(0.0, 2.0), rect.right_bottom() + vec2(2.0, -2.0), |_| {});
+        d.frame(vec![Event::Copy]);
+        assert!(d.commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(t) if t == &selected)), "{name}: {:?}", d.commands);
+        assert!(d.app.clip.is_none());
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
+fn dragging_over_preview_link_selects_without_opening() {
+    let dir = sandbox("link-select");
+    let text = "https://example.com/hello";
+    fs::write(dir.join("a.txt"), text).unwrap();
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| !a.tab().loading);
+    d.app.tab_mut().select_path(&dir.join("a.txt"));
+    d.frame(Vec::new());
+    d.until("preview", |a| matches!(a.preview.state, crate::preview::State::Ready(crate::preview::Content::Text { .. })));
+    d.frame(Vec::new());
+    let rect = d.texts.iter().find(|(t, _)| t == text).unwrap().1;
+    d.drag(rect.left_center(), rect.right_center() + vec2(1.0, 0.0), |_| {});
+    assert!(d.opened_urls.is_empty());
+    d.frame(vec![Event::Copy]);
+    assert!(d.commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(t) if t == text)), "{:?}", d.commands);
+    // Opening the path editor with the keyboard must replace the label selection.
+    d.app.run_cmd(Cmd::EditPath);
+    d.frame(Vec::new());
+    d.frame(Vec::new());
+    let id = egui::Id::new(("path_edit", 0usize));
+    let mut state = egui::TextEdit::load_state(&d.ctx, id).unwrap();
+    state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+        egui::text::CCursor::new(1), egui::text::CCursor::new(4),
+    )));
+    state.store(&d.ctx, id);
+    d.frame(vec![Event::Copy]);
+    let copies: Vec<_> = d.commands.iter().filter_map(|c| match c { egui::OutputCommand::CopyText(t) => Some(t.as_str()), _ => None }).collect();
+    assert_eq!(copies, ["tmp"]);
     fs::remove_dir_all(dir).unwrap();
 }
