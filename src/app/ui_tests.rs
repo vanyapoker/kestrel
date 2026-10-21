@@ -106,6 +106,76 @@ fn sandbox(name: &str) -> PathBuf {
 }
 
 #[test]
+fn typing_a_filter_selects_the_best_fuzzy_match() {
+    let dir = sandbox("fuzzy-filter");
+    for name in ["Named", "NaDya", "nd-notes", "ND"] {
+        fs::create_dir(dir.join(name)).unwrap();
+    }
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| !a.tab().loading);
+    d.app.tab_mut().select_path(&dir.join("Named"));
+    d.frame(vec![Event::Text("nd".into())]);
+    assert_eq!(d.app.tab().cursor_entry().unwrap().name, "ND");
+    let names: Vec<_> = d.app.tab().view.iter().map(|&i| d.app.tab().entries[i].name.as_str()).collect();
+    assert_eq!(names, ["ND", "nd-notes", "NaDya", "Named"]);
+    d.frame(vec![Event::Text("y".into())]);
+    assert_eq!(d.app.tab().cursor_entry().unwrap().name, "NaDya");
+    d.frame(vec![Event::Key { key: Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }]);
+    assert_eq!(d.app.tab().path, dir.join("NaDya"));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn recursive_search_finds_and_ranks_fuzzy_matches() {
+    let dir = sandbox("fuzzy-recursive");
+    fs::create_dir_all(dir.join("dest/deeper")).unwrap();
+    for name in ["ND", "nd-notes", "a-nd", "NaDya", "Named", "other"] {
+        fs::write(dir.join("dest/deeper").join(name), "text").unwrap();
+    }
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| !a.tab().loading);
+    d.app.tab_mut().filter = "nd".into();
+    d.app.start_search();
+    d.until("recursive fuzzy search", |a| !a.tab().search.as_ref().unwrap().running);
+    let names: Vec<_> = d.app.tab().view.iter().map(|&i| d.app.tab().entries[i].name.as_str()).collect();
+    assert_eq!(names, ["ND", "nd-notes", "a-nd", "NaDya", "Named"]);
+    assert_eq!(d.app.tab().cursor_entry().unwrap().name, "ND");
+    d.frame(vec![Event::Key { key: Key::ArrowDown, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }]);
+    assert_eq!(d.app.tab().cursor_entry().unwrap().name, "nd-notes");
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn streamed_search_promotes_better_matches_and_keeps_manual_selection() {
+    let dir = sandbox("fuzzy-streaming");
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| !a.tab().loading);
+    // An empty search does not spawn a worker; feed batches in a known order.
+    d.app.start_search();
+    d.app.tab_mut().search.as_mut().unwrap().query = "nd".into();
+    let tab_id = d.app.tab().id;
+    let generation = d.app.tab().search.as_ref().unwrap().generation;
+    let send = |d: &mut Driver, name: &str| {
+        let path = dir.join(name);
+        fs::write(&path, "text").unwrap();
+        let entry = fsops::make_entry(path.clone(), name.into(), fs::metadata(&path).unwrap());
+        d.app.search_tx.send(SearchMsg { tab_id, generation, batch: vec![entry], done: false, truncated: false }).unwrap();
+        d.frame(Vec::new());
+    };
+    send(&mut d, "Named");
+    send(&mut d, "NaDya");
+    assert_eq!(d.app.tab().cursor_entry().unwrap().name, "NaDya");
+    send(&mut d, "a-nd");
+    assert_eq!(d.app.tab().cursor_entry().unwrap().name, "a-nd");
+    d.app.tab_mut().select_path(&dir.join("a-nd"));
+    send(&mut d, "ND");
+    assert_eq!(d.app.tab().entry(0).unwrap().name, "ND");
+    assert_eq!(d.app.tab().cursor_entry().unwrap().name, "a-nd");
+    assert_eq!(d.app.tab().anchor, d.app.tab().cursor);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn folder_updates_keep_selection_and_scroll() {
     let dir = sandbox("refresh-keep");
     for i in 0..100 {

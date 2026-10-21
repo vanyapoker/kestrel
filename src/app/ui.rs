@@ -1841,6 +1841,9 @@ fn rubber_band(ui: &Ui, p: usize, tab: &mut Tab, inner: Rect, over_item: bool, c
         if !inner.contains(pos) || over_item || on_scrollbar || covered || DragAndDrop::has_any_payload(ctx) {
             return;
         }
+        if let Some(s) = &mut tab.search {
+            s.follow_best = false;
+        }
         let base = if ctrl { tab.targets().into_iter().collect() } else { HashSet::new() };
         if !ctrl {
             tab.marked.clear();

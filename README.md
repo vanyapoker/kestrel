@@ -45,7 +45,7 @@ If you installed from your own clone, run `./install.sh --uninstall` there inste
 - **Folder sizes.** Every folder shows its real size, worked out live as you browse.
 - **Preview panel.** See images, code with syntax highlighting, text, PDFs, videos, SVGs and audio details without opening anything. Text wraps to the panel width, and JSON is automatically formatted for reading without changing the file.
 - **Tabs and split view.** Work in several folders at once, and drag files between panes.
-- **Find anything.** Type to filter the current folder, or press Ctrl+F to search all its subfolders.
+- **Find anything.** Type to filter the current folder, or press Ctrl+F to search all its subfolders. Both support case-insensitive fuzzy matching (`nd` finds `NaDya`), with the best matches first. Exact names, prefixes and substrings rank above scattered letters; space-separated words must all match.
 - **Command palette.** Ctrl+P reaches every action.
 - **Several views.** Switch between details, list and icon views, and zoom with Ctrl+scroll.
 - **Safe file operations.** Copy and move run in the background with progress. Deleted files go to the trash, files are never overwritten (a copy with the same name gets a " (2)" suffix), and Ctrl+Z undoes renames, moves, copies and trashing.

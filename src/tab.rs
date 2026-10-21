@@ -1,4 +1,5 @@
 use crate::fsops::Entry;
+use crate::search::Query;
 use crate::util;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -59,6 +60,8 @@ pub struct Search {
     pub cancel: Arc<AtomicBool>,
     pub running: bool,
     pub truncated: bool,
+    /// Follow the highest-ranked result until the user selects an item.
+    pub follow_best: bool,
     /// Restart the search once typing pauses.
     pub restart_at: Option<Instant>,
 }
@@ -173,6 +176,9 @@ impl Tab {
 
     /// Plain click / plain cursor move: single selection.
     pub fn select_only(&mut self, vi: usize) {
+        if let Some(s) = &mut self.search {
+            s.follow_best = false;
+        }
         if self.view.is_empty() {
             return;
         }
@@ -183,8 +189,20 @@ impl Tab {
         self.scroll_to_cursor = true;
     }
 
+    /// A changed query or a new search batch selects the best match until the
+    /// user takes over with the mouse or keyboard.
+    pub fn select_best_match(&mut self) {
+        self.select_only(0);
+        if let Some(s) = &mut self.search {
+            s.follow_best = true;
+        }
+    }
+
     /// Ctrl+click: add or remove one item.
     pub fn toggle_mark(&mut self, vi: usize) {
+        if let Some(s) = &mut self.search {
+            s.follow_best = false;
+        }
         let Some(path) = self.entry(vi).map(|e| e.path.clone()) else { return };
         if self.marked.is_empty() {
             if let Some(cur) = self.cursor_entry().map(|e| e.path.clone()) {
@@ -202,6 +220,9 @@ impl Tab {
 
     /// Shift+click / shift+arrows: select the range from the anchor.
     pub fn select_range(&mut self, vi: usize) {
+        if let Some(s) = &mut self.search {
+            s.follow_best = false;
+        }
         if self.view.is_empty() {
             return;
         }
@@ -215,6 +236,9 @@ impl Tab {
     }
 
     pub fn select_all(&mut self) {
+        if let Some(s) = &mut self.search {
+            s.follow_best = false;
+        }
         self.marked = self.view.iter().map(|&i| self.entries[i].path.clone()).collect();
     }
 
@@ -250,21 +274,27 @@ impl Tab {
 
     pub fn apply_view(&mut self, sizes: &HashMap<PathBuf, u64>, show_hidden: bool) {
         let keep = self.cursor_entry().map(|e| e.path.clone());
-        let needle = self.filter.to_lowercase();
+        let anchor = self.anchor.and_then(|vi| self.entry(vi)).map(|e| e.path.clone());
+        let query = Query::new(&match &self.search {
+            Some(s) => format!("{} {}", s.query, self.filter),
+            None => self.filter.clone(),
+        });
         let entries = &self.entries;
         let in_search = self.search.is_some();
-        let mut view: Vec<usize> = (0..entries.len())
-            .filter(|&i| {
+        let mut ranked: Vec<_> = (0..entries.len())
+            .filter_map(|i| {
                 let e = &entries[i];
-                (show_hidden || in_search || !e.hidden)
-                    && (needle.is_empty() || e.name.to_lowercase().contains(&needle))
+                if !show_hidden && !in_search && e.hidden {
+                    return None;
+                }
+                query.score(&e.name).map(|score| (i, score))
             })
             .collect();
         let size_of = |e: &Entry| if e.is_dir { sizes.get(&e.path).copied().unwrap_or(0) } else { e.size };
         let (sort, asc) = (self.sort, self.ascending);
-        view.sort_by(|&a, &b| {
+        ranked.sort_by(|&(a, a_score), &(b, b_score)| {
             let (x, y) = (&entries[a], &entries[b]);
-            y.is_dir.cmp(&x.is_dir).then_with(|| {
+            b_score.cmp(&a_score).then_with(|| y.is_dir.cmp(&x.is_dir)).then_with(|| {
                 let ord = match sort {
                     SortKey::Name => util::natural_cmp(&x.name, &y.name),
                     SortKey::Size => size_of(x).cmp(&size_of(y)),
@@ -273,17 +303,17 @@ impl Tab {
                 };
                 let ord = if asc { ord } else { ord.reverse() };
                 ord.then_with(|| util::natural_cmp(&x.name, &y.name))
+                    .then_with(|| x.path.components().count().cmp(&y.path.components().count()))
+                    .then_with(|| x.path.cmp(&y.path))
             })
         });
-        self.view = view;
+        self.view = ranked.into_iter().map(|(i, _)| i).collect();
         let visible: HashSet<&PathBuf> = self.view.iter().map(|&i| &entries[i].path).collect();
         self.marked.retain(|p| visible.contains(p));
         self.cursor = keep
             .and_then(|p| self.view.iter().position(|&i| entries[i].path == p))
             .or(if self.view.is_empty() { None } else { Some(0) });
-        if self.anchor.is_some_and(|a| a >= self.view.len()) {
-            self.anchor = self.cursor;
-        }
+        self.anchor = anchor.and_then(|p| self.view.iter().position(|&i| entries[i].path == p)).or(self.cursor);
     }
 }
 
@@ -335,6 +365,36 @@ mod tests {
         assert_eq!(m.zoom(2), ViewMode::Icons(0));
         assert_eq!(m.zoom(100), ViewMode::Icons(ICON_SIZES.len() - 1));
         assert_eq!(ViewMode::Icons(0).zoom(-2), ViewMode::Details);
+    }
+
+    #[test]
+    fn filtered_views_rank_relevance_before_folders_and_column_sort() {
+        let mut t = tab_with(&["Named", "nd-notes", "NaDya", "a-nd", "ND", "other"]);
+        t.entries[0].is_dir = true;
+        t.entries[0].size = u64::MAX;
+        t.sort = SortKey::Size;
+        t.ascending = false;
+        t.filter = "nd".into();
+        t.apply_view(&HashMap::new(), true);
+        let names: Vec<_> = t.view.iter().map(|&i| t.entries[i].name.as_str()).collect();
+        assert_eq!(names, ["ND", "nd-notes", "a-nd", "NaDya", "Named"]);
+
+        // Without a query the chosen column sort and folders-first order return.
+        t.filter.clear();
+        t.apply_view(&HashMap::new(), true);
+        assert_eq!(t.entry(0).unwrap().name, "Named");
+        assert_eq!(t.view.len(), 6);
+    }
+
+    #[test]
+    fn fuzzy_filter_still_respects_hidden_files_and_natural_ties() {
+        let mut t = tab_with(&[".nd", "NaDya10", "NaDya02", "NaDya01", "other"]);
+        t.filter = "nd".into();
+        t.apply_view(&HashMap::new(), false);
+        let names: Vec<_> = t.view.iter().map(|&i| t.entries[i].name.as_str()).collect();
+        assert_eq!(names, ["NaDya01", "NaDya02", "NaDya10"]);
+        t.apply_view(&HashMap::new(), true);
+        assert_eq!(t.entry(0).unwrap().name, ".nd");
     }
 
     #[test]

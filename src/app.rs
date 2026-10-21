@@ -537,6 +537,7 @@ impl App {
                 cancel: Arc::new(AtomicBool::new(false)),
                 running: false,
                 truncated: false,
+                follow_best: true,
                 restart_at: None,
             });
             self.restart_search();
@@ -555,6 +556,7 @@ impl App {
         s.generation += 1;
         s.restart_at = None;
         s.truncated = false;
+        s.follow_best = true;
         tab.entries.clear();
         tab.view.clear();
         tab.marked.clear();
@@ -692,7 +694,11 @@ impl App {
         if !searched.is_empty() {
             let (sizes, hidden) = (&self.sizes, self.show_hidden);
             for tab in self.panes.iter_mut().flat_map(|p| p.tabs.iter_mut()).filter(|t| searched.contains(&t.id)) {
+                let follow_best = tab.search.as_ref().is_some_and(|s| s.follow_best) && tab.marked.is_empty();
                 tab.apply_view(sizes, hidden);
+                if follow_best {
+                    tab.select_best_match();
+                }
             }
         }
 
@@ -1578,6 +1584,7 @@ impl App {
             let pane = &mut self.panes[self.active_pane];
             let tab = &mut pane.tabs[pane.active];
             tab.apply_view(sizes, hidden);
+            tab.select_best_match();
             tab.scroll_to_cursor = true;
         }
         for a in actions {
