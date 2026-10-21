@@ -75,7 +75,11 @@ impl Driver {
     }
 
     fn button(&mut self, pressed: bool) {
-        let ev = Event::PointerButton { pos: self.pointer, button: PointerButton::Primary, pressed, modifiers: self.modifiers };
+        self.mouse_button(PointerButton::Primary, pressed);
+    }
+
+    fn mouse_button(&mut self, button: PointerButton, pressed: bool) {
+        let ev = Event::PointerButton { pos: self.pointer, button, pressed, modifiers: self.modifiers };
         self.frame(vec![ev]);
     }
 
@@ -304,6 +308,95 @@ fn click_without_moving_does_not_drag() {
     d.frame(Vec::new());
     assert_eq!(d.app.tab().cursor_entry().map(|e| e.name.as_str()), Some("b.txt"));
     fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn non_primary_buttons_do_not_drag_folders() {
+    for mode in [ViewMode::Details, ViewMode::List, ViewMode::Icons(2)] {
+        for button in [PointerButton::Secondary, PointerButton::Middle, PointerButton::Extra1, PointerButton::Extra2] {
+            let dir = sandbox(&format!("non-primary-{mode:?}-{button:?}"));
+            fs::create_dir(dir.join("source")).unwrap();
+            let mut d = Driver::new(dir.clone());
+            d.app.tab_mut().mode = mode;
+            d.until("listing", |a| a.row_rects.contains_key(&dir.join("source")));
+            let from = d.row(&dir.join("source")).center();
+            let to = d.row(&dir.join("dest")).center();
+            d.move_to(from);
+            d.mouse_button(button, true);
+            d.move_to(from + vec2(16.0, 0.0));
+            assert!(!egui::DragAndDrop::has_any_payload(&d.ctx), "{button:?} started a folder drag in {mode:?}");
+            d.move_to(to);
+            d.mouse_button(button, false);
+            assert!(dir.join("source").is_dir());
+            assert!(!dir.join("dest/source").exists());
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
+}
+
+#[test]
+fn side_buttons_navigate_without_dragging_folders() {
+    for button in [PointerButton::Extra1, PointerButton::Extra2] {
+        let dir = sandbox(&format!("mouse-history-{button:?}"));
+        fs::create_dir(dir.join("dest/child")).unwrap();
+        let mut d = Driver::new(dir.clone());
+        d.app.navigate(dir.join("dest"), true);
+        if button == PointerButton::Extra2 {
+            d.app.go_back();
+        }
+        d.until("listing", |a| !a.tab().loading);
+        let (hover, target) = if button == PointerButton::Extra1 {
+            (dir.join("dest/child"), dir.clone())
+        } else {
+            (dir.join("dest"), dir.join("dest"))
+        };
+        d.move_to(d.row(&hover).center());
+        d.mouse_button(button, true);
+        assert_eq!(d.app.tab().path, target);
+        d.until("history listing", |a| !a.tab().loading);
+        let folder = if button == PointerButton::Extra1 { dir.join("dest") } else { dir.join("dest/child") };
+        let from = d.row(&folder).center();
+        d.move_to(from);
+        d.move_to(from + vec2(16.0, 0.0));
+        assert!(!egui::DragAndDrop::has_any_payload(&d.ctx), "history button started a folder drag");
+        d.mouse_button(button, false);
+        assert!(dir.join("dest/child").is_dir());
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
+fn non_primary_release_does_not_drop_files() {
+    for button in [PointerButton::Secondary, PointerButton::Middle, PointerButton::Extra1, PointerButton::Extra2] {
+        for on_folder in [true, false] {
+            let dir = sandbox(&format!("non-primary-release-{button:?}-{on_folder}"));
+            let mut d = Driver::new(dir.clone());
+            d.until("listing", |a| a.row_rects.contains_key(&dir.join("a.txt")));
+            let from = d.row(&dir.join("a.txt")).center();
+            let to = if on_folder { d.row(&dir.join("dest")).center() } else { from + vec2(0.0, 300.0) };
+            d.move_to(from);
+            d.button(true);
+            d.move_to(from + vec2(16.0, 0.0));
+            assert!(egui::DragAndDrop::has_any_payload(&d.ctx));
+            d.move_to(to);
+            // Use another folder's file for the background case so a spurious drop
+            // would submit a move instead of the same-folder no-op.
+            fs::write(dir.join("dest/held.txt"), "held").unwrap();
+            egui::DragAndDrop::set_payload(&d.ctx, DragPaths(vec![dir.join("dest/held.txt")]));
+            if on_folder {
+                egui::DragAndDrop::set_payload(&d.ctx, DragPaths(vec![dir.join("a.txt")]));
+            }
+            d.mouse_button(button, true);
+            d.mouse_button(button, false);
+            d.until("idle file operations", |a| a.ops.queued.load(Ordering::Relaxed) == 0);
+            assert!(dir.join("a.txt").exists(), "{button:?} release moved a file onto a folder");
+            assert!(dir.join("dest/held.txt").exists(), "{button:?} release moved a file onto the background");
+            assert!(!dir.join("dest/a.txt").exists());
+            assert!(!dir.join("held.txt").exists());
+            d.button(false);
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
 }
 
 #[test]

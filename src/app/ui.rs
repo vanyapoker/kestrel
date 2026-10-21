@@ -15,6 +15,7 @@ use eframe::egui::{
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 const ROW_H: f32 = 26.0;
@@ -542,7 +543,7 @@ impl App {
                     painter.line_segment([c + vec2(-arm, -arm), c + vec2(arm, arm)], stroke);
                     painter.line_segment([c + vec2(-arm, arm), c + vec2(arm, -arm)], stroke);
                 }
-                if let Some(paths) = resp.dnd_release_payload::<DragPaths>() {
+                if let Some(paths) = take_file_drop(&resp) {
                     let copy = ui.input(|i| i.modifiers.ctrl);
                     actions.push(Action::Drop { paths: paths.0.clone(), dest: tab.path.clone(), copy });
                 }
@@ -732,7 +733,7 @@ impl App {
                     }
                     let text = RichText::new(label).color(if n == last_index { pal().text } else { pal().dim });
                     let resp = ui.add(egui::Button::new(text).frame_when_inactive(false));
-                    if let Some(paths) = resp.dnd_release_payload::<DragPaths>() {
+                    if let Some(paths) = take_file_drop(&resp) {
                         let copy = ui.input(|i| i.modifiers.ctrl);
                         actions.push(Action::Drop { paths: paths.0.clone(), dest: part.to_path_buf(), copy });
                     }
@@ -854,6 +855,8 @@ impl App {
 
     fn file_grid(&mut self, ui: &mut Ui, p: usize, actions: &mut Vec<Action>) {
         let pane_active = p == self.active_pane;
+        #[cfg(test)]
+        let row_rects = &mut self.row_rects;
         let thumbs = &mut self.thumbs;
         let bookmarks = &self.places.bookmarks;
         let cut = self.clip.as_ref().filter(|c| c.cut).map(|c| &c.paths);
@@ -922,6 +925,8 @@ impl App {
                             ViewMode::Icons(_) => paint_tile(painter, thumbs, tile, e, faded),
                             _ => paint_cell(painter, tile, e, faded),
                         }
+                        #[cfg(test)]
+                        row_rects.insert(e.path.clone(), rect);
                         row_interactions(ui, &resp, tab, vi, e, ctrl_shift, actions, p, bookmarks);
                     }
                 });
@@ -1054,7 +1059,7 @@ impl App {
                             actions.push(Action::Device(DevOp::Eject, device.unwrap().dev.clone()));
                         }
                     }
-                    if !unmounted && let Some(paths) = resp.dnd_release_payload::<DragPaths>() {
+                    if !unmounted && let Some(paths) = take_file_drop(&resp) {
                         let copy = ui.input(|i| i.modifiers.ctrl);
                         actions.push(Action::Drop { paths: paths.0.clone(), dest: path.clone(), copy });
                     }
@@ -1916,7 +1921,7 @@ fn bookmark_zone(ui: &Ui, resp: &egui::Response, dirs: &[PathBuf], actions: &mut
     if hot {
         ui.ctx().data_mut(|d| d.insert_temp(bookmark_hover_id(), true));
     }
-    if resp.dnd_release_payload::<DragPaths>().is_some() {
+    if take_file_drop(resp).is_some() {
         actions.push(Action::Bookmark(dirs.to_vec()));
     }
     hot
@@ -1972,6 +1977,16 @@ fn drop_hover(resp: &egui::Response, target: &Path) -> bool {
     hovering
 }
 
+/// Only the left button can finish a file drag. egui's generic DnD helper
+/// accepts any button release, including the back/forward navigation buttons.
+fn take_file_drop(resp: &egui::Response) -> Option<Arc<DragPaths>> {
+    if resp.contains_pointer() && resp.ctx.input(|i| i.pointer.primary_released()) {
+        DragAndDrop::take_payload::<DragPaths>(&resp.ctx)
+    } else {
+        None
+    }
+}
+
 /// Dropping onto empty space in a pane moves/copies into that pane's folder.
 fn background_drop(ui: &mut Ui, tab: &Tab, rect: Rect, actions: &mut Vec<Action>) {
     if tab.search.is_some() {
@@ -1993,7 +2008,7 @@ fn background_drop(ui: &mut Ui, tab: &Tab, rect: Rect, actions: &mut Vec<Action>
     {
         ctx.data_mut(|d| d.insert_temp(drop_target_id(), tab.path.clone()));
     }
-    if ctx.input(|i| i.pointer.any_released())
+    if ctx.input(|i| i.pointer.primary_released())
         && let Some(paths) = DragAndDrop::take_payload::<DragPaths>(ctx)
     {
         let copy = ctx.input(|i| i.modifiers.ctrl);
@@ -2013,11 +2028,11 @@ fn row_interactions(
     p: usize,
     bookmarks: &[(String, PathBuf)],
 ) {
-    if resp.drag_started() {
+    if resp.drag_started_by(egui::PointerButton::Primary) {
         let paths = if tab.is_selected(vi) { tab.targets() } else { vec![e.path.clone()] };
         DragAndDrop::set_payload(ui.ctx(), DragPaths(paths));
     }
-    if let Some(paths) = resp.dnd_release_payload::<DragPaths>() {
+    if let Some(paths) = take_file_drop(resp) {
         if e.is_dir && !paths.0.contains(&e.path) {
             actions.push(Action::Drop { paths: paths.0.clone(), dest: e.path.clone(), copy: ctrl });
         }
