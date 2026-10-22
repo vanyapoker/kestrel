@@ -300,10 +300,6 @@ impl App {
         self.panes.iter_mut().flat_map(|p| p.tabs.iter_mut())
     }
 
-    fn tab_by_id(&mut self, id: u64) -> Option<&mut Tab> {
-        self.tabs_mut().find(|t| t.id == id)
-    }
-
     fn refilter_all(&mut self) {
         let (sizes, hidden) = (&self.sizes, self.show_hidden);
         for tab in self.panes.iter_mut().flat_map(|p| p.tabs.iter_mut()) {
@@ -529,6 +525,9 @@ impl App {
         self.preview.invalidate();
         let tab = self.tab_mut();
         if tab.search.is_some() {
+            let s = tab.search.as_mut().unwrap();
+            s.index = None;
+            s.running = false;
             self.restart_search();
             return;
         }
@@ -548,6 +547,8 @@ impl App {
                 truncated: false,
                 follow_best: true,
                 restart_at: None,
+                index: None,
+                active_query: String::new(),
             });
             self.restart_search();
         }
@@ -560,6 +561,15 @@ impl App {
         let tab = &mut pane.tabs[pane.active];
         let tab_id = tab.id;
         let Some(s) = tab.search.as_mut() else { return };
+        if s.running && s.index.is_none() {
+            // Finish the query-independent scan instead of restarting the walk
+            // at every keystroke. The final index reranks the latest query.
+            s.restart_at = None;
+            s.follow_best = true;
+            tab.apply_view(&self.sizes, hidden);
+            tab.select_best_match();
+            return;
+        }
         s.cancel.store(true, Ordering::Relaxed);
         s.cancel = Arc::new(AtomicBool::new(false));
         s.generation += 1;
@@ -573,6 +583,7 @@ impl App {
         tab.force_offset = Some(0.0);
         let s = tab.search.as_mut().unwrap();
         s.running = !s.query.trim().is_empty();
+        s.active_query = s.query.clone();
         if s.running {
             let req = search::Request {
                 tab_id,
@@ -581,6 +592,7 @@ impl App {
                 query: s.query.clone(),
                 show_hidden: hidden,
                 cancel: s.cancel.clone(),
+                index: s.index.clone(),
             };
             search::spawn(req, self.search_tx.clone(), self.ctx.clone());
         }
@@ -688,7 +700,10 @@ impl App {
 
         let mut searched = HashSet::new();
         while let Ok(msg) = self.search_rx.try_recv() {
-            let Some(tab) = self.tab_by_id(msg.tab_id) else { continue };
+            let (sizes, hidden) = (&self.sizes, self.show_hidden);
+            let Some(tab) = self.panes.iter_mut().flat_map(|p| &mut p.tabs).find(|t| t.id == msg.tab_id) else { continue };
+            let kept = (tab.cursor.zip(tab.cursor_entry().map(|e| e.path.clone())),
+                tab.anchor.and_then(|vi| tab.entry(vi)).map(|e| e.path.clone()));
             let Some(s) = tab.search.as_mut() else { continue };
             if s.generation != msg.generation {
                 continue;
@@ -696,8 +711,17 @@ impl App {
             if msg.done {
                 s.running = false;
                 s.truncated = msg.truncated;
+                if let Some(index) = msg.index { s.index = Some(index); }
+                if s.active_query != s.query { s.restart_at = Some(now); }
             }
-            tab.entries.extend(msg.batch);
+            if msg.replace {
+                tab.entries = msg.batch;
+                tab.view.clear();
+                tab.apply_view(sizes, hidden);
+                if !tab.search.as_ref().unwrap().follow_best { tab.restore_selection(kept.0, kept.1); }
+            } else {
+                tab.entries.extend(msg.batch);
+            }
             searched.insert(msg.tab_id);
         }
         if !searched.is_empty() {
@@ -746,6 +770,14 @@ impl App {
             for tab in self.tabs_mut() {
                 if tab.search.is_none() && (Some(tab.path.as_path()) == p.parent() || tab.path == p) {
                     tab.reload_at.get_or_insert(now + WATCH_DEBOUNCE);
+                }
+                if let Some(s) = &mut tab.search {
+                    if p.starts_with(&s.root) {
+                        s.cancel.store(true, Ordering::Relaxed);
+                        s.index = None;
+                        s.running = false;
+                        s.restart_at = Some(now + WATCH_DEBOUNCE);
+                    }
                 }
             }
         }
@@ -1118,7 +1150,7 @@ impl App {
                 self.show_hidden = !self.show_hidden;
                 self.refilter_all();
                 if self.tab().search.is_some() {
-                    self.restart_search();
+                    self.refresh();
                 }
             }
             Cmd::TogglePreview => self.show_preview = !self.show_preview,

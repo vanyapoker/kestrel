@@ -674,6 +674,7 @@ impl App {
                         s.restart_at = Some(Instant::now() + super::SEARCH_DEBOUNCE);
                         ui.ctx().request_repaint_after(super::SEARCH_DEBOUNCE);
                     }
+                    resp.on_hover_text("Fuzzy names · ext:pdf,jpg · type:folder / type:file\n\"literal phrase\" · =exact-name.txt · F5 rescans folders");
                 });
                 if search_focus {
                     self.search_focus = false;
@@ -770,6 +771,7 @@ impl App {
         let tab = &mut pane.tabs[pane.active];
         let full = ui.available_rect_before_wrap();
         let cols = Columns::new(full.left(), full.right());
+        let query = tab.query();
         let in_search = tab.search.is_some();
 
         // Header.
@@ -834,7 +836,7 @@ impl App {
                     painter.rect_stroke(row, CornerRadius::same(5), Stroke::new(1.0, pal().accent), egui::StrokeKind::Inside);
                 }
                 let faded = cut.is_some_and(|c| c.contains(&e.path)) || dragging.is_some_and(|d| d.0.contains(&e.path));
-                paint_row(painter, rect, &cols, e, sizes, sizing, faded);
+                paint_row(painter, rect, &cols, e, sizes, sizing, faded, &query);
                 #[cfg(test)]
                 row_rects.insert(e.path.clone(), rect);
 
@@ -865,6 +867,7 @@ impl App {
         let tab = &mut pane.tabs[pane.active];
         let full = ui.available_rect_before_wrap();
         let mode = tab.mode;
+        let query = tab.query();
         let (cell, radius) = match mode {
             ViewMode::Icons(i) => {
                 let s = ICON_SIZES[i.min(ICON_SIZES.len() - 1)];
@@ -922,8 +925,8 @@ impl App {
                         let faded = cut.is_some_and(|c| c.contains(&e.path))
                             || dragging.is_some_and(|d| d.0.contains(&e.path));
                         match mode {
-                            ViewMode::Icons(_) => paint_tile(painter, thumbs, tile, e, faded),
-                            _ => paint_cell(painter, tile, e, faded),
+                            ViewMode::Icons(_) => paint_tile(painter, thumbs, tile, e, faded, &query),
+                            _ => paint_cell(painter, tile, e, faded, &query),
                         }
                         #[cfg(test)]
                         row_rects.insert(e.path.clone(), rect);
@@ -2165,6 +2168,7 @@ fn open_with_menu(ui: &mut Ui, tab: &Tab, vi: usize, e: &Entry, p: usize, action
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn paint_row(
     painter: &Painter,
     rect: Rect,
@@ -2173,6 +2177,7 @@ fn paint_row(
     sizes: &HashMap<PathBuf, u64>,
     sizing: &std::collections::HashSet<PathBuf>,
     faded: bool,
+    query: &crate::search::Query,
 ) {
     let cy = rect.center().y;
     let alpha = if faded { 0.45 } else { 1.0 };
@@ -2180,13 +2185,8 @@ fn paint_row(
     draw_entry_icon(painter, Pos2::new(cols.name.0 - 12.0, cy), 1.0, &e.path, cat);
     let name_color = if e.hidden { pal().dim } else { pal().text };
     let name_clip = painter.with_clip_rect(Rect::from_x_y_ranges(cols.name.0..=cols.name.1, rect.y_range()));
-    let name_rect = name_clip.text(
-        Pos2::new(cols.name.0, cy),
-        Align2::LEFT_CENTER,
-        &e.name,
-        FontId::proportional(BODY),
-        name_color.gamma_multiply(alpha),
-    );
+    let name_rect = paint_name(&name_clip, Pos2::new(cols.name.0, cy), &e.name, query,
+        FontId::proportional(BODY), name_color.gamma_multiply(alpha));
     if e.is_link {
         painter.text(Pos2::new(cols.name.0 - 6.0, cy + 6.0), Align2::CENTER_CENTER, "↗", FontId::proportional(9.0), pal().accent);
     }
@@ -2224,21 +2224,20 @@ fn paint_row(
 }
 
 /// A List-mode cell: icon and name on one line.
-fn paint_cell(painter: &Painter, cell: Rect, e: &Entry, faded: bool) {
+fn paint_cell(painter: &Painter, cell: Rect, e: &Entry, faded: bool, query: &crate::search::Query) {
     let alpha = if faded { 0.45 } else { 1.0 };
     let cy = cell.center().y;
     draw_entry_icon(painter, Pos2::new(cell.left() + 14.0, cy), 1.0, &e.path, util::category(&e.ext, e.is_dir));
     let color = if e.hidden { pal().dim } else { pal().text };
-    painter.with_clip_rect(cell.shrink2(vec2(6.0, 0.0)).intersect(painter.clip_rect())).text(
+    paint_name(&painter.with_clip_rect(cell.shrink2(vec2(6.0, 0.0)).intersect(painter.clip_rect())),
         Pos2::new(cell.left() + 30.0, cy),
-        Align2::LEFT_CENTER,
-        &e.name,
+        &e.name, query,
         FontId::proportional(BODY),
         color.gamma_multiply(alpha),
     );
 }
 
-fn paint_tile(painter: &Painter, thumbs: &mut Thumbs, tile: Rect, e: &Entry, faded: bool) {
+fn paint_tile(painter: &Painter, thumbs: &mut Thumbs, tile: Rect, e: &Entry, faded: bool, query: &crate::search::Query) {
     let alpha = if faded { 0.45 } else { 1.0 };
     let side = tile.width().min(tile.height() - 48.0) - 16.0;
     let thumb_area = Rect::from_center_size(
@@ -2261,7 +2260,8 @@ fn paint_tile(painter: &Painter, thumbs: &mut Thumbs, tile: Rect, e: &Entry, fad
         draw_entry_icon(painter, thumb_area.center(), side / 24.0, &e.path, cat);
     }
     let color = if e.hidden { pal().dim } else { pal().text }.gamma_multiply(alpha);
-    let mut job = egui::text::LayoutJob::simple(e.name.clone(), FontId::proportional(12.5), color, tile.width() - 12.0);
+    let mut job = name_job(&e.name, query, FontId::proportional(12.5), color);
+    job.wrap.max_width = tile.width() - 12.0;
     job.wrap.max_rows = 2;
     job.wrap.break_anywhere = true;
     job.halign = Align::Center;
@@ -2270,6 +2270,28 @@ fn paint_tile(painter: &Painter, thumbs: &mut Thumbs, tile: Rect, e: &Entry, fad
 }
 
 // ---------------------------------------------------------------- dialogs
+
+pub(super) fn name_job(name: &str, query: &crate::search::Query, font: FontId, color: Color32) -> egui::text::LayoutJob {
+    let hits = query.highlights(name);
+    let mut job = egui::text::LayoutJob::default();
+    job.wrap.max_width = f32::INFINITY;
+    for (i, c) in name.chars().enumerate() {
+        let hit = hits.binary_search(&i).is_ok();
+        job.append(&c.to_string(), 0.0, egui::TextFormat {
+            font_id: font.clone(), color: if hit { pal().accent } else { color },
+            underline: if hit { Stroke::new(1.0, pal().accent) } else { Stroke::NONE },
+            ..Default::default()
+        });
+    }
+    job
+}
+
+fn paint_name(painter: &Painter, pos: Pos2, name: &str, query: &crate::search::Query, font: FontId, color: Color32) -> Rect {
+    let galley = painter.layout_job(name_job(name, query, font, color));
+    let rect = Align2::LEFT_CENTER.anchor_size(pos, galley.size());
+    painter.galley(rect.min, galley, color);
+    rect
+}
 
 fn name_field(ui: &mut Ui, title: &str, name: &mut String, focus: &mut bool, select: usize, confirm: &mut bool) {
     ui.label(RichText::new(title).size(15.0).strong());

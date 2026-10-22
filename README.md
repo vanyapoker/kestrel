@@ -46,6 +46,7 @@ If you installed from your own clone, run `./install.sh --uninstall` there inste
 - **Preview panel.** See images, code with syntax highlighting, text, PDFs, videos, SVGs and audio details without opening anything. Text wraps to the panel width, and JSON is automatically formatted for reading without changing the file.
 - **Tabs and split view.** Work in several folders at once, and drag files between panes.
 - **Find anything.** Type to filter the current folder, or press Ctrl+F to search all its subfolders. Both support case-insensitive fuzzy matching (`nd` finds `NaDya`), with the best matches first. Exact names, prefixes and substrings rank above scattered letters; space-separated words must all match.
+- **Refine searches.** Matched letters are highlighted in every view. Add `ext:pdf,jpg`, `type:file` or `type:folder`; quote a literal phrase (`"annual report"`) or use `=report.pdf` for an exact filename. Recursive searches reuse their filename scan when you change the query; F5 rescans. The best 20,000 matches are retained across the complete scan.
 - **Command palette.** Ctrl+P reaches every action.
 - **Go To.** Ctrl+K fuzzy-searches open tabs, bookmarks, recent folders and standard places. Choosing an open folder switches to its tab; recent folders are remembered between launches.
 - **Several views.** Switch between details, list and icon views, and zoom with Ctrl+scroll.

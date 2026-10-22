@@ -64,6 +64,8 @@ pub struct Search {
     pub follow_best: bool,
     /// Restart the search once typing pauses.
     pub restart_at: Option<Instant>,
+    pub index: Option<Arc<crate::search::Index>>,
+    pub active_query: String,
 }
 
 pub struct Tab {
@@ -272,13 +274,17 @@ impl Tab {
         self.anchor = anchor.and_then(|p| find(&p)).or(self.cursor);
     }
 
+    pub fn query(&self) -> Query {
+        Query::new(&match &self.search {
+            Some(s) => format!("{} {}", s.query, self.filter),
+            None => self.filter.clone(),
+        })
+    }
+
     pub fn apply_view(&mut self, sizes: &HashMap<PathBuf, u64>, show_hidden: bool) {
         let keep = self.cursor_entry().map(|e| e.path.clone());
         let anchor = self.anchor.and_then(|vi| self.entry(vi)).map(|e| e.path.clone());
-        let query = Query::new(&match &self.search {
-            Some(s) => format!("{} {}", s.query, self.filter),
-            None => self.filter.clone(),
-        });
+        let query = self.query();
         let entries = &self.entries;
         let in_search = self.search.is_some();
         let mut ranked: Vec<_> = (0..entries.len())
@@ -287,7 +293,7 @@ impl Tab {
                 if !show_hidden && !in_search && e.hidden {
                     return None;
                 }
-                query.score(&e.name).map(|score| (i, score))
+                query.score_name(&e.name, e.is_dir).map(|score| (i, score))
             })
             .collect();
         let size_of = |e: &Entry| if e.is_dir { sizes.get(&e.path).copied().unwrap_or(0) } else { e.size };

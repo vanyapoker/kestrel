@@ -216,6 +216,53 @@ fn recursive_search_finds_and_ranks_fuzzy_matches() {
 }
 
 #[test]
+fn recursive_search_reuses_its_scan_and_refresh_rebuilds_it() {
+    let dir = sandbox("cached-search");
+    fs::write(dir.join("NaDya.txt"), "text").unwrap();
+    fs::write(dir.join("dest/report.pdf"), "pdf").unwrap();
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| !a.tab().loading);
+    d.app.tab_mut().filter = "nd".into();
+    d.app.start_search();
+    d.until("scan", |a| !a.tab().search.as_ref().unwrap().running);
+    let index = d.app.tab().search.as_ref().unwrap().index.clone().unwrap();
+    d.app.tab_mut().search.as_mut().unwrap().query = "ext:pdf type:file".into();
+    d.app.restart_search();
+    d.until("cached query", |a| !a.tab().search.as_ref().unwrap().running);
+    assert_eq!(d.app.tab().view.len(), 1);
+    assert_eq!(d.app.tab().entry(0).unwrap().name, "report.pdf");
+    assert!(Arc::ptr_eq(&index, d.app.tab().search.as_ref().unwrap().index.as_ref().unwrap()));
+    fs::write(dir.join("dest/new.pdf"), "pdf").unwrap();
+    d.app.refresh();
+    d.until("fresh scan", |a| !a.tab().search.as_ref().unwrap().running);
+    assert_eq!(d.app.tab().view.len(), 2);
+    assert!(!Arc::ptr_eq(&index, d.app.tab().search.as_ref().unwrap().index.as_ref().unwrap()));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn search_highlights_matched_letters_in_every_view() {
+    for mode in [ViewMode::Details, ViewMode::List, ViewMode::Icons(1)] {
+        let dir = sandbox(&format!("highlights-{mode:?}"));
+        fs::write(dir.join("NaDya.txt"), "text").unwrap();
+        let mut d = Driver::new(dir.clone());
+        d.app.tab_mut().mode = mode;
+        d.until("listing", |a| !a.tab().loading);
+        d.frame(vec![Event::Text("nd ext:txt".into())]);
+        assert_eq!(d.app.tab().view.len(), 1);
+        let tab = d.app.tab();
+        let query = tab.query();
+        let job = super::ui::name_job("NaDya.txt", &query, FontId::proportional(13.0), Color32::WHITE);
+        assert_eq!(job.text, "NaDya.txt");
+        let highlighted: String = job.sections.iter().filter(|s| s.format.underline != egui::Stroke::NONE)
+            .map(|s| &job.text[s.byte_range.start.0..s.byte_range.end.0]).collect();
+        assert_eq!(highlighted, "ND");
+        assert!(d.texts.iter().any(|(t, _)| t == "NaDya.txt"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
 fn streamed_search_promotes_better_matches_and_keeps_manual_selection() {
     let dir = sandbox("fuzzy-streaming");
     let mut d = Driver::new(dir.clone());
@@ -229,7 +276,7 @@ fn streamed_search_promotes_better_matches_and_keeps_manual_selection() {
         let path = dir.join(name);
         fs::write(&path, "text").unwrap();
         let entry = fsops::make_entry(path.clone(), name.into(), fs::metadata(&path).unwrap());
-        d.app.search_tx.send(SearchMsg { tab_id, generation, batch: vec![entry], done: false, truncated: false }).unwrap();
+        d.app.search_tx.send(SearchMsg { tab_id, generation, batch: vec![entry], done: false, truncated: false, replace: false, index: None }).unwrap();
         d.frame(Vec::new());
     };
     send(&mut d, "Named");
