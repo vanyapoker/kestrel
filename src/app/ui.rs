@@ -20,45 +20,92 @@ use std::time::Instant;
 
 const ROW_H: f32 = 26.0;
 
+#[cfg(test)]
 pub(super) fn preview_code(ui: &mut Ui, job: &egui::text::LayoutJob, links: &[TextLink]) {
-    // Line numbers are decoration: copied selections contain only file text.
+    preview_code_cached(ui, job, links, &mut crate::preview::CodeLayout::default());
+}
+
+pub(super) fn preview_code_cached(ui: &mut Ui, job: &egui::text::LayoutJob, links: &[TextLink], cache: &mut crate::preview::CodeLayout) {
     let font = FontId::monospace(12.5);
     let glyph = ui.fonts_mut(|f| f.glyph_width(&font, '0'));
-    let mut job = job.clone();
-    job.wrap.max_width = (ui.available_width() - glyph * 6.0).max(1.0);
-    let galley = ui.fonts_mut(|f| f.layout_job(job.clone()));
+    let width = (ui.available_width() - glyph * 6.0).max(1.0);
+    let (now, dragging) = ui.input(|i| (i.time, i.pointer.primary_down()));
+    let pixels = ui.ctx().pixels_per_point();
+    if cache.pending_width != width {
+        cache.pending_width = width;
+        cache.changed_at = now;
+    }
+    let changed = cache.width != width;
+    // Large documents retain their prepared geometry during resize. Paint clips
+    // to the live panel width; one reflow follows 80ms after the drag settles.
+    let large = job.text.len() > 32 * 1024;
+    let settled = !dragging && now - cache.changed_at >= 0.080;
+    if cache.galley.is_none() || cache.pixels_per_point != pixels || (changed && (!large || settled)) {
+        let mut wrapped = job.clone();
+        wrapped.wrap.max_width = width;
+        let galley = ui.fonts_mut(|f| f.layout_job(wrapped));
+        cache.rows.clear();
+        let (mut line, mut chars, mut starts_line) = (1, 0, true);
+        for row in &galley.rows {
+            cache.rows.push(crate::preview::CodeRow { line, chars, starts_line });
+            chars += row.char_count_excluding_newline().0 + usize::from(row.ends_with_newline);
+            starts_line = row.ends_with_newline;
+            if starts_line { line += 1; }
+        }
+        cache.galley = Some(galley);
+        cache.width = width;
+        cache.pixels_per_point = pixels;
+        #[cfg(test)]
+        { cache.builds += 1; }
+    } else if changed && !dragging {
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64((0.080 - (now - cache.changed_at)).max(0.001)));
+    }
+    let galley = cache.galley.as_ref().unwrap().clone();
     ui.scope(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         ui.horizontal_top(|ui| {
             let (rect, _) = ui.allocate_exact_size(vec2(glyph * 6.0, galley.size().y), Sense::hover());
-            let mut line = 1;
-            let mut starts_line = true;
-            for row in &galley.rows {
-                let y = rect.top() + row.pos.y + row.size.y / 2.0;
-                if starts_line && ui.clip_rect().y_range().contains(y) {
+            let top = ui.clip_rect().top() - rect.top();
+            let bottom = ui.clip_rect().bottom() - rect.top();
+            let first = galley.rows.partition_point(|r| r.pos.y + r.size.y < top);
+            for (index, row) in galley.rows.iter().enumerate().skip(first).take_while(|(_, r)| r.pos.y <= bottom) {
+                if cache.rows[index].starts_line {
                     ui.painter().text(
-                        egui::pos2(rect.right() - glyph * 2.0, y), Align2::RIGHT_CENTER,
-                        line.to_string(), font.clone(), pal().faint,
+                        egui::pos2(rect.right() - glyph * 2.0, rect.top() + row.pos.y + row.size.y / 2.0),
+                        Align2::RIGHT_CENTER, cache.rows[index].line.to_string(), font.clone(), pal().faint,
                     );
                 }
-                starts_line = row.ends_with_newline;
-                if starts_line { line += 1; }
             }
-            preview_text(ui, &job, links);
+            // Allocate only the current width, even while an older, wider galley
+            // is being displayed. Otherwise its minimum size fights the divider.
+            let sense = if ui.input(|i| i.has_touch_screen()) { Sense::click() } else { Sense::click_and_drag() } - Sense::FOCUSABLE;
+            let (text_rect, response) = ui.allocate_exact_size(vec2(width, galley.size().y), sense);
+            paint_preview_text(ui, text_rect.min, &galley, &response, links, Some(&cache.rows));
         });
     });
 }
 
+#[cfg(test)]
 pub(super) fn preview_text(ui: &mut Ui, job: &egui::text::LayoutJob, links: &[TextLink]) {
     let (pos, galley, response) = egui::Label::new(job.clone())
         .selectable(true)
         .wrap_mode(egui::TextWrapMode::Wrap)
         .layout_in_ui(ui);
+    paint_preview_text(ui, pos, &galley, &response, links, None);
+}
+
+fn paint_preview_text(ui: &Ui, pos: Pos2, galley: &Arc<egui::Galley>, response: &egui::Response, links: &[TextLink], rows: Option<&[crate::preview::CodeRow]>) {
     egui::text_selection::LabelSelectionState::label_text_selection(
-        ui, &response, pos, galley.clone(), pal().text, Stroke::NONE,
+        ui, response, pos, galley.clone(), pal().text, Stroke::NONE,
     );
-    let mut row_start = 0;
-    for row in &galley.rows {
+    if links.is_empty() { return; }
+    let top = ui.clip_rect().top() - pos.y;
+    let bottom = ui.clip_rect().bottom() - pos.y;
+    let first = galley.rows.partition_point(|r| r.pos.y + r.size.y < top);
+    if first == galley.rows.len() { return; }
+    let mut row_start = rows.and_then(|r| r.get(first)).map(|r| r.chars).unwrap_or_else(||
+        galley.rows[..first].iter().map(|r| r.char_count_excluding_newline().0 + usize::from(r.ends_with_newline)).sum());
+    for row in galley.rows.iter().skip(first).take_while(|r| r.pos.y <= bottom) {
         let row_end = row_start + row.char_count_excluding_newline().0;
         if ui.is_rect_visible(row.rect().translate(pos.to_vec2())) {
             let first = links.partition_point(|link| link.chars.end <= row_start);
@@ -1536,7 +1583,7 @@ impl App {
         if e.is_dir && ui.small_button("Open folder in main view ↗").clicked() {
             open_folder = Some(e.path.clone());
         }
-        CentralPanel::default().frame(Frame::new()).show(ui, |ui| match &self.preview.state {
+        CentralPanel::default().frame(Frame::new()).show(ui, |ui| match &mut self.preview.state {
             State::Loading => {
                 ui.add_space(30.0);
                 ui.vertical_centered(|ui| ui.spinner());
@@ -1553,14 +1600,14 @@ impl App {
                     ui.painter().image(tex.id(), r, UV, Color32::WHITE);
                 });
             }
-            State::Ready(Content::Text { job, links, truncated, .. }) => {
+            State::Ready(Content::Text { job, links, truncated, layout, .. }) => {
                 Frame::new()
                     .fill(pal().bg)
                     .corner_radius(CornerRadius::same(6))
                     .inner_margin(Margin::same(8))
                     .show(ui, |ui| {
                         ScrollArea::vertical().auto_shrink([false; 2]).id_salt("preview_text").show(ui, |ui| {
-                            preview_code(ui, job, links);
+                            preview_code_cached(ui, job, links, layout);
                             if *truncated {
                                 ui.label(RichText::new("… preview truncated").color(pal().faint).italics());
                             }
@@ -1600,7 +1647,7 @@ impl App {
             }
             State::Ready(Content::Error(err)) => {
                 ui.add_space(40.0);
-                ui.vertical_centered(|ui| ui.label(RichText::new(err).color(pal().faint)));
+                ui.vertical_centered(|ui| ui.label(RichText::new(err.as_str()).color(pal().faint)));
             }
         });
         if let Some(entry) = inspect {

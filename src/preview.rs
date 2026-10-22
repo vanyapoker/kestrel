@@ -22,11 +22,31 @@ pub type Info = Vec<(String, String)>;
 
 pub enum Content {
     Image { tex: egui::TextureHandle, info: Info },
-    Text { job: LayoutJob, links: Vec<TextLink>, lines: usize, truncated: bool },
+    Text { job: LayoutJob, links: Vec<TextLink>, lines: usize, truncated: bool, layout: CodeLayout },
     Table(Table),
     Dir { entries: Vec<crate::fsops::Entry> },
     Binary { info: Info },
     Error(String),
+}
+
+/// Prepared text geometry belongs to a single immutable preview payload. Replacing
+/// that payload (file change, theme reload, or navigation) discards this cache.
+#[derive(Default)]
+pub struct CodeLayout {
+    pub(crate) galley: Option<Arc<egui::Galley>>,
+    pub(crate) rows: Vec<CodeRow>,
+    pub(crate) width: f32,
+    pub(crate) pending_width: f32,
+    pub(crate) changed_at: f64,
+    pub(crate) pixels_per_point: f32,
+    #[cfg(test)]
+    pub(crate) builds: usize,
+}
+
+pub(crate) struct CodeRow {
+    pub line: usize,
+    pub chars: usize,
+    pub starts_line: bool,
 }
 
 pub enum State {
@@ -251,7 +271,7 @@ impl Preview {
                     tex: ctx.load_texture("preview", img, egui::TextureOptions::LINEAR),
                     info,
                 },
-                Payload::Text(job, links, lines, truncated) => Content::Text { job, links, lines, truncated },
+                Payload::Text(job, links, lines, truncated) => Content::Text { job, links, lines, truncated, layout: CodeLayout::default() },
                 Payload::Table(table) => Content::Table(table),
                 Payload::Dir(entries) => Content::Dir { entries },
                 Payload::Binary(info) => Content::Binary { info },

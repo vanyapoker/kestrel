@@ -1791,6 +1791,106 @@ fn dragging_over_preview_link_selects_without_opening() {
 }
 
 #[test]
+fn large_preview_keeps_one_layout_during_resize_and_reflows_after_settling() {
+    let ctx = egui::Context::default();
+    let text = "const message = \"Привет world\"; // a long preview source line\n".repeat(3000);
+    let job = egui::text::LayoutJob::simple(text, FontId::monospace(12.5), Color32::WHITE, f32::INFINITY);
+    let mut cache = crate::preview::CodeLayout::default();
+    let mut time = 0.0;
+    let mut draw = |width: f32, events: Vec<Event>, cache: &mut crate::preview::CodeLayout| {
+        time += 1.0 / 60.0;
+        let mut out = ctx.run_ui(RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(width, 700.0))),
+            time: Some(time), events, ..Default::default() }, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| super::ui::preview_code_cached(ui, &job, &[], cache));
+        });
+        out.textures_delta.clear();
+    };
+    draw(650.0, vec![], &mut cache);
+    let initial = cache.galley.as_ref().unwrap().clone();
+    assert_eq!(cache.builds, 1);
+    draw(650.0, vec![Event::PointerButton { pos: egui::pos2(2.0, 2.0), button: PointerButton::Primary,
+        pressed: true, modifiers: Modifiers::NONE }], &mut cache);
+    for i in 1..=40 { draw(650.0 - i as f32 * 5.0, vec![], &mut cache); }
+    assert_eq!(cache.builds, 1, "dragging should not re-layout the document");
+    assert!(std::sync::Arc::ptr_eq(&initial, cache.galley.as_ref().unwrap()));
+    draw(450.0, vec![Event::PointerButton { pos: egui::pos2(2.0, 2.0), button: PointerButton::Primary,
+        pressed: false, modifiers: Modifiers::NONE }], &mut cache);
+    for _ in 0..10 { draw(450.0, vec![], &mut cache); }
+    assert_eq!(cache.builds, 2, "resize should perform one final reflow");
+    assert!(cache.galley.as_ref().unwrap().size().x <= cache.width);
+    for _ in 0..10 { draw(450.0, vec![], &mut cache); }
+    assert_eq!(cache.builds, 2, "idle frames should reuse the prepared layout");
+    // Window-manager resizing may not send a pressed button to the app either.
+    for i in 1..=20 { draw(450.0 + i as f32 * 5.0, vec![], &mut cache); }
+    assert_eq!(cache.builds, 2);
+    for _ in 0..10 { draw(550.0, vec![], &mut cache); }
+    assert_eq!(cache.builds, 3);
+}
+
+#[test]
+fn preview_divider_drag_does_not_relayout_large_files_or_change_the_preview_request() {
+    let dir = sandbox("preview-resize-work");
+    let path = dir.join("large.js");
+    fs::write(&path, "function example() { return \"hello\"; }\n".repeat(5000)).unwrap();
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| !a.tab().loading);
+    d.app.tab_mut().select_path(&path);
+    d.until("prepared preview", |a| matches!(&a.preview.state, crate::preview::State::Ready(crate::preview::Content::Text { layout, .. }) if layout.galley.is_some()));
+    for _ in 0..10 { d.frame(Vec::new()); }
+    let builds = |d: &Driver| match &d.app.preview.state {
+        crate::preview::State::Ready(crate::preview::Content::Text { layout, .. }) => layout.builds,
+        _ => panic!("unexpected preview reload"),
+    };
+    let initial = builds(&d);
+    let edge = d.app.pane_rects[0].right();
+    d.drag(egui::pos2(edge, 400.0), egui::pos2(edge - 140.0, 400.0), |d| {
+        assert_eq!(builds(d), initial, "divider drag laid out the large document");
+        assert_eq!(d.app.preview.path.as_deref(), Some(path.as_path()));
+    });
+    for _ in 0..12 { d.frame(Vec::new()); }
+    assert_eq!(builds(&d), initial + 1);
+    let replacement = "// UPDATED PREVIEW\nfunction updated() { return 42; }\n".repeat(1000);
+    fs::write(&path, &replacement).unwrap();
+    d.until("reloaded document geometry", |a| matches!(&a.preview.state,
+        crate::preview::State::Ready(crate::preview::Content::Text { layout, .. }) if layout.galley.as_ref().is_some_and(|g| g.text() == replacement)));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "manual preview resize timing; optional KESTREL_PREVIEW_BENCH_FILE"]
+fn benchmark_large_preview_resize() {
+    use std::io::Read;
+    let text = if let Some(path) = std::env::var_os("KESTREL_PREVIEW_BENCH_FILE") {
+        let mut bytes = Vec::new();
+        fs::File::open(path).unwrap().take(256 * 1024).read_to_end(&mut bytes).unwrap();
+        String::from_utf8_lossy(&bytes).replace('\t', "    ")
+    } else { "function example(value) { return \"hello\" + value; }\n".repeat(5000) };
+    let job = crate::preview::highlight_text(Path::new("example.js"), &text, 3000, FontId::monospace(12.5)).0;
+    let run = |fresh_each_frame: bool| {
+        let ctx = egui::Context::default();
+        let mut cache = crate::preview::CodeLayout::default();
+        let mut elapsed = Duration::ZERO;
+        for i in 0..31 {
+            if fresh_each_frame { cache = crate::preview::CodeLayout::default(); }
+            let start = Instant::now();
+            let mut out = ctx.run_ui(RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(650.0 - i as f32 * 5.0, 700.0))),
+                time: Some(i as f64 / 60.0),
+                events: if i == 0 { vec![Event::PointerButton { pos: egui::pos2(2.0, 2.0), button: PointerButton::Primary,
+                    pressed: true, modifiers: Modifiers::NONE }] } else { vec![] }, ..Default::default()
+            }, |ui| { egui::CentralPanel::default().show(ui, |ui| super::ui::preview_code_cached(ui, &job, &[], &mut cache)); });
+            out.textures_delta.clear();
+            if i > 0 { elapsed += start.elapsed(); }
+        }
+        elapsed.as_secs_f64() * 1000.0 / 30.0
+    };
+    let full = run(true);
+    let cached = run(false);
+    println!("{} bytes, {} syntax sections: full reflow {:.2}ms/frame; cached drag {:.2}ms/frame ({:.1}x)",
+        job.text.len(), job.sections.len(), full, cached, full / cached);
+}
+
+#[test]
 fn preview_wraps_to_width_with_logical_line_numbers() {
     let ctx = egui::Context::default();
     let text = format!("{}\nsecond line", "Привет world ".repeat(30));
