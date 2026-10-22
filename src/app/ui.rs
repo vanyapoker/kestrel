@@ -198,6 +198,7 @@ pub(super) fn preview_table(ui: &mut Ui, table: &Table) {
 
 impl App {
     pub(super) fn draw(&mut self, ui: &mut Ui) {
+        self.sync_columns();
         let mut actions = Vec::new();
         ui.ctx().data_mut(|d| {
             d.remove_temp::<PathBuf>(drop_target_id());
@@ -464,7 +465,10 @@ impl App {
             .show(ui, |ui| {
                 self.zoom_wheel(ui, p, actions);
                 let pane = &self.panes[p];
-                if pane.tabs[pane.active].mode.is_grid() {
+                let tab = &pane.tabs[pane.active];
+                if tab.mode == ViewMode::Columns && tab.search.is_none() {
+                    self.miller_columns(ui, p, actions);
+                } else if tab.mode.is_grid() {
                     self.file_grid(ui, p, actions);
                 } else {
                     self.file_list(ui, p, actions);
@@ -650,12 +654,18 @@ impl App {
                 }
                 let pane = &self.panes[p];
                 let tab = &pane.tabs[pane.active];
-                let grid = tab.mode.is_grid();
-                if !compact
-                    && glyph_button(ui, Glyph::Grid, true, grid, "Icons / details view (Ctrl+G, Ctrl+scroll to resize)")
-                {
-                    actions.push(Action::FocusPane(p));
-                    actions.push(Action::Cmd(Cmd::ToggleGrid));
+                if !compact {
+                    ui.menu_button("View", |ui| {
+                        for (mode, label) in [(ViewMode::Details, "Details"), (ViewMode::List, "List"),
+                            (ViewMode::Icons(2), "Icons"), (ViewMode::Columns, "Miller columns")] {
+                            let selected = tab.mode == mode || (mode == ViewMode::Icons(2) && matches!(tab.mode, ViewMode::Icons(_)));
+                            if ui.selectable_label(selected, label).clicked() {
+                                actions.push(Action::FocusPane(p));
+                                actions.push(Action::SetView(mode));
+                                ui.close();
+                            }
+                        }
+                    }).response.on_hover_text("View mode · columns: Ctrl+Shift+M · icons/details: Ctrl+G");
                 }
                 if (!compact || tab.search.is_some())
                     && glyph_button(ui, Glyph::Search, true, tab.search.is_some(), "Search subfolders (Ctrl+F)")
@@ -797,6 +807,101 @@ impl App {
     }
 
     // ------------------------------------------------------------ list view
+
+    fn miller_columns(&mut self, ui: &mut Ui, p: usize, actions: &mut Vec<Action>) {
+        let pane_active = p == self.active_pane;
+        let bookmarks = &self.places.bookmarks;
+        let cut = self.clip.as_ref().filter(|c| c.cut).map(|c| &c.paths);
+        let pane = &mut self.panes[p];
+        let tab = &mut pane.tabs[pane.active];
+        let id = tab.id;
+        let Some(mut cols) = tab.columns.take() else { return };
+        let height = (ui.available_height() - 12.0).max(60.0);
+        let follow = cols.scroll_to_active;
+        cols.scroll_to_active = false;
+        ScrollArea::horizontal().id_salt(("miller", id)).animated(false).auto_shrink([false; 2]).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 1.0;
+            ui.horizontal_top(|ui| {
+                for (index, stored) in cols.items.iter_mut().enumerate() {
+                    let active = index == cols.active;
+                    let directory = if active { &mut *tab } else { stored };
+                    let path = directory.path.clone();
+                    let mut local = Vec::new();
+                    let out = ui.allocate_ui_with_layout(vec2(280.0, height), Layout::top_down(Align::Min), |ui| {
+                        ui.set_min_size(vec2(280.0, height));
+                        ui.set_max_width(280.0);
+                        let full = ui.max_rect().intersect(ui.clip_rect());
+                        let (header, response) = ui.allocate_exact_size(vec2(280.0, 28.0), Sense::click());
+                        ui.painter().rect_filled(header, 0.0, if active && pane_active { pal().select_dim } else { pal().panel });
+                        let name = path.file_name().map(|s| s.to_string_lossy()).unwrap_or_else(|| "/".into());
+                        ui.painter().with_clip_rect(header.shrink(6.0)).text(
+                            header.left_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, name,
+                            FontId::proportional(BODY), if active && pane_active { pal().accent } else { pal().dim });
+                        response.on_hover_text(path.display().to_string());
+                        let pointer = ui.input(|i| i.pointer.interact_pos());
+                        if pointer.is_some_and(|pos| full.contains(pos)) && ui.input(|i| i.pointer.primary_pressed() || i.pointer.secondary_pressed())
+                            && pointer.and_then(|pos| ui.ctx().layer_id_at(pos)) == Some(ui.layer_id()) {
+                            local.push(Action::FocusPane(p));
+                        }
+                        // Virtualized row geometry and keyboard scrolling use the same stride.
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        let query = directory.query();
+                        let modifiers = ui.input(|i| (i.modifiers.ctrl, i.modifiers.shift));
+                        let mut over_item = false;
+                        // Column positions can change when ancestors are prepended. The
+                        // directory owns its offset, independently of the UI child order.
+                        directory.force_offset.get_or_insert(directory.scroll_offset);
+                        let scroll = scroll_area(directory, ("column", directory.listing_id), ROW_H, 1);
+                        let out = scroll.show_rows(ui, ROW_H, directory.view.len(), |ui, range| {
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            for vi in range {
+                                let e = &directory.entries[directory.view[vi]];
+                                let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click_and_drag());
+                                over_item |= pointer.is_some_and(|pos| rect.contains(pos));
+                                let selected = directory.is_selected(vi);
+                                let drop = e.is_dir && drop_hover(&resp, &e.path);
+                                if selected || resp.hovered() || drop {
+                                    ui.painter().rect_filled(rect.shrink(2.0), 4.0,
+                                        if selected { if active && pane_active { pal().select } else { pal().select_dim } } else { pal().hover });
+                                }
+                                if e.is_dir { record_folder(ui.ctx(), rect.intersect(ui.clip_rect()), &e.path); }
+                                let faded = cut.is_some_and(|paths| paths.contains(&e.path));
+                                draw_entry_icon(ui.painter(), rect.left_center() + vec2(15.0, 0.0), 1.0, &e.path, util::category(&e.ext, e.is_dir));
+                                let painter = ui.painter().with_clip_rect(rect.shrink2(vec2(30.0, 0.0)));
+                                paint_name(&painter, rect.left_center() + vec2(30.0, 0.0), &e.name, &query,
+                                    FontId::proportional(BODY), if faded || e.hidden { pal().dim } else { pal().text });
+                                if e.is_dir { chevron(ui.painter(), rect.right_center() - vec2(10.0, 0.0), false, pal().faint); }
+                                #[cfg(test)]
+                                self.row_rects.insert(e.path.clone(), rect.intersect(ui.clip_rect()));
+                                row_interactions(ui, &resp, directory, vi, e, modifiers, &mut local, p, bookmarks);
+                            }
+                        });
+                        directory.scroll_offset = out.state.offset.y;
+                        directory.viewport_h = out.inner_rect.height();
+                        drag_autoscroll(ui, directory, out.inner_rect);
+                        let (inner, offset) = (out.inner_rect, out.state.offset.y);
+                        rubber_band(ui, p, directory, inner, over_item, modifiers.0, |vi|
+                            Rect::from_min_size(inner.min + vec2(0.0, vi as f32 * ROW_H - offset), vec2(inner.width(), ROW_H)));
+                        if directory.view.is_empty() {
+                            // Paint inside the viewport so errors and loading do not grow the column.
+                            let message = directory.error.as_deref().unwrap_or(if directory.loading { "Loading…" }
+                                else if directory.filter.is_empty() { "This folder is empty" } else { "No matches" });
+                            ui.painter().with_clip_rect(inner).text(inner.left_top() + vec2(8.0, 16.0), Align2::LEFT_TOP,
+                                message, FontId::proportional(12.0), pal().dim);
+                        }
+                        background_drop(ui, directory, inner.intersect(ui.clip_rect()), &mut local);
+                        record_folder(ui.ctx(), full, &path);
+                        ui.painter().vline(full.right(), full.y_range(), Stroke::new(1.0, pal().border));
+                    });
+                    if follow && active { ui.scroll_to_rect(out.response.rect, None); }
+                    for action in local {
+                        actions.push(Action::ColumnAction { tab_id: id, directory: path.clone(), action: Box::new(action) });
+                    }
+                }
+            });
+        });
+        tab.columns = Some(cols);
+    }
 
     fn file_list(&mut self, ui: &mut Ui, p: usize, actions: &mut Vec<Action>) {
         let pane_active = p == self.active_pane;
@@ -2586,7 +2691,6 @@ enum Glyph {
     Panel,
     Sidebar,
     Split,
-    Grid,
     Search,
 }
 
@@ -2665,16 +2769,7 @@ fn paint_glyph(p: &Painter, c: Pos2, glyph: Glyph, color: Color32) {
             p.rect_stroke(r, CornerRadius::same(2), stroke, egui::StrokeKind::Middle);
             p.line_segment([Pos2::new(c.x, r.top()), Pos2::new(c.x, r.bottom())], stroke);
         }
-        Glyph::Grid => {
-            for (dx, dy) in [(-3.5, -3.5), (3.5, -3.5), (-3.5, 3.5), (3.5, 3.5)] {
-                p.rect_stroke(
-                    Rect::from_center_size(pt(dx, dy), vec2(5.0, 5.0)),
-                    CornerRadius::same(1),
-                    Stroke::new(1.3, color),
-                    egui::StrokeKind::Middle,
-                );
-            }
-        }
+
         Glyph::Search => {
             p.circle_stroke(pt(-1.5, -1.5), 4.5, stroke);
             p.line_segment([pt(1.8, 1.8), pt(5.5, 5.5)], Stroke::new(2.0, color));

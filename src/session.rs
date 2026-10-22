@@ -86,6 +86,7 @@ fn sort_name(s: SortKey) -> &'static str {
 fn mode_name(m: ViewMode) -> String {
     match m {
         ViewMode::Details => "details".into(),
+        ViewMode::Columns => "columns".into(),
         ViewMode::List => "list".into(),
         ViewMode::Icons(i) => format!("icons{i}"),
     }
@@ -94,6 +95,7 @@ fn mode_name(m: ViewMode) -> String {
 fn parse_mode(s: &str) -> Option<ViewMode> {
     match s {
         "details" => Some(ViewMode::Details),
+        "columns" => Some(ViewMode::Columns),
         "list" => Some(ViewMode::List),
         _ => s.strip_prefix("icons")?.parse().ok().map(|i: usize| ViewMode::Icons(i.min(crate::tab::ICON_SIZES.len() - 1))),
     }

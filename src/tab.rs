@@ -19,6 +19,8 @@ pub enum SortKey {
 pub enum ViewMode {
     /// One row per item with size, date and type columns.
     Details,
+    /// Hierarchical, independently scrollable folder columns.
+    Columns,
     /// Compact cells with an icon and name, laid out in a grid.
     List,
     /// Thumbnail tiles; the index picks a size from `ICON_SIZES`.
@@ -31,7 +33,7 @@ pub const ICON_SIZES: [f32; 6] = [48.0, 72.0, 96.0, 128.0, 176.0, 240.0];
 impl ViewMode {
     fn level(self) -> usize {
         match self {
-            ViewMode::Details => 0,
+            ViewMode::Details | ViewMode::Columns => 0,
             ViewMode::List => 1,
             ViewMode::Icons(i) => 2 + i.min(ICON_SIZES.len() - 1),
         }
@@ -39,6 +41,7 @@ impl ViewMode {
 
     /// Steps through Details → List → icons, smallest to largest.
     pub fn zoom(self, steps: i32) -> Self {
+        if self == Self::Columns { return self; }
         let max = ICON_SIZES.len() as i32 + 1;
         match (self.level() as i32 + steps).clamp(0, max) {
             0 => ViewMode::Details,
@@ -49,7 +52,7 @@ impl ViewMode {
 
     /// Whether items flow in a grid (arrow keys move in two dimensions).
     pub fn is_grid(self) -> bool {
-        self != ViewMode::Details
+        matches!(self, Self::List | Self::Icons(_))
     }
 }
 
@@ -69,8 +72,19 @@ pub struct Search {
     pub active_query: String,
 }
 
+/// Inactive directories hold their own listing state; the active slot is a placeholder.
+pub struct Columns {
+    pub items: Vec<Tab>,
+    pub active: usize,
+    pub scroll_to_active: bool,
+}
+
 pub struct Tab {
     pub id: u64,
+    /// Directory request identity, carried with its column when focus changes.
+    pub listing_id: u64,
+    pub columns: Option<Columns>,
+    pub previous_view: ViewMode,
     pub path: PathBuf,
     pub back: Vec<PathBuf>,
     pub fwd: Vec<PathBuf>,
@@ -107,6 +121,9 @@ impl Tab {
     pub fn new(id: u64, path: PathBuf) -> Self {
         Self {
             id,
+            listing_id: id,
+            columns: None,
+            previous_view: ViewMode::Details,
             path,
             back: Vec::new(),
             fwd: Vec::new(),
@@ -376,6 +393,9 @@ mod tests {
         assert_eq!(m.zoom(2), ViewMode::Icons(0));
         assert_eq!(m.zoom(100), ViewMode::Icons(ICON_SIZES.len() - 1));
         assert_eq!(ViewMode::Icons(0).zoom(-2), ViewMode::Details);
+        assert_eq!(ViewMode::Columns.zoom(1), ViewMode::Columns);
+        assert_eq!(ViewMode::Columns.zoom(-1), ViewMode::Columns);
+        assert!(!ViewMode::Columns.is_grid());
     }
 
     #[test]

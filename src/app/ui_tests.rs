@@ -114,6 +114,314 @@ fn sandbox(name: &str) -> PathBuf {
     d
 }
 
+fn press(key: Key, modifiers: Modifiers) -> Event {
+    Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }
+}
+
+fn columns_driver(name: &str) -> (PathBuf, Driver) {
+    let dir = sandbox(name);
+    fs::create_dir_all(dir.join("dest/nested/deep")).unwrap();
+    fs::write(dir.join("dest/nested/note.txt"), "column preview").unwrap();
+    let mut d = Driver::new(dir.clone());
+    d.app.show_sidebar = false;
+    d.app.show_preview = false;
+    d.until("listing", |a| !a.tab().loading);
+    d.app.set_view(ViewMode::Columns);
+    d.until("parent and child columns", |a| a.tab().columns.as_ref().is_some_and(|c|
+        c.items.len() == 3 && !c.items[0].loading && !c.items[2].loading));
+    d.frame(Vec::new());
+    (dir, d)
+}
+
+#[test]
+fn miller_columns_reveal_focus_and_keep_operations_in_the_active_directory() {
+    let (dir, mut d) = columns_driver("columns-focus");
+    let c = d.app.tab().columns.as_ref().unwrap();
+    assert_eq!(c.active, 1);
+    assert_eq!(c.items[0].cursor_entry().unwrap().path, dir);
+    assert_eq!(c.items[2].path, dir.join("dest"));
+    assert_eq!(d.app.tab().path, dir);
+    assert!(d.app.tab().back.is_empty());
+    let id = d.app.tab().id;
+    d.frame(vec![press(Key::ArrowRight, Modifiers::NONE)]);
+    assert_eq!(d.app.tab().path, dir.join("dest"));
+    assert_eq!(d.app.tab().id, id);
+    d.until("nested column", |a| a.tab().columns.as_ref().is_some_and(|c| c.items.len() == 4 && !c.items[3].loading));
+    assert_eq!(d.app.tab().targets(), vec![dir.join("dest/nested")]);
+    d.frame(vec![press(Key::ArrowRight, Modifiers::NONE)]);
+    assert_eq!(d.app.tab().path, dir.join("dest/nested"));
+    d.until("deep column", |a| a.tab().columns.as_ref().is_some_and(|c| c.items.len() == 5 && !c.items[4].loading));
+    d.frame(vec![press(Key::ArrowDown, Modifiers::NONE)]);
+    d.frame(Vec::new());
+    assert_eq!(d.app.tab().cursor_entry().unwrap().name, "note.txt");
+    assert_eq!(d.app.tab().columns.as_ref().unwrap().items.len(), 4);
+    d.app.run_cmd(Cmd::Copy);
+    assert_eq!(d.app.clip.as_ref().unwrap().paths, vec![dir.join("dest/nested/note.txt")]);
+    d.frame(vec![press(Key::Space, Modifiers::NONE), Event::Text(" ".into())]);
+    assert!(d.app.show_preview);
+    assert!(d.app.tab().filter.is_empty());
+    d.until("file preview", |a| matches!(a.preview.state, crate::preview::State::Ready(crate::preview::Content::Text { .. })));
+    d.frame(vec![press(Key::ArrowLeft, Modifiers::NONE)]);
+    assert_eq!(d.app.tab().path, dir.join("dest"));
+    assert_eq!(d.app.tab().cursor_entry().unwrap().path, dir.join("dest/nested"));
+    assert_eq!(d.app.tab().targets(), vec![dir.join("dest/nested")]);
+    // Alt+Left is history, not column movement.
+    d.modifiers = Modifiers::ALT;
+    d.frame(vec![press(Key::ArrowLeft, Modifiers::ALT)]);
+    assert_eq!(d.app.tab().path, dir.join("dest/nested"));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn miller_columns_shortcuts_respect_modifiers_text_fields_search_and_zoom() {
+    let (dir, mut d) = columns_driver("columns-keys");
+    let path = d.app.tab().path.clone();
+    d.modifiers = Modifiers::SHIFT;
+    d.frame(vec![press(Key::ArrowRight, Modifiers::SHIFT)]);
+    assert_eq!(d.app.tab().path, path);
+    d.frame(vec![press(Key::ArrowDown, Modifiers::SHIFT)]);
+    assert_eq!(d.app.tab().selection_count(), 2);
+    d.modifiers = Modifiers::NONE;
+    d.app.zoom(2);
+    assert_eq!(d.app.tab().mode, ViewMode::Columns);
+    d.frame(vec![Event::Text("b".into())]);
+    assert_eq!(d.app.tab().targets(), vec![dir.join("b.txt")]);
+    assert_eq!(d.app.tab().columns.as_ref().unwrap().items.len(), 2);
+    d.frame(vec![press(Key::Escape, Modifiers::NONE)]);
+    d.app.run_cmd(Cmd::EditPath);
+    d.frame(Vec::new());
+    d.frame(vec![press(Key::ArrowLeft, Modifiers::NONE)]);
+    assert_eq!(d.app.tab().path, path);
+    d.frame(vec![press(Key::Escape, Modifiers::NONE)]);
+    d.app.run_cmd(Cmd::Search);
+    d.frame(Vec::new());
+    d.frame(vec![Event::Text("note".into())]);
+    d.frame(vec![press(Key::ArrowRight, Modifiers::NONE)]);
+    assert_eq!(d.app.tab().path, path);
+    assert!(d.app.tab().columns.is_none());
+    assert_eq!(d.app.tab().mode, ViewMode::Columns);
+    d.frame(vec![press(Key::Escape, Modifiers::NONE)]);
+    d.until("columns restored", |a| a.tab().search.is_none() && a.tab().columns.is_some());
+    d.app.run_cmd(Cmd::Flatten);
+    d.frame(Vec::new());
+    assert!(d.app.tab().search.as_ref().unwrap().flatten);
+    assert!(d.app.tab().columns.is_none());
+    assert_eq!(d.app.tab().mode, ViewMode::Columns);
+    d.app.run_cmd(Cmd::Flatten);
+    d.until("columns after flatten", |a| a.tab().search.is_none() && a.tab().columns.is_some());
+    d.modifiers = Modifiers::COMMAND | Modifiers::SHIFT;
+    d.frame(vec![press(Key::M, d.modifiers)]);
+    assert_eq!(d.app.tab().mode, ViewMode::Details);
+    d.frame(vec![press(Key::M, d.modifiers)]);
+    assert_eq!(d.app.tab().mode, ViewMode::Columns);
+    d.modifiers = Modifiers::COMMAND;
+    d.frame(vec![press(Key::G, d.modifiers)]);
+    assert_eq!(d.app.tab().mode, ViewMode::Icons(2));
+    assert!(d.app.tab().columns.is_none());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn miller_columns_restore_modes_and_navigate_ancestors_and_empty_folders() {
+    let (dir, mut d) = columns_driver("columns-restore");
+    let saved = d.app.session();
+    let roundtrip = crate::session::parse(&saved.to_text());
+    let mut restored = Driver::new(dir.clone());
+    restored.app.restore(&roundtrip, true);
+    restored.until("restored columns", |a| a.tab().mode == ViewMode::Columns && a.tab().columns.is_some());
+    d.frame(vec![press(Key::ArrowRight, Modifiers::NONE)]);
+    d.until("child loaded", |a| !a.tab().loading);
+    d.frame(vec![press(Key::Enter, Modifiers::NONE)]);
+    d.until("nested loaded", |a| a.tab().path == dir.join("dest/nested") && !a.tab().loading);
+    d.frame(vec![press(Key::Enter, Modifiers::NONE)]);
+    d.until("empty column", |a| a.tab().path == dir.join("dest/nested/deep") && !a.tab().loading);
+    assert!(d.app.tab().view.is_empty());
+    d.frame(vec![press(Key::ArrowRight, Modifiers::NONE)]);
+    assert_eq!(d.app.tab().path, dir.join("dest/nested/deep"));
+    for _ in 0..5 { d.frame(vec![press(Key::ArrowLeft, Modifiers::NONE)]); }
+    assert_eq!(d.app.tab().path, dir.parent().unwrap().parent().unwrap());
+    d.app.navigate(PathBuf::from("/"), true);
+    d.until("root", |a| !a.tab().loading);
+    d.frame(vec![press(Key::ArrowLeft, Modifiers::NONE)]);
+    assert_eq!(d.app.tab().path, PathBuf::from("/"));
+    assert_eq!(d.app.tab().columns.as_ref().unwrap().active, 0);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn miller_columns_pointer_selection_context_actions_and_drop_use_the_correct_column() {
+    let (dir, mut d) = columns_driver("columns-pointer");
+    // Click an item in a revealed but inactive child column.
+    let row = d.row(&dir.join("dest/nested"));
+    assert!(row.width() > 100.0);
+    d.move_to(row.center());
+    d.button(true);
+    d.button(false);
+    assert_eq!(d.app.tab().path, dir.join("dest"));
+    d.until("revealed nested folder", |a| a.tab().columns.as_ref().is_some_and(|c| c.items.len() == 4 && !c.items[3].loading));
+    d.frame(Vec::new());
+    let row = d.row(&dir.join("dest/nested/note.txt"));
+    d.move_to(row.center());
+    d.button(true);
+    d.button(false);
+    assert_eq!(d.app.tab().path, dir.join("dest/nested"));
+    assert_eq!(d.app.tab().targets(), vec![dir.join("dest/nested/note.txt")]);
+    // The context menu and command target the newly focused column too.
+    d.mouse_button(PointerButton::Secondary, true);
+    d.mouse_button(PointerButton::Secondary, false);
+    d.frame(Vec::new());
+    d.click_text("Duplicate");
+    d.until("duplicated file", |_| dir.join("dest/nested/note (2).txt").exists());
+    d.app.column_step(-1);
+    d.app.column_step(-1);
+    d.frame(Vec::new());
+    let source = d.row(&dir.join("a.txt")).center();
+    let destination = Pos2::new(d.row(&dir.join("dest/nested")).center().x, 700.0);
+    d.drag(source, destination, |_| {});
+    d.until("drop into child column", |_| dir.join("dest/a.txt").exists());
+    assert!(!dir.join("a.txt").exists());
+    assert_eq!(d.app.tab().path, dir.join("dest"));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn miller_columns_watch_passive_directories_and_reject_stale_or_pruned_results() {
+    let (dir, mut d) = columns_driver("columns-watch");
+    let (id, generation) = {
+        let child = &d.app.tab().columns.as_ref().unwrap().items[2];
+        (child.listing_id, child.generation)
+    };
+    // Listing identity follows its directory when it becomes active.
+    d.app.column_step(1);
+    d.app.list_tx.send(Listing { listing_id: id, generation: generation.saturating_sub(1), soft: true, result: Err("stale result".into()) }).unwrap();
+    d.frame(Vec::new());
+    assert!(d.app.tab().error.is_none());
+    assert_eq!(d.app.tab().path, dir.join("dest"));
+    d.app.column_step(-1);
+    d.frame(Vec::new());
+    fs::write(dir.join("dest/new.txt"), "watcher update").unwrap();
+    d.until("passive directory watcher", |a| a.tab().columns.as_ref().is_some_and(|c|
+        c.items.get(2).is_some_and(|t| t.entries.iter().any(|e| e.name == "new.txt"))));
+    // Select a file to prune the child, then deliver an old result for that child.
+    d.app.tab_mut().select_path(&dir.join("a.txt"));
+    d.frame(Vec::new());
+    assert_eq!(d.app.tab().columns.as_ref().unwrap().items.len(), 2);
+    d.app.list_tx.send(Listing { listing_id: id, generation, soft: false, result: Err("pruned result".into()) }).unwrap();
+    d.frame(Vec::new());
+    assert!(d.app.tab().error.is_none());
+    d.app.tab_mut().select_path(&dir.join("dest"));
+    d.frame(Vec::new());
+    d.until("child restored", |a| a.tab().columns.as_ref().is_some_and(|c| c.items.len() == 3 && !c.items[2].loading));
+    fs::remove_dir_all(dir.join("dest")).unwrap();
+    d.until("removed branch", |a| !a.tab().loading && a.tab().columns.as_ref().is_some_and(|c|
+        c.items.len() == 2 && a.tab().entries.iter().all(|e| e.name != "dest")));
+    assert_eq!(d.app.tab().path, dir);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn miller_columns_filters_scroll_and_split_state_survive_focus_changes() {
+    let (dir, mut d) = columns_driver("columns-state");
+    d.app.column_step(1);
+    d.until("nested revealed", |a| a.tab().columns.as_ref().is_some_and(|c| c.items.len() == 4 && !c.items[3].loading));
+    d.app.column_step(1);
+    d.frame(vec![Event::Text("note".into())]);
+    assert_eq!(d.app.tab().filter, "note");
+    d.app.column_step(-1);
+    assert!(d.app.tab().filter.is_empty());
+    d.app.column_step(1);
+    assert_eq!(d.app.tab().filter, "note");
+    d.app.toggle_split();
+    let other = d.app.tab().path.clone();
+    d.frame(vec![press(Key::Tab, Modifiers::NONE)]);
+    assert_eq!(d.app.active_pane, 0);
+    assert_eq!(d.app.tab().mode, ViewMode::Columns);
+    assert_eq!(d.app.tab().filter, "note");
+    d.frame(vec![press(Key::ArrowLeft, Modifiers::NONE)]);
+    assert_eq!(d.app.tab().path, dir.join("dest"));
+    assert_eq!(d.app.panes[1].tabs[0].path, other);
+    // Restore the columns mode through workspace and closed-tab state.
+    d.app.save_workspace("Columns");
+    d.app.open_tab(dir.clone());
+    d.app.close_tab(0, 0);
+    d.app.run_cmd(Cmd::ReopenTab);
+    assert_eq!(d.app.tab().mode, ViewMode::Columns);
+    d.frame(Vec::new());
+    d.app.load_workspace("Columns");
+    assert_eq!(d.app.panes[0].tabs[0].mode, ViewMode::Columns);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn miller_columns_scroll_active_columns_into_view_and_preserve_vertical_offsets() {
+    let (dir, mut d) = columns_driver("columns-scroll");
+    for i in 0..100 { fs::write(dir.join(format!("dest/nested/file{i:03}.txt")), "x").unwrap(); }
+    d.app.column_step(1);
+    d.until("nested listing", |a| a.tab().columns.as_ref().is_some_and(|c| c.items.len() == 4 && !c.items[3].loading));
+    d.app.column_step(1);
+    d.app.refresh();
+    d.until("100 files", |a| !a.tab().loading && a.tab().entries.len() == 102);
+    d.frame(vec![press(Key::End, Modifiers::NONE)]);
+    let offset = d.app.tab().scroll_offset;
+    assert!(offset > 1000.0, "offset {offset}");
+    let target = d.app.tab().cursor_entry().unwrap().path.clone();
+    d.app.column_step(-1);
+    d.frame(Vec::new());
+    d.app.column_step(1);
+    d.frame(Vec::new());
+    assert_eq!(d.app.tab().cursor_entry().unwrap().path, target);
+    assert!((d.app.tab().scroll_offset - offset).abs() < 1.0);
+    for _ in 0..3 { d.frame(Vec::new()); }
+    let row = d.row(&target);
+    assert!(row.width() > 100.0);
+    assert!(d.app.pane_rects[0].contains(row.center()));
+    // A deep branch requires horizontal scrolling; its active row stays visible.
+    d.app.navigate(dir.join("dest/nested/deep"), true);
+    let mut current = dir.join("dest/nested/deep");
+    for _ in 0..6 {
+        current = current.join("child");
+        fs::create_dir(&current).unwrap();
+    }
+    d.app.refresh();
+    for _ in 0..6 {
+        d.until("active directory", |a| !a.tab().loading && !a.tab().view.is_empty());
+        d.frame(vec![press(Key::ArrowRight, Modifiers::NONE)]);
+    }
+    d.until("deep directory", |a| !a.tab().loading);
+    assert_eq!(d.app.tab().path, current);
+    // Walk back to a populated column and inspect its real clipped row geometry.
+    d.frame(vec![press(Key::ArrowLeft, Modifiers::NONE)]);
+    d.frame(Vec::new());
+    let row = d.row(&current);
+    assert!(row.width() > 100.0, "clipped active row {row:?}");
+    assert!(d.app.pane_rects[0].contains(row.center()));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn miller_columns_error_recovery_refresh_and_deleted_active_ancestors() {
+    let (dir, mut d) = columns_driver("columns-errors");
+    let (listing_id, generation) = {
+        let child = &d.app.tab().columns.as_ref().unwrap().items[2];
+        (child.listing_id, child.generation)
+    };
+    d.app.list_tx.send(Listing { listing_id, generation, soft: false, result: Err("Permission denied".into()) }).unwrap();
+    d.frame(Vec::new());
+    assert!(d.app.tab().columns.as_ref().unwrap().items[2].error.as_ref().unwrap().contains("Permission denied"));
+    assert!(d.texts.iter().any(|(text, _)| text == "Permission denied"));
+    assert_eq!(d.app.tab().path, dir);
+    d.frame(vec![press(Key::F5, Modifiers::NONE)]);
+    d.until("retry passive column", |a| a.tab().columns.as_ref().is_some_and(|c|
+        c.items.len() == 3 && !c.items[2].loading && c.items[2].error.is_none()));
+    d.app.column_step(1);
+    d.until("nested", |a| a.tab().columns.as_ref().is_some_and(|c| c.items.len() == 4 && !c.items[3].loading));
+    d.app.column_step(1);
+    fs::remove_dir_all(dir.join("dest")).unwrap();
+    d.until("nearest surviving directory", |a| a.tab().path == dir && !a.tab().loading);
+    assert!(d.app.tab().columns.as_ref().is_some_and(|c| c.items[c.active].path == dir));
+    fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn tab_drag_crosses_panes_and_collapses_an_empty_source_pane() {
     let dir = sandbox("tab-cross-drag");

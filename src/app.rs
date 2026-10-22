@@ -2,6 +2,7 @@ mod icons;
 mod ui;
 mod goto;
 mod tabs;
+mod columns;
 #[cfg(test)]
 mod ui_tests;
 
@@ -28,7 +29,7 @@ const WATCH_DEBOUNCE: Duration = Duration::from_millis(150);
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(120);
 
 struct Listing {
-    tab_id: u64,
+    listing_id: u64,
     generation: u64,
     soft: bool,
     result: Result<Vec<Entry>, String>,
@@ -73,6 +74,9 @@ struct DragPaths(Vec<PathBuf>);
 struct TabDrag { id: u64 }
 
 enum Action {
+    ColumnAction { tab_id: u64, directory: PathBuf, action: Box<Action> },
+    ColumnStep(i32),
+    SetView(ViewMode),
     Navigate(PathBuf),
     OpenEntry(usize),
     Click { vi: usize, ctrl: bool, shift: bool },
@@ -330,6 +334,11 @@ impl App {
         let (sizes, hidden) = (&self.sizes, self.show_hidden);
         for tab in self.panes.iter_mut().flat_map(|p| p.tabs.iter_mut()) {
             tab.apply_view(sizes, hidden);
+            if let Some(c) = &mut tab.columns {
+                for (i, item) in c.items.iter_mut().enumerate() {
+                    if i != c.active { item.apply_view(sizes, hidden); }
+                }
+            }
         }
     }
 
@@ -517,6 +526,7 @@ impl App {
         if path == tab.path && tab.search.is_none() {
             return;
         }
+        tab.columns = None;
         if let Some(s) = tab.search.take() {
             s.cancel.store(true, Ordering::Relaxed);
         }
@@ -573,6 +583,13 @@ impl App {
             s.running = false;
             self.restart_search();
             return;
+        }
+        let (tx, ctx) = (&self.list_tx, &self.ctx);
+        let pane = &mut self.panes[self.active_pane];
+        if let Some(c) = &mut pane.tabs[pane.active].columns {
+            for (i, item) in c.items.iter_mut().enumerate() {
+                if i != c.active { start_listing(item, tx, ctx, true); }
+            }
         }
         self.reload_active(true);
     }
@@ -667,8 +684,9 @@ impl App {
         }
 
         while let Ok(l) = self.list_rx.try_recv() {
+            if l.result.is_err() && self.repair_missing_column(l.listing_id, l.generation) { continue; }
             let (sizes, hidden) = (&self.sizes, self.show_hidden);
-            let Some(tab) = self.panes.iter_mut().flat_map(|p| p.tabs.iter_mut()).find(|t| t.id == l.tab_id) else {
+            let Some(tab) = columns::find_listing(&mut self.panes, l.listing_id) else {
                 continue;
             };
             if tab.generation != l.generation || tab.search.is_some() {
@@ -690,7 +708,7 @@ impl App {
                     tab.entries = entries;
                     tab.error = None;
                 }
-                Err(_) if l.soft && !tab.path.exists() => {
+                Err(_) if (l.soft || tab.mode == ViewMode::Columns) && !tab.path.exists() => {
                     // The folder was deleted or renamed under us: fall back to the nearest parent.
                     if let Some(up) = tab.path.ancestors().find(|a| a.is_dir()).map(Path::to_path_buf) {
                         tab.select_after_load = None;
@@ -739,6 +757,11 @@ impl App {
             let (sizes, hidden) = (&self.sizes, self.show_hidden);
             for tab in self.panes.iter_mut().flat_map(|p| p.tabs.iter_mut()).filter(|t| t.sort == SortKey::Size) {
                 tab.apply_view(sizes, hidden);
+                if let Some(c) = &mut tab.columns {
+                    for (i, item) in c.items.iter_mut().enumerate() {
+                        if i != c.active { item.apply_view(sizes, hidden); }
+                    }
+                }
             }
         }
 
@@ -812,6 +835,7 @@ impl App {
                 self.preview.invalidate();
             }
             for tab in self.tabs_mut() {
+                columns::changed(tab, &p, now);
                 if tab.search.is_none() && (Some(tab.path.as_path()) == p.parent() || tab.path == p) {
                     tab.reload_at.get_or_insert(now + WATCH_DEBOUNCE);
                 }
@@ -853,12 +877,14 @@ impl App {
             ctx.request_repaint_after(w.saturating_duration_since(now));
         }
 
+        self.sync_columns();
         let wanted: HashSet<PathBuf> = self
             .panes
             .iter()
             .flat_map(|p| p.tabs.iter())
             .filter(|t| t.search.is_none())
             .map(|t| t.path.clone())
+            .chain(self.panes.iter().flat_map(|p| &p.tabs).flat_map(columns::watched_paths))
             .chain(self.inspector.last().filter(|_| self.show_preview).and_then(|e| {
                 if e.is_dir { Some(e.path.clone()) } else { e.path.parent().map(Path::to_path_buf) }
             }))
@@ -911,6 +937,11 @@ impl App {
             pane.tabs[pane.active].id
         };
         for tab in self.panes.iter_mut().flat_map(|p| p.tabs.iter_mut()) {
+            if let Some(c) = &mut tab.columns {
+                for (i, item) in c.items.iter_mut().enumerate() {
+                    if i != c.active && done.dirs.contains(&item.path) { start_listing(item, list_tx, ctx, true); }
+                }
+            }
             if tab.search.is_none() && done.dirs.contains(&tab.path) {
                 if tab.id == active_id && select.as_ref().and_then(|p| p.parent()) == Some(tab.path.as_path()) {
                     tab.select_after_load = select.clone();
@@ -1229,10 +1260,13 @@ impl App {
             Cmd::ZoomIn => self.zoom(1),
             Cmd::ZoomOut => self.zoom(-1),
             Cmd::ToggleSplit => self.toggle_split(),
+            Cmd::ToggleColumns => {
+                let mode = if self.tab().mode == ViewMode::Columns { self.tab().previous_view } else { ViewMode::Columns };
+                self.set_view(mode);
+            }
             Cmd::ToggleGrid => {
-                let tab = self.tab_mut();
-                tab.mode = if tab.mode.is_grid() { ViewMode::Details } else { ViewMode::Icons(2) };
-                tab.scroll_to_cursor = true;
+                let mode = if self.tab().mode.is_grid() { ViewMode::Details } else { ViewMode::Icons(2) };
+                self.set_view(mode);
             }
             Cmd::CopyPath => {
                 let text = self.tab().targets().iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n");
@@ -1331,14 +1365,24 @@ impl App {
 
     fn apply(&mut self, action: Action) {
         match action {
+            Action::ColumnAction { tab_id, directory, action } => {
+                if self.activate_column_path(tab_id, &directory) && !matches!(*action, Action::FocusPane(_)) { self.apply(*action); }
+            }
+            Action::ColumnStep(delta) => self.column_step(delta),
+            Action::SetView(mode) => self.set_view(mode),
             Action::MoveTab { id, pane, before } => self.move_tab(id, pane, before),
             Action::ReopenClosed(i) => self.reopen_closed(i),
             Action::Navigate(p) => self.navigate(p, true),
             Action::OpenEntry(vi) => {
                 let Some(e) = self.tab().entry(vi) else { return };
                 if e.is_dir {
-                    let p = e.path.clone();
-                    self.navigate(p, true);
+                    if self.tab().mode == ViewMode::Columns && self.tab().search.is_none() {
+                        self.tab_mut().select_only(vi);
+                        self.column_step(1);
+                    } else {
+                        let p = e.path.clone();
+                        self.navigate(p, true);
+                    }
                 } else if self.picker.is_some() {
                     // Opening a file in a picker means choosing it.
                     let path = e.path.clone();
@@ -1521,6 +1565,7 @@ impl App {
 
     fn zoom(&mut self, steps: i32) {
         let tab = self.tab_mut();
+        if tab.mode == ViewMode::Columns { return; }
         tab.mode = tab.mode.zoom(steps);
         tab.scroll_to_cursor = true;
     }
@@ -1566,6 +1611,7 @@ impl App {
         let mut filter_changed = false;
         let text_selected = ctx.plugin::<egui::text_selection::LabelSelectionState>().lock().has_selection()
             && !ctx.input(|i| i.pointer.any_pressed());
+        let columns = self.tab().mode == ViewMode::Columns && self.tab().search.is_none();
         let grid_cols = if self.tab().mode.is_grid() { self.tab().grid_cols.max(1) as isize } else { 0 };
         let split = self.panes.len() > 1;
         ctx.input_mut(|i| {
@@ -1599,6 +1645,10 @@ impl App {
                         tab.move_cursor(delta, false);
                     }
                 }
+            }
+            if columns {
+                if take(i, none, Key::ArrowLeft) { actions.push(Action::ColumnStep(-1)); }
+                if take(i, none, Key::ArrowRight) { actions.push(Action::ColumnStep(1)); }
             }
             if take(i, ctrl, Key::Space) {
                 if let Some(c) = tab.cursor {
@@ -1668,6 +1718,7 @@ impl App {
                 (ctrl, Key::F, Cmd::Search),
                 (ctrl, Key::B, ToggleSidebar),
                 (ctrl, Key::G, ToggleGrid),
+                (cs, Key::M, ToggleColumns),
                 (ctrl, Key::H, ToggleHidden),
                 (ctrl, Key::L, EditPath),
                 (ctrl, Key::T, NewTab),
@@ -1868,10 +1919,13 @@ fn start_listing(tab: &mut Tab, tx: &Sender<Listing>, ctx: &egui::Context, soft:
     tab.cancel.store(true, Ordering::Relaxed);
     tab.cancel = Arc::new(AtomicBool::new(false));
     let (tx, ctx) = (tx.clone(), ctx.clone());
-    let (tab_id, generation, path) = (tab.id, tab.generation, tab.path.clone());
+    let (listing_id, generation, path) = (tab.listing_id, tab.generation, tab.path.clone());
+    let cancel = tab.cancel.clone();
     std::thread::spawn(move || {
+        if cancel.load(Ordering::Relaxed) { return; }
         let result = fsops::list_dir(&path);
-        let _ = tx.send(Listing { tab_id, generation, soft, result });
+        if cancel.load(Ordering::Relaxed) { return; }
+        let _ = tx.send(Listing { listing_id, generation, soft, result });
         ctx.request_repaint();
     });
 }
