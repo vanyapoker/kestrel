@@ -7,6 +7,7 @@ Run from any directory: python3 scripts/screenshots.py
 """
 from __future__ import annotations
 
+import argparse
 import ctypes as C
 import os
 from pathlib import Path
@@ -138,6 +139,18 @@ export function App() {
         ('Projects/Northstar', 'weekend-field-notes.md', '# Field notes\n\nA weekend in the northern valleys.\n'),
     ]:
         write(studio / parent / name, text)
+    documents = studio / 'Documents'
+    (documents / 'Assets').mkdir(parents=True, exist_ok=True)
+    write(documents / 'AGENTS.md', '# Studio guide\n\n## Working together\n\n- Keep changes focused.\n- Explain the intent.\n- Review before release.\n\n## Project structure\n\nSource lives in src/.\nArtwork lives in Assets/.\n\n## Before shipping\n\nRun the checks and review\nthe updated previews.\n')
+    write(documents / 'README.md', '# Aurora Studio\n\nA small home for big ideas.\n\n## Getting started\n\n1. Explore the collection.\n2. Choose a direction.\n3. Make something useful.\n\n## This release\n\n- A quieter interface\n- More room for discovery\n- Thoughtful little details\n\nDesigned slowly.\nBuilt with care.\n')
+    write(documents / 'build.py', '#!/usr/bin/env python3\nfrom pathlib import Path\n\nROOT = Path("studio")\nOUTPUT = ROOT / "dist"\n\ndef build_collection():\n    OUTPUT.mkdir(exist_ok=True)\n    for source in ROOT.glob("*.md"):\n        title = source.stem\n        print(f"Building {title}")\n\nif __name__ == "__main__":\n    build_collection()\n')
+    write(documents / 'config.json', '{\n  "name": "Aurora",\n  "theme": "night",\n  "collections": [\n    "Alpine",\n    "Coastal",\n    "Desert"\n  ],\n  "gallery": {\n    "columns": 3,\n    "gap": 24\n  },\n  "preview": true\n}\n')
+    write(documents / 'main.rs', 'use std::path::Path;\n\nstruct Collection {\n    name: String,\n    images: usize,\n}\n\nfn main() {\n    let studio = Collection {\n        name: "Aurora".into(),\n        images: 9,\n    };\n    println!("{}: {} images",\n        studio.name, studio.images);\n}\n')
+    write(documents / 'notes.txt', 'FIELD NOTES / OCTOBER\n\nA few things worth keeping.\n\nLight across the ridge.\nSalt on the windows.\nA path through the pines.\n\nNext time, bring a notebook.\nLeave room in the margins.\n\nOne idea per page.\nOne place at a time.\n')
+    write(documents / 'package.toml', '[package]\nname = "aurora"\nversion = "1.0.0"\nedition = "2024"\n\n[studio]\nowner = "NaDya"\nstatus = "ready"\n\n[features]\npreview = true\ncollections = 3\n')
+    write(documents / 'theme.css', ':root {\n  --ink: #060b1e;\n  --paper: #ffcead;\n  --accent: #7d82d9;\n}\n\n.studio {\n  display: grid;\n  gap: 24px;\n  padding: 48px;\n  color: var(--paper);\n  background: var(--ink);\n}\n')
+    write(documents / 'empty.txt', '')
+    (documents / 'TizenTube.wgt').write_bytes(b'PK\x03\x04\x00mock binary package')
     # Stable, fictional dates; screenshot output is independent of the capture date.
     for path in studio.rglob('*'):
         os.utime(path, (1792573200, 1792573200))
@@ -245,10 +258,18 @@ def capture(display: str, name: str) -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--only', choices=['overview', 'columns', 'search', 'batch-rename', 'text-thumbnails'], help='Capture a single scene')
+    parser.add_argument('--binary', type=Path, help='Use an already built binary instead of building release')
+    args = parser.parse_args()
     for tool in ['cargo', 'Xvfb', 'import', 'rsvg-convert']:
         if not shutil.which(tool):
             raise SystemExit(f'Missing tool: {tool}')
-    sp.run(['cargo', 'build', '--release', '--locked'], cwd=REPO, check=True)
+    if args.binary is None:
+        sp.run(['cargo', 'build', '--release', '--locked'], cwd=REPO, check=True)
+    binary = args.binary.resolve() if args.binary else REPO / 'target/release/kestrel'
+    if not binary.is_file():
+        raise SystemExit(f'Missing binary: {binary}')
     with tempfile.TemporaryDirectory(prefix='kestrel-showcase-') as temporary:
         base = Path(temporary)
         studio = base / 'Studio'
@@ -286,7 +307,7 @@ def main() -> None:
                         text += f'tab name asc {mode} {path}\n'
                 write(base / 'state/kestrel/session', text)
                 log = (base / 'app.log').open('w')
-                process = sp.Popen([str(REPO / 'target/release/kestrel')], cwd=studio, env=env, stdout=log, stderr=log)
+                process = sp.Popen([str(binary)], cwd=studio, env=env, stdout=log, stderr=log)
                 time.sleep(.5)
                 deadline = time.monotonic() + 15
                 while not (window := x.window()):
@@ -298,38 +319,49 @@ def main() -> None:
                 x.focus(window)
                 time.sleep(1)
 
-            launch([[(aurora, 'details'), (studio / 'Deliverables', 'details')],
-                    [(aurora / 'Exports', 'icons3'), (aurora / 'Design', 'details')]], active=1)
-            x.park()
-            capture(display, 'overview')
+            if args.only in (None, 'overview'):
+                launch([[(aurora, 'details'), (studio / 'Deliverables', 'details')],
+                        [(aurora / 'Exports', 'icons3'), (aurora / 'Design', 'details')]], active=1)
+                x.park()
+                capture(display, 'overview')
 
-            launch([[(aurora, 'columns'), (studio / 'Deliverables', 'details')]], sidebar=False)
-            # The active Aurora column starts on Design. Select Website, then enter src.
-            for _ in range(3):
-                x.key('Down')
-            x.key('Right')
-            time.sleep(.4)
-            x.key('Right')
-            time.sleep(.6)
-            x.park()
-            capture(display, 'columns')
+            if args.only in (None, 'columns'):
+                launch([[(aurora, 'columns'), (studio / 'Deliverables', 'details')]], sidebar=False)
+                # The active Aurora column starts on Design. Select Website, then enter src.
+                for _ in range(3):
+                    x.key('Down')
+                x.key('Right')
+                time.sleep(.4)
+                x.key('Right')
+                time.sleep(.6)
+                x.park()
+                capture(display, 'columns')
 
-            launch([[(studio, 'details'), (aurora, 'details')]], sidebar=False)
-            x.key('f', 'Control_L')
-            x.text('nd')
-            time.sleep(1)
-            x.park()
-            capture(display, 'search')
+            if args.only in (None, 'search'):
+                launch([[(studio, 'details'), (aurora, 'details')]], sidebar=False)
+                x.key('f', 'Control_L')
+                x.text('nd')
+                time.sleep(1)
+                x.park()
+                capture(display, 'search')
 
-            launch([[(aurora / 'Exports', 'details'), (studio / 'Deliverables', 'details')]], preview=False, sidebar=True)
-            x.key('a', 'Control_L')
-            x.key('F2')
-            time.sleep(.6)
-            x.click(700, SIZE[1] // 2 - 230)
-            x.key('a', 'Control_L')
-            x.text('aurora-{n}{ext}')
-            x.park()
-            capture(display, 'batch-rename')
+            if args.only in (None, 'batch-rename'):
+                launch([[(aurora / 'Exports', 'details'), (studio / 'Deliverables', 'details')]], preview=False, sidebar=True)
+                x.key('a', 'Control_L')
+                x.key('F2')
+                time.sleep(.6)
+                x.click(700, SIZE[1] // 2 - 230)
+                x.key('a', 'Control_L')
+                x.text('aurora-{n}{ext}')
+                x.park()
+                capture(display, 'batch-rename')
+            if args.only in (None, 'text-thumbnails'):
+                launch([[(studio / 'Documents', 'icons4'), (aurora / 'Website' / 'src', 'icons4')]])
+                x.key('Home')
+                for _ in range(8):
+                    x.key('Right')
+                x.park()
+                capture(display, 'text-thumbnails')
         finally:
             if process and process.poll() is None:
                 process.terminate()

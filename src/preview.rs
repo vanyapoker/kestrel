@@ -420,23 +420,29 @@ fn load_text(path: &Path) -> Payload {
     };
     let text = formatted.as_deref().unwrap_or(&raw).replace('\t', "    ");
 
+    let (job, lines) = highlight_text(path, &text, MAX_TEXT_LINES, FontId::monospace(12.5));
+    truncated |= text.lines().count() > MAX_TEXT_LINES;
+    let links = text_links(&job.text);
+    Payload::Text(job, links, lines, truncated)
+}
+
+/// Shared bounded, theme-aware syntax layout for previews and document thumbnails.
+/// Does not read the file: callers control the sample and line budget.
+pub(crate) fn highlight_text(path: &Path, text: &str, max_lines: usize, font: FontId) -> (LayoutJob, usize) {
     static SYNTAX: OnceLock<SyntaxSet> = OnceLock::new();
     let ss = SYNTAX.get_or_init(SyntaxSet::load_defaults_newlines);
     let theme = &*syntax_theme();
-    let syntax = ss
-        .find_syntax_for_file(path)
-        .ok()
-        .flatten()
+    // Syntax detection uses only the supplied sample, including extensionless shebangs.
+    let syntax = path.extension().and_then(|e| e.to_str()).and_then(|e| ss.find_syntax_by_extension(e))
+        .or_else(|| path.file_name().and_then(|n| n.to_str()).and_then(|n| ss.find_syntax_by_extension(n)))
         .or_else(|| text.lines().next().and_then(|l| ss.find_syntax_by_first_line(l)))
         .unwrap_or_else(|| ss.find_syntax_plain_text());
     let mut hl = HighlightLines::new(syntax, theme);
 
-    let font = FontId::monospace(12.5);
     let mut job = LayoutJob::default();
     let mut lines = 0;
     for (n, line) in LinesWithEndings::from(&text).enumerate() {
-        if n >= MAX_TEXT_LINES {
-            truncated = true;
+        if n >= max_lines {
             break;
         }
         lines += 1;
@@ -462,8 +468,7 @@ fn load_text(path: &Path) -> Payload {
             ),
         }
     }
-    let links = text_links(&job.text);
-    Payload::Text(job, links, lines, truncated)
+    (job, lines)
 }
 
 /// Parses a CSV/TSV file, or `None` to fall back to the plain-text preview.

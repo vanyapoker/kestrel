@@ -38,6 +38,14 @@ split panes; drag the divider to resize them, or double-click it for equal width
 Long tab strips scroll horizontally. Up to 32 recently closed tabs or splits can be
 reopened during the current window session, including through Go To.
 
+Icons view shows miniature file contents for Markdown, source code, plain text,
+configuration files, and extensionless text files. Syntax colors follow your theme,
+and the preview scales with Ctrl+scroll. Empty, binary, and unreadable files keep
+their type icons; image, PDF, SVG, and video thumbnails continue to show their contents.
+Text thumbnails load in the background from a small file sample.
+
+[![Icons view showing document thumbnails with actual Markdown, Python, Rust, JSON, CSS, and plain-text contents, alongside standard icons for an empty file and a binary package](assets/screenshots/text-thumbnails.png)](assets/screenshots/text-thumbnails.png)
+
 In Miller columns, selecting a folder reveals its contents to the right. **Right** or
 **Enter** enters that column; **Left** returns to its parent. Each column keeps its own
 selection, filter, and scroll position. Preview and file operations follow the active column.
@@ -228,6 +236,8 @@ and drop works on Hyprland.
 
 ```sh
 python3 scripts/screenshots.py
+# Or refresh just the document-thumbnail scene:
+python3 scripts/screenshots.py --only text-thumbnails
 ```
 
 Requires Cargo, Xvfb, ImageMagick, librsvg, and libXtst. The script builds this checkout,

@@ -134,6 +134,69 @@ fn columns_driver(name: &str) -> (PathBuf, Driver) {
 }
 
 #[test]
+fn icon_documents_show_contents_at_every_size_and_refresh_after_file_changes() {
+    let dir = sandbox("text-icons");
+    let path = dir.join("README.md");
+    fs::write(&path, "# ICON_CONTENT_MARKER\n\nA small **document**.\n").unwrap();
+    let mut d = Driver::new(dir.clone());
+    d.app.show_preview = false;
+    d.app.show_sidebar = false;
+    d.until("listing", |a| !a.tab().loading);
+    for i in 0..crate::tab::ICON_SIZES.len() {
+        d.app.set_view(ViewMode::Icons(i));
+        d.frame(Vec::new());
+        let before = d.row(&path);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !d.texts.iter().any(|(text, _)| text.contains("ICON_CONTENT_MARKER")) {
+            assert!(Instant::now() < deadline, "missing text at icon size {i}");
+            std::thread::sleep(Duration::from_millis(5));
+            d.frame(Vec::new());
+        }
+        assert_eq!(d.row(&path), before, "content must not resize the tile");
+    }
+    d.app.tab_mut().select_path(&path);
+    d.app.tab_mut().scroll_to_cursor = true;
+    d.frame(Vec::new());
+    assert_eq!(d.app.tab().targets(), vec![path.clone()]);
+    d.modifiers = Modifiers::COMMAND;
+    d.frame(vec![press(Key::Space, Modifiers::COMMAND)]);
+    assert!(d.app.tab().marked.contains(&path));
+    assert!(!d.app.show_preview);
+    d.modifiers = Modifiers::NONE;
+    fs::write(&path, "# UPDATED_ICON_CONTENT\n").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !d.texts.iter().any(|(text, _)| text.contains("UPDATED_ICON_CONTENT")) {
+        assert!(Instant::now() < deadline, "thumbnail did not refresh");
+        std::thread::sleep(Duration::from_millis(5));
+        d.frame(Vec::new());
+    }
+    // Compact lists and columns keep their established small file icons.
+    for mode in [ViewMode::Details, ViewMode::List, ViewMode::Columns] {
+        d.app.set_view(mode);
+        d.frame(Vec::new());
+        assert!(!d.texts.iter().any(|(text, _)| text.contains("UPDATED_ICON_CONTENT")));
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn icon_document_text_is_clipped_inside_its_page() {
+    let ctx = egui::Context::default();
+    let sample = egui::text::LayoutJob::simple("long content ".repeat(160), FontId::monospace(12.5), Color32::WHITE, f32::INFINITY);
+    for side in crate::tab::ICON_SIZES {
+        let area = Rect::from_min_size(egui::pos2(20.0, 20.0), vec2(side, side));
+        let mut output = ctx.run_ui(RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(400.0, 400.0))), ..Default::default() }, |ui| {
+            super::ui::paint_text_thumbnail(ui.painter(), area, &sample, 1.0);
+        });
+        output.textures_delta.clear();
+        let text = output.shapes.iter().find(|s| matches!(s.shape, egui::epaint::Shape::Text(_))).unwrap();
+        assert!(area.contains_rect(text.clip_rect));
+        assert!(text.clip_rect.width() < side * 0.78);
+        assert!(text.clip_rect.height() < side);
+    }
+}
+
+#[test]
 fn miller_columns_reveal_focus_and_keep_operations_in_the_active_directory() {
     let (dir, mut d) = columns_driver("columns-focus");
     let c = d.app.tab().columns.as_ref().unwrap();

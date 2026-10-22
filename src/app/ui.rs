@@ -2557,6 +2557,13 @@ fn paint_tile(painter: &Painter, thumbs: &mut Thumbs, tile: Rect, e: &Entry, fad
             drew = true;
         }
     }
+    if renderer.is_none() && !e.is_dir
+        && !matches!(util::category(&e.ext, false), util::Category::Audio | util::Category::Archive | util::Category::Document | util::Category::Executable)
+        && let Some(job) = thumbs.get_text(&e.path)
+    {
+        paint_text_thumbnail(painter, thumb_area, job, alpha);
+        drew = true;
+    }
     if !drew {
         let cat = util::category(&e.ext, e.is_dir);
         draw_entry_icon(painter, thumb_area.center(), side / 24.0, &e.path, cat);
@@ -2569,6 +2576,27 @@ fn paint_tile(painter: &Painter, thumbs: &mut Thumbs, tile: Rect, e: &Entry, fad
     job.halign = Align::Center;
     let galley = painter.layout_job(job);
     painter.galley(Pos2::new(tile.center().x, thumb_area.bottom() + 8.0), galley, color);
+}
+
+/// Decorative document content: tile responses continue to own every interaction.
+pub(super) fn paint_text_thumbnail(painter: &Painter, area: Rect, source: &egui::text::LayoutJob, alpha: f32) {
+    let page = Rect::from_center_size(area.center(), vec2(area.height() * 0.78, area.height()));
+    let radius = (page.width() * 0.04).clamp(2.0, 6.0) as u8;
+    painter.rect_filled(page, radius, pal().panel.gamma_multiply(alpha));
+    painter.rect_stroke(page, radius, Stroke::new(1.0, pal().dim.gamma_multiply(alpha * 0.6)), egui::StrokeKind::Inside);
+    let padding = (page.width() * 0.08).clamp(3.0, 12.0);
+    let body = page.shrink(padding);
+    let mut job = source.clone();
+    let font_size = (page.height() / 19.0).clamp(4.0, 11.0);
+    for section in &mut job.sections {
+        section.format.font_id = FontId::monospace(font_size);
+        section.format.color = section.format.color.gamma_multiply(alpha);
+    }
+    job.wrap.max_width = f32::INFINITY;
+    job.wrap.max_rows = 24;
+    job.halign = Align::Min;
+    let galley = painter.layout_job(job);
+    painter.with_clip_rect(body.intersect(painter.clip_rect())).galley(body.min, galley, pal().text.gamma_multiply(alpha));
 }
 
 // ---------------------------------------------------------------- dialogs
