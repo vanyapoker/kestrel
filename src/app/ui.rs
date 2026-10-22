@@ -659,11 +659,23 @@ impl App {
                         for (mode, label) in [(ViewMode::Details, "Details"), (ViewMode::List, "List"),
                             (ViewMode::Icons(2), "Icons"), (ViewMode::Columns, "Miller columns")] {
                             let selected = tab.mode == mode || (mode == ViewMode::Icons(2) && matches!(tab.mode, ViewMode::Icons(_)));
-                            if ui.selectable_label(selected, label).clicked() {
+                            let shortcut = match mode {
+                                ViewMode::Columns => "Ctrl+Shift+M",
+                                ViewMode::Details if tab.mode.is_grid() => "Ctrl+G",
+                                ViewMode::Icons(_) if !tab.mode.is_grid() => "Ctrl+G",
+                                _ => "",
+                            };
+                            if ui.add(egui::Button::new(label).selected(selected).shortcut_text(shortcut)).clicked() {
                                 actions.push(Action::FocusPane(p));
                                 actions.push(Action::SetView(mode));
                                 ui.close();
                             }
+                        }
+                        ui.separator();
+                        ui.label(RichText::new("Ctrl+G · Icons / Details").small().color(pal().dim));
+                        ui.label(RichText::new("Ctrl+scroll · Details → List → Icons").small().color(pal().dim));
+                        if tab.mode == ViewMode::Columns {
+                            ui.label(RichText::new("Zoom is inactive in columns").small().color(pal().dim));
                         }
                     }).response.on_hover_text("View mode · columns: Ctrl+Shift+M · icons/details: Ctrl+G");
                 }
