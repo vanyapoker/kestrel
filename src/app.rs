@@ -1,5 +1,6 @@
 mod icons;
 mod ui;
+mod goto;
 #[cfg(test)]
 mod ui_tests;
 
@@ -150,6 +151,7 @@ pub struct App {
     clip: Option<Clip>,
     dialog: Option<Dialog>,
     palette: Palette,
+    recent_dirs: Vec<PathBuf>,
     toasts: Vec<Toast>,
     /// Screen rects of the panes from the last frame, for external drops.
     pane_rects: Vec<egui::Rect>,
@@ -252,6 +254,7 @@ impl App {
             clip: None,
             dialog: None,
             palette: Palette::default(),
+            recent_dirs: Vec::new(),
             toasts: Vec::new(),
             pane_rects: Vec::new(),
             pending_paste: None,
@@ -318,6 +321,7 @@ impl App {
 
     /// Applies saved settings, and the saved tabs too when `tabs` is set.
     fn restore(&mut self, s: &crate::session::Session, tabs: bool) {
+        self.recent_dirs = s.recent_dirs.clone();
         self.show_hidden = s.show_hidden;
         self.show_preview = s.show_preview;
         self.show_sidebar = s.show_sidebar;
@@ -335,6 +339,7 @@ impl App {
                 let tab = self.tab_mut();
                 (tab.sort, tab.ascending, tab.mode) = (t.sort, t.ascending, t.mode);
             }
+            self.remember_dir(self.tab().path.clone());
             return;
         }
         for pane in std::mem::take(&mut self.panes) {
@@ -361,6 +366,7 @@ impl App {
             self.panes.push(Pane { tabs: vec![tab], active: 0 });
         }
         self.active_pane = s.active_pane.min(self.panes.len() - 1);
+        self.remember_dir(self.tab().path.clone());
     }
 
     fn session(&self) -> crate::session::Session {
@@ -388,6 +394,7 @@ impl App {
             collapsed,
             sidebar_width: Some(self.sidebar_width),
             preview_width: Some(self.preview_width),
+            recent_dirs: self.recent_dirs.clone(),
         }
     }
 
@@ -419,6 +426,7 @@ impl App {
     }
 
     fn open_tab(&mut self, path: PathBuf) {
+        self.remember_dir(path.clone());
         let tab = self.new_tab(path);
         let pane = &mut self.panes[self.active_pane];
         pane.tabs.push(tab);
@@ -465,6 +473,7 @@ impl App {
     }
 
     fn navigate(&mut self, path: PathBuf, push_history: bool) {
+        self.remember_dir(path.clone());
         let tab = self.tab_mut();
         if path == tab.path && tab.search.is_none() {
             return;
@@ -1018,6 +1027,7 @@ impl App {
 
     fn run_cmd(&mut self, cmd: Cmd) {
         match cmd {
+            Cmd::GoTo => self.palette.show_goto(),
             Cmd::NewTab => {
                 let tab = self.tab();
                 let p = tab.cursor_entry().filter(|e| e.is_dir && tab.marked.is_empty()).map(|e| e.path.clone());
@@ -1266,6 +1276,7 @@ impl App {
                 self.active_pane = p.min(self.panes.len() - 1);
                 let pane = &mut self.panes[self.active_pane];
                 pane.active = i.min(pane.tabs.len() - 1);
+                self.remember_dir(self.tab().path.clone());
             }
             Action::FocusPane(p) => self.active_pane = p.min(self.panes.len() - 1),
             Action::Sort(key) => {
@@ -1418,6 +1429,10 @@ impl App {
         }
         if self.palette.open || self.dialog.is_some() {
             return; // they handle their own keys
+        }
+        if ctx.input_mut(|i| take(i, Modifiers::COMMAND, Key::K)) {
+            self.palette.show_goto();
+            return;
         }
         let search_id = egui::Id::new(("search", self.tab().id));
         if ctx.memory(|m| m.has_focus(search_id)) {

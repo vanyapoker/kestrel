@@ -106,6 +106,76 @@ fn sandbox(name: &str) -> PathBuf {
 }
 
 #[test]
+fn goto_switcher_fuzzy_matches_and_switches_existing_tabs() {
+    let dir = sandbox("goto-tabs");
+    fs::create_dir(dir.join("NaDya")).unwrap();
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| !a.tab().loading);
+    d.app.open_tab(dir.join("NaDya"));
+    d.app.open_tab(dir.clone());
+    d.modifiers = Modifiers::COMMAND;
+    d.frame(vec![Event::Key { key: Key::K, physical_key: None, pressed: true, repeat: false, modifiers: d.modifiers }]);
+    assert!(d.app.palette.open && d.app.palette.goto);
+    d.modifiers = Modifiers::NONE;
+    d.frame(vec![Event::Text("nd".into())]);
+    d.frame(Vec::new());
+    assert!(d.texts.iter().any(|(t, _)| t == "NaDya"));
+    d.frame(vec![Event::Key { key: Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: d.modifiers }]);
+    assert_eq!(d.app.panes[0].active, 1);
+    assert_eq!(d.app.tab().path, dir.join("NaDya"));
+    assert_eq!(d.app.panes[0].tabs.len(), 3);
+    assert!(!d.app.palette.open);
+    assert!(d.app.tab().filter.is_empty());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn goto_switcher_jumps_to_bookmarks_recents_and_cancels() {
+    let dir = sandbox("goto-folders");
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| !a.tab().loading);
+    d.app.places.bookmarks = vec![("Family".into(), dir.join("dest"))];
+    d.app.run_cmd(Cmd::GoTo);
+    d.frame(Vec::new());
+    d.frame(vec![Event::Text("fm".into())]);
+    d.frame(Vec::new());
+    d.frame(vec![Event::Key { key: Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }]);
+    assert_eq!(d.app.tab().path, dir.join("dest"));
+    d.app.navigate(dir.clone(), true);
+    d.app.places.bookmarks.clear();
+    assert!(d.app.goto_items().iter().any(|(_, detail, _)| detail == &format!("Recent · {}", dir.join("dest").display())));
+    d.app.run_cmd(Cmd::GoTo);
+    d.frame(Vec::new());
+    d.frame(vec![Event::Text("does-not-exist".into())]);
+    d.frame(Vec::new());
+    assert!(d.texts.iter().any(|(t, _)| t == "No matches"));
+    d.frame(vec![Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }]);
+    assert!(!d.app.palette.open);
+    assert_eq!(d.app.tab().path, dir);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn goto_shortcut_works_in_search_and_recents_survive_session_restore() {
+    let dir = sandbox("goto-session");
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| !a.tab().loading);
+    d.app.navigate(dir.join("dest"), true);
+    d.app.navigate(dir.clone(), true);
+    let session = crate::session::parse(&d.app.session().to_text());
+    let mut restored = Driver::new(dir.clone());
+    restored.app.restore(&session, true);
+    assert_eq!(restored.app.recent_dirs, vec![dir.clone(), dir.join("dest")]);
+    assert_eq!(restored.app.goto_items().iter().filter(|(_, detail, _)| detail.ends_with(&dir.display().to_string())).count(), 1);
+    restored.app.start_search();
+    restored.frame(Vec::new());
+    restored.modifiers = Modifiers::COMMAND;
+    restored.frame(vec![Event::Key { key: Key::K, physical_key: None, pressed: true, repeat: false, modifiers: restored.modifiers }]);
+    assert!(restored.app.palette.open && restored.app.palette.goto);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn typing_a_filter_selects_the_best_fuzzy_match() {
     let dir = sandbox("fuzzy-filter");
     for name in ["Named", "NaDya", "nd-notes", "ND"] {

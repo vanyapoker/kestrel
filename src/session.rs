@@ -31,6 +31,7 @@ pub struct Session {
     pub collapsed: Vec<String>,
     pub sidebar_width: Option<f32>,
     pub preview_width: Option<f32>,
+    pub recent_dirs: Vec<PathBuf>,
 }
 
 impl Default for Session {
@@ -44,6 +45,7 @@ impl Default for Session {
             collapsed: Vec::new(),
             sidebar_width: None,
             preview_width: None,
+            recent_dirs: Vec::new(),
         }
     }
 }
@@ -110,6 +112,12 @@ impl Session {
             out += &format!("preview_width {}\n", w.round());
         }
         out += &format!("active_pane {}\n", self.active_pane);
+        for path in self.recent_dirs.iter().take(64) {
+            let path = path.to_string_lossy();
+            if !path.contains('\n') {
+                out += &format!("recent {path}\n");
+            }
+        }
         for pane in &self.panes {
             out += &format!("pane {}\n", pane.active);
             for t in &pane.tabs {
@@ -139,6 +147,12 @@ pub fn parse(text: &str) -> Session {
             "sidebar_width" => s.sidebar_width = rest.parse().ok(),
             "preview_width" => s.preview_width = rest.parse().ok(),
             "active_pane" => s.active_pane = rest.parse().unwrap_or(0),
+            "recent" if s.recent_dirs.len() < 64 && Path::new(rest).is_absolute() => {
+                let path = PathBuf::from(rest);
+                if !s.recent_dirs.contains(&path) {
+                    s.recent_dirs.push(path);
+                }
+            }
             "pane" => s.panes.push(PaneState { tabs: Vec::new(), active: rest.parse().unwrap_or(0) }),
             "tab" => {
                 let mut it = rest.splitn(4, ' ');
@@ -191,6 +205,7 @@ mod tests {
             collapsed: vec!["DEVICES".into()],
             sidebar_width: Some(210.0),
             preview_width: Some(400.0),
+            recent_dirs: vec!["/home/a b".into(), "/tmp".into()],
         };
         assert_eq!(parse(&s.to_text()), s);
     }

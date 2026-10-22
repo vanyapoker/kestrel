@@ -1550,7 +1550,8 @@ impl App {
         if !self.palette.open {
             return;
         }
-        // Commands, then places to jump to.
+        let goto = self.palette.goto;
+        // Commands, then places to jump to. Go To instead lists folders and tabs.
         let mut items: Vec<(String, String, Action)> =
             COMMANDS.iter().map(|&(c, name, keys)| (name.to_string(), keys.to_string(), Action::Cmd(c))).collect();
         for (name, path) in self.places.places.iter().chain(&self.places.bookmarks) {
@@ -1566,14 +1567,24 @@ impl App {
         for d in self.devices.iter().filter(|d| d.removable && d.mount.is_some()) {
             items.push((format!("Eject {}", d.name), d.dev.display().to_string(), Action::Device(DevOp::Eject, d.dev.clone())));
         }
+        if goto {
+            items = self.goto_items();
+        }
         let q = self.palette.query.trim().to_string();
-        let mut scored: Vec<(i32, usize)> = items
-            .iter()
-            .enumerate()
-            .filter_map(|(i, (name, _, _))| palette::fuzzy_score(&q, name).map(|s| (s, i)))
-            .collect();
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-        scored.truncate(14);
+        let mut scored: Vec<usize> = if goto {
+            let query = crate::search::Query::new(&q);
+            let mut ranked: Vec<_> = items.iter().enumerate().filter_map(|(i, (name, path, _))| {
+                query.score(name).max(query.score(path)).map(|score| (score, i))
+            }).collect();
+            ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+            ranked.into_iter().map(|(_, i)| i).collect()
+        } else {
+            let mut ranked: Vec<_> = items.iter().enumerate()
+                .filter_map(|(i, (name, _, _))| palette::fuzzy_score(&q, name).map(|s| (s, i))).collect();
+            ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+            ranked.into_iter().map(|(_, i)| i).collect()
+        };
+        scored.truncate(if goto { 9 } else { 14 });
         let n = scored.len();
         let sel = &mut self.palette.selected;
         let (mut run, mut close) = (false, false);
@@ -1598,7 +1609,7 @@ impl App {
                 ui.set_width(520.0);
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut self.palette.query)
-                        .hint_text("Type a command or place…")
+                        .hint_text(if goto { "Go To: bookmark, recent folder or open tab…" } else { "Type a command or place…" })
                         .desired_width(f32::INFINITY)
                         .font(FontId::proportional(15.0))
                         .margin(Margin::symmetric(8, 6)),
@@ -1612,15 +1623,22 @@ impl App {
                 }
                 ui.add_space(6.0);
                 let mut clicked = None;
-                for (row, &(_, i)) in scored.iter().enumerate() {
+                for (row, &i) in scored.iter().enumerate() {
                     let (name, keys, _) = &items[i];
-                    let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
+                    let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), if goto { 48.0 } else { 28.0 }), Sense::click());
                     let selected = row == self.palette.selected;
                     if selected || r.hovered() {
                         ui.painter().rect_filled(rect, CornerRadius::same(5), if selected { pal().select } else { pal().hover });
                     }
-                    ui.painter().text(rect.left_center() + vec2(10.0, 0.0), Align2::LEFT_CENTER, name, FontId::proportional(BODY), pal().text);
-                    ui.painter().with_clip_rect(rect).text(rect.right_center() - vec2(10.0, 0.0), Align2::RIGHT_CENTER, keys, FontId::proportional(12.0), pal().faint);
+                    if goto {
+                        let painter = ui.painter().with_clip_rect(rect.shrink(6.0));
+                        painter.text(rect.left_top() + vec2(10.0, 4.0), Align2::LEFT_TOP, name, FontId::proportional(BODY), pal().text);
+                        painter.text(rect.left_top() + vec2(10.0, 26.0), Align2::LEFT_TOP, keys, FontId::proportional(12.0), pal().faint);
+                        r.clone().on_hover_text(keys);
+                    } else {
+                        ui.painter().text(rect.left_center() + vec2(10.0, 0.0), Align2::LEFT_CENTER, name, FontId::proportional(BODY), pal().text);
+                        ui.painter().with_clip_rect(rect).text(rect.right_center() - vec2(10.0, 0.0), Align2::RIGHT_CENTER, keys, FontId::proportional(12.0), pal().faint);
+                    }
                     if r.clicked() {
                         clicked = Some(row);
                     }
@@ -1635,7 +1653,7 @@ impl App {
             run = true;
         }
         if run {
-            if let Some(&(_, i)) = scored.get(self.palette.selected) {
+            if let Some(&i) = scored.get(self.palette.selected) {
                 let action = items.swap_remove(i).2;
                 actions.push(action);
             }

@@ -47,6 +47,7 @@ If you installed from your own clone, run `./install.sh --uninstall` there inste
 - **Tabs and split view.** Work in several folders at once, and drag files between panes.
 - **Find anything.** Type to filter the current folder, or press Ctrl+F to search all its subfolders. Both support case-insensitive fuzzy matching (`nd` finds `NaDya`), with the best matches first. Exact names, prefixes and substrings rank above scattered letters; space-separated words must all match.
 - **Command palette.** Ctrl+P reaches every action.
+- **Go To.** Ctrl+K fuzzy-searches open tabs, bookmarks, recent folders and standard places. Choosing an open folder switches to its tab; recent folders are remembered between launches.
 - **Several views.** Switch between details, list and icon views, and zoom with Ctrl+scroll.
 - **Safe file operations.** Copy and move run in the background with progress. Deleted files go to the trash, files are never overwritten (a copy with the same name gets a " (2)" suffix), and Ctrl+Z undoes renames, moves, copies and trashing.
 - **Instant copies on btrfs and xfs.** Large files copy in no time.
@@ -64,6 +65,7 @@ If you installed from your own clone, run `./install.sh --uninstall` there inste
 | Key | Action |
 |---|---|
 | <kbd>Ctrl</kbd>+<kbd>P</kbd> | Command palette |
+| <kbd>Ctrl</kbd>+<kbd>K</kbd> | Go To: folders and open tabs |
 | *start typing* | Filter the current folder (<kbd>Esc</kbd> clears) |
 | <kbd>Ctrl</kbd>+<kbd>F</kbd> | Search subfolders |
 | <kbd>Enter</kbd> | Open |

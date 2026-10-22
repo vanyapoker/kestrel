@@ -27,6 +27,7 @@ pub enum Cmd {
     CopyPath,
     OpenTerminal,
     EditPath,
+    GoTo,
     GoHome,
     GoUp,
     Back,
@@ -75,6 +76,7 @@ pub const COMMANDS: &[(Cmd, &str, &str)] = &[
     (Cmd::CopyPath, "Copy path", "Ctrl+Shift+C"),
     (Cmd::OpenTerminal, "Open terminal here", "Ctrl+Alt+T"),
     (Cmd::EditPath, "Go to path…", "Ctrl+L"),
+    (Cmd::GoTo, "Go To: folders and open tabs…", "Ctrl+K"),
     (Cmd::GoHome, "Go home", "Alt+Home"),
     (Cmd::GoUp, "Go up", "Backspace"),
     (Cmd::Back, "Back", "Alt+Left"),
@@ -90,6 +92,7 @@ pub const COMMANDS: &[(Cmd, &str, &str)] = &[
 #[derive(Default)]
 pub struct Palette {
     pub open: bool,
+    pub goto: bool,
     pub query: String,
     pub selected: usize,
     pub focus: bool,
@@ -98,9 +101,15 @@ pub struct Palette {
 impl Palette {
     pub fn show(&mut self) {
         self.open = true;
+        self.goto = false;
         self.query.clear();
         self.selected = 0;
         self.focus = true;
+    }
+
+    pub fn show_goto(&mut self) {
+        self.show();
+        self.goto = true;
     }
 }
 
