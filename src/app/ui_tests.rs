@@ -45,14 +45,15 @@ impl Driver {
         self.opened_urls.extend(self.commands.iter().filter_map(|c| match c {
             egui::OutputCommand::OpenUrl(url) => Some(url.url.clone()), _ => None,
         }));
-        self.texts = out
-            .shapes
-            .iter()
-            .filter_map(|c| match &c.shape {
-                egui::epaint::Shape::Text(t) => Some((t.galley.text().to_string(), t.visual_bounding_rect())),
-                _ => None,
-            })
-            .collect();
+        fn collect_text(shape: &egui::epaint::Shape, texts: &mut Vec<(String, Rect)>) {
+            match shape {
+                egui::epaint::Shape::Text(t) => texts.push((t.galley.text().to_string(), t.visual_bounding_rect())),
+                egui::epaint::Shape::Vec(shapes) => for shape in shapes { collect_text(shape, texts); },
+                _ => {}
+            }
+        }
+        self.texts.clear();
+        for shape in &out.shapes { collect_text(&shape.shape, &mut self.texts); }
     }
 
     /// Runs frames until `cond` holds (background work needs real time).
@@ -111,6 +112,51 @@ fn sandbox(name: &str) -> PathBuf {
     fs::write(d.join("a.txt"), "a").unwrap();
     fs::write(d.join("b.txt"), "b").unwrap();
     d
+}
+
+#[test]
+fn batch_rename_previews_applies_and_undoes_as_one_operation() {
+    let dir = sandbox("batch-rename");
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| !a.tab().loading);
+    d.app.tab_mut().select_all();
+    d.frame(vec![Event::Key { key: Key::F2, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }]);
+    let Some(Dialog::BatchRename(editor)) = &mut d.app.dialog else { panic!("F2 on a selection must open batch rename") };
+    editor.options.template = "{n}-{name}{ext}".into();
+    editor.request();
+    d.until("rename preview", |a| matches!(&a.dialog, Some(Dialog::BatchRename(e)) if e.plan.as_ref().is_some_and(|p| p.valid())));
+    assert!(dir.join("a.txt").exists() && dir.join("b.txt").exists());
+    assert!(d.texts.iter().any(|(t, _)| t == "a.txt → 002-a.txt"));
+    d.click_text("Rename all");
+    d.until("renamed selection", |a| a.undo.len() == 1 && dir.join("001-dest").is_dir() && dir.join("002-a.txt").exists() && dir.join("003-b.txt").exists());
+    assert!(!dir.join("a.txt").exists());
+    d.app.run_cmd(Cmd::Undo);
+    d.until("undo batch", |a| a.ops.queued.load(Ordering::Relaxed) == 0 && dir.join("dest").is_dir() && dir.join("a.txt").exists() && dir.join("b.txt").exists());
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 3);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn batch_rename_conflicts_disable_applying_and_cancel_keeps_files() {
+    let dir = sandbox("batch-conflicts");
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| !a.tab().loading);
+    d.app.tab_mut().select_all();
+    d.app.run_cmd(Cmd::BatchRename);
+    let Some(Dialog::BatchRename(editor)) = &mut d.app.dialog else { panic!("missing rename dialog") };
+    editor.options.template = "same".into();
+    editor.request();
+    d.until("conflict preview", |a| matches!(&a.dialog, Some(Dialog::BatchRename(e)) if e.plan.is_some()));
+    d.frame(Vec::new());
+    let Some(Dialog::BatchRename(editor)) = &d.app.dialog else { unreachable!() };
+    assert!(!editor.plan.as_ref().unwrap().valid());
+    d.click_text("Rename all");
+    assert!(d.app.dialog.is_some());
+    assert_eq!(d.app.ops.queued.load(Ordering::Relaxed), 0);
+    d.click_text("Cancel");
+    assert!(d.app.dialog.is_none());
+    assert!(dir.join("a.txt").exists() && dir.join("b.txt").exists());
+    fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

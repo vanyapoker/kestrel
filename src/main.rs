@@ -8,6 +8,7 @@ mod palette;
 mod picker;
 mod portal;
 mod preview;
+mod rename;
 mod search;
 mod session;
 mod tab;

@@ -53,6 +53,7 @@ If you installed from your own clone, run `./install.sh --uninstall` there inste
 - **Go To.** Ctrl+K fuzzy-searches open tabs, bookmarks, recent folders and standard places. Choosing an open folder switches to its tab; recent folders are remembered between launches.
 - **Several views.** Switch between details, list and icon views, and zoom with Ctrl+scroll.
 - **Safe file operations.** Copy and move run in the background with progress. Deleted files go to the trash, files are never overwritten (a copy with the same name gets a " (2)" suffix), and Ctrl+Z undoes renames, moves, copies and trashing.
+- **Batch rename.** Select several items and press F2 for a live before/after preview. Replace text, change name case, and use `{name}`, `{ext}`, `{n}` or `{date}` in a template for numbering and modified dates. Conflicts block applying; grouped renames support swaps and undo together with Ctrl+Z.
 - **Instant copies on btrfs and xfs.** Large files copy in no time.
 - **Drag and drop** within Kestrel and to or from other apps. Copy and paste files to and from other file managers too.
 - **Matches your Omarchy theme.** Kestrel uses your current theme's colors, light or dark, and updates live when you switch themes.

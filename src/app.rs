@@ -51,6 +51,7 @@ struct Clip {
 }
 
 enum Dialog {
+    BatchRename(Box<crate::rename::Editor>),
     Rename { path: PathBuf, name: String, focus: bool },
     Create { dir: PathBuf, name: String, folder: bool, focus: bool },
     ConfirmDelete { paths: Vec<PathBuf> },
@@ -890,7 +891,7 @@ impl App {
         } else if let Some(first) = done.errors.first() {
             let more = if done.errors.len() > 1 { format!(" (+{} more errors)", done.errors.len() - 1) } else { String::new() };
             self.toast(format!("{first}{more}"), true);
-        } else if matches!(done.kind, JobKind::Copy | JobKind::Move | JobKind::Trash | JobKind::Delete | JobKind::Extract | JobKind::Compress) {
+        } else if matches!(done.kind, JobKind::Copy | JobKind::Move | JobKind::Rename | JobKind::Trash | JobKind::Delete | JobKind::Extract | JobKind::Compress) {
             self.toast(done.summary, false);
         }
     }
@@ -1088,8 +1089,15 @@ impl App {
                 self.dialog = Some(Dialog::Create { dir, name, folder, focus: true });
                 self.ctx.memory_mut(|m| m.request_focus(egui::Id::new("dialog_name")));
             }
-            Cmd::Rename => {
-                if let Some(e) = self.tab().cursor_entry() {
+            Cmd::Rename | Cmd::BatchRename => {
+                let tab = self.tab();
+                if cmd == Cmd::BatchRename || tab.selection_count() > 1 {
+                    let entries: Vec<_> = tab.view.iter().enumerate().filter(|(vi, _)| tab.is_selected(*vi))
+                        .map(|(_, &i)| tab.entries[i].clone()).collect();
+                    if !entries.is_empty() {
+                        self.dialog = Some(Dialog::BatchRename(Box::new(crate::rename::Editor::new(entries, self.ctx.clone()))));
+                    }
+                } else if let Some(e) = tab.cursor_entry() {
                     self.dialog = Some(Dialog::Rename { path: e.path.clone(), name: e.name.clone(), focus: true });
                 }
             }

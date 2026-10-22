@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 pub enum JobKind {
     Copy,
     Move,
+    Rename,
     Trash,
     Delete,
     /// Undo: move each item in `pairs` from its current path back to its original one.
@@ -141,6 +142,11 @@ impl Job {
     /// The job that reverses `undo`.
     pub fn undo(undo: Undo) -> Self {
         let job = match undo {
+            Undo::RenameBack(pairs) => Self {
+                srcs: pairs.iter().map(|(_, to)| to.clone()).collect(),
+                pairs: pairs.into_iter().map(|(from, to)| (to, from)).collect(),
+                ..Self::new(JobKind::Rename, Vec::new(), None)
+            },
             Undo::MoveBack(pairs) => Self { srcs: pairs.iter().map(|(_, cur)| cur.clone()).collect(), pairs, ..Self::new(JobKind::MoveBack, Vec::new(), None) },
             Undo::TrashCreated(paths) => Self::new(JobKind::Trash, paths, None),
             Undo::Untrash(paths) => Self::new(JobKind::Untrash, paths, None),
@@ -152,6 +158,8 @@ impl Job {
 /// How to reverse a finished operation.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Undo {
+    /// A group of renames, reversed together so swaps and cycles remain valid.
+    RenameBack(Vec<(PathBuf, PathBuf)>),
     /// Items that were moved or renamed: (original, current).
     MoveBack(Vec<(PathBuf, PathBuf)>),
     /// Items that were created (copies, new folders): undoing trashes them.
@@ -167,6 +175,7 @@ impl Undo {
             if paths.len() == 1 { format!("\"{}\"", file_name(paths[0])) } else { format!("{} items", paths.len()) }
         };
         match self {
+            Undo::RenameBack(p) => format!("Renamed {}", what(p.iter().map(|(o, _)| o.as_path()).collect())),
             Undo::MoveBack(p) => format!("Moved back {}", what(p.iter().map(|(o, _)| o.as_path()).collect())),
             Undo::TrashCreated(p) => format!("Moved {} to trash", what(p.iter().map(PathBuf::as_path).collect())),
             Undo::Untrash(p) => format!("Restored {} from trash", what(p.iter().map(PathBuf::as_path).collect())),
@@ -283,6 +292,7 @@ impl Worker {
         let title = match job.kind {
             JobKind::Copy => format!("Copying {what}"),
             JobKind::Move => format!("Moving {what}"),
+            JobKind::Rename => format!("Renaming {what}"),
             JobKind::Trash => format!("Moving {what} to trash"),
             JobKind::Delete => format!("Deleting {what}"),
             JobKind::MoveBack => format!("Moving back {what}"),
@@ -318,6 +328,19 @@ impl Worker {
         }
 
         match job.kind {
+            JobKind::Rename => {
+                if self.cancelled() { done.cancelled = true; }
+                else {
+                    match crate::rename::apply(&job.pairs) {
+                        Ok(()) => {
+                            done.created = job.pairs.iter().map(|(_, to)| to.clone()).collect();
+                            if !job.undoing { done.undo = Some(Undo::RenameBack(job.pairs)); }
+                        }
+                        Err(error) => done.errors.push(format!("Rename failed: {error}")),
+                    }
+                }
+                done.summary = format!("Renamed {what}");
+            }
             JobKind::Trash => {
                 if let Err(e) = trash::delete_all(&job.srcs) {
                     done.errors.push(format!("Trash failed: {e}"));

@@ -1710,6 +1710,62 @@ impl App {
         let modal = egui::Modal::new(egui::Id::new("dialog")).frame(frame).show(ctx, |ui| {
             ui.set_width(380.0);
             match dialog {
+                Dialog::BatchRename(editor) => {
+                    ui.set_width(660.0_f32.min(ctx.content_rect().width() - 48.0));
+                    editor.poll();
+                    ui.label(RichText::new("Batch rename").size(16.0).strong());
+                    let mut changed = false;
+                    egui::Grid::new("batch_options").num_columns(2).spacing(vec2(12.0, 6.0)).show(ui, |ui| {
+                        ui.label("Template");
+                        changed |= ui.text_edit_singleline(&mut editor.options.template).changed();
+                        ui.end_row();
+                        ui.label("Find in name");
+                        changed |= ui.text_edit_singleline(&mut editor.options.find).changed();
+                        ui.end_row();
+                        ui.label("Replace with");
+                        changed |= ui.text_edit_singleline(&mut editor.options.replace).changed();
+                        ui.end_row();
+                        ui.label("Name case");
+                        ui.horizontal(|ui| {
+                            for (case, label) in [(crate::rename::Case::Keep, "Keep"), (crate::rename::Case::Lower, "lower"), (crate::rename::Case::Upper, "UPPER"), (crate::rename::Case::Title, "Title")] {
+                                changed |= ui.selectable_value(&mut editor.options.case, case, label).changed();
+                            }
+                        });
+                        ui.end_row();
+                        ui.label("Numbering");
+                        ui.horizontal(|ui| {
+                            ui.label("Start");
+                            changed |= ui.add(egui::DragValue::new(&mut editor.options.start)).changed();
+                            ui.label("Digits");
+                            changed |= ui.add(egui::DragValue::new(&mut editor.options.digits).range(1..=12)).changed();
+                        });
+                        ui.end_row();
+                    });
+                    ui.label(RichText::new("{name} name · {ext} original extension · {n} number · {date} modified date (YYYY-MM-DD)").size(12.0).color(pal().dim));
+                    if changed { editor.request(); }
+                    ui.separator();
+                    if let Some(plan) = &editor.plan {
+                        let errors = plan.rows.iter().filter(|r| r.error.is_some()).count();
+                        ui.label(format!("{} changes · {errors} conflicts", plan.rows.iter().filter(|r| r.from != r.to).count()));
+                        ScrollArea::vertical().max_height(280.0).id_salt("rename_preview")
+                            .show_rows(ui, 42.0, plan.rows.len(), |ui, range| {
+                                for i in range {
+                                    let row = &plan.rows[i];
+                                    let text = format!("{} → {}", ops_name(&row.from), ops_name(&row.to));
+                                    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 42.0), Sense::hover());
+                                    let painter = ui.painter().with_clip_rect(rect);
+                                    painter.text(rect.left_top(), Align2::LEFT_TOP, text, FontId::proportional(BODY), if row.error.is_some() { pal().danger } else { pal().text });
+                                    painter.text(rect.left_top() + vec2(0.0, 23.0), Align2::LEFT_TOP, row.error.as_deref().unwrap_or(""), FontId::proportional(11.0), pal().danger);
+                                    resp.on_hover_text(format!("{} → {}", row.from.display(), row.to.display()));
+                                }
+                            });
+                    } else { ui.horizontal(|ui| { ui.spinner(); ui.label("Checking names and collisions…"); }); }
+                    ui.horizontal(|ui| {
+                        let valid = editor.plan.as_ref().is_some_and(|p| p.valid());
+                        if ui.add_enabled(valid, egui::Button::new("Rename all")).clicked() { confirm = true; }
+                        if ui.button("Cancel").clicked() { cancel = true; }
+                    });
+                }
                 Dialog::Rename { path, name, focus } => {
                     // Select the name without its extension, like other file managers.
                     let stem = if path.is_dir() { name.chars().count() } else { stem_chars(name) };
@@ -1775,6 +1831,14 @@ impl App {
         }
         if confirm {
             match self.dialog.take() {
+                Some(Dialog::BatchRename(editor)) => {
+                    if let Some(plan) = editor.plan.filter(|p| p.valid()) {
+                        let pairs = plan.changes();
+                        let mut job = crate::ops::Job::new(crate::ops::JobKind::Rename, pairs.iter().map(|(from, _)| from.clone()).collect(), None);
+                        job.pairs = pairs;
+                        self.ops.submit(job);
+                    }
+                }
                 Some(Dialog::Rename { path, name, .. }) => self.rename(&path, &name),
                 Some(Dialog::Create { dir, name, folder, .. }) => self.create(&dir, &name, folder),
                 Some(Dialog::Compress { srcs, dest, name, format, level, .. }) => {
