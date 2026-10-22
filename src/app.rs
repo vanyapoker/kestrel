@@ -543,6 +543,7 @@ impl App {
             let query = std::mem::take(&mut tab.filter);
             tab.search = Some(Search {
                 query,
+                flatten: false,
                 root: tab.path.clone(),
                 generation: 0,
                 cancel: Arc::new(AtomicBool::new(false)),
@@ -585,7 +586,7 @@ impl App {
         tab.cursor = None;
         tab.force_offset = Some(0.0);
         let s = tab.search.as_mut().unwrap();
-        s.running = !s.query.trim().is_empty();
+        s.running = s.flatten || !s.query.trim().is_empty();
         s.active_query = s.query.clone();
         if s.running {
             let req = search::Request {
@@ -1151,6 +1152,17 @@ impl App {
             }
             Cmd::SelectAll => self.tab_mut().select_all(),
             Cmd::Search => self.start_search(),
+            Cmd::Flatten => {
+                if self.tab().search.as_ref().is_some_and(|s| s.flatten) {
+                    self.stop_search();
+                } else {
+                    self.start_search();
+                    let s = self.tab_mut().search.as_mut().unwrap();
+                    s.flatten = true;
+                    s.query.clear();
+                    self.restart_search();
+                }
+            }
             Cmd::Refresh => self.refresh(),
             Cmd::ToggleHidden => {
                 self.show_hidden = !self.show_hidden;
@@ -1470,6 +1482,10 @@ impl App {
         }
         if ctx.input_mut(|i| take(i, Modifiers::COMMAND, Key::K)) {
             self.palette.show_goto();
+            return;
+        }
+        if ctx.input_mut(|i| take(i, Modifiers::COMMAND | Modifiers::SHIFT, Key::F)) {
+            self.run_cmd(Cmd::Flatten);
             return;
         }
         let search_id = egui::Id::new(("search", self.tab().id));

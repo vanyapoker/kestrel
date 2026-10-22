@@ -55,6 +55,7 @@ impl ViewMode {
 
 pub struct Search {
     pub query: String,
+    pub flatten: bool,
     pub root: PathBuf,
     pub generation: u64,
     pub cancel: Arc<AtomicBool>,
@@ -140,7 +141,11 @@ impl Tab {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "/".into());
-        if self.search.is_some() { format!("Search: {name}") } else { name }
+        match &self.search {
+            Some(s) if s.flatten => format!("Flat: {name}"),
+            Some(_) => format!("Search: {name}"),
+            None => name,
+        }
     }
 
     pub fn entry(&self, vi: usize) -> Option<&Entry> {

@@ -114,6 +114,39 @@ fn sandbox(name: &str) -> PathBuf {
 }
 
 #[test]
+fn flatten_view_browses_descendants_filters_and_returns_to_folder() {
+    let dir = sandbox("flatten");
+    fs::create_dir_all(dir.join("dest/deeper")).unwrap();
+    fs::write(dir.join("dest/deeper/nested.txt"), "nested").unwrap();
+    fs::write(dir.join("dest/.hidden.txt"), "hidden").unwrap();
+    std::os::unix::fs::symlink(&dir, dir.join("dest/loop")).unwrap();
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| !a.tab().loading);
+    d.modifiers = Modifiers::COMMAND | Modifiers::SHIFT;
+    let toggle = Event::Key { key: Key::F, physical_key: None, pressed: true, repeat: false, modifiers: d.modifiers };
+    d.frame(vec![toggle.clone()]);
+    d.until("flattened scan", |a| a.tab().search.as_ref().is_some_and(|s| s.flatten && !s.running));
+    assert_eq!(d.app.tab().path, dir);
+    assert_eq!(d.app.tab().view.len(), 6); // root files, dest, deeper, loop and nested.txt
+    let nested = d.app.tab().entries.iter().find(|e| e.name == "nested.txt").unwrap();
+    assert_eq!(nested.rel.as_deref(), Some("dest/deeper"));
+    let link = dir.join("dest/loop");
+    assert!(!d.app.tab().entries.iter().any(|e| e.hidden || (e.path != link && e.path.starts_with(&link))));
+    let index = d.app.tab().search.as_ref().unwrap().index.clone().unwrap();
+    d.app.tab_mut().search.as_mut().unwrap().query = "ext:txt type:file".into();
+    d.app.restart_search();
+    d.until("flat filter", |a| !a.tab().search.as_ref().unwrap().running);
+    assert_eq!(d.app.tab().view.len(), 3);
+    assert!(Arc::ptr_eq(&index, d.app.tab().search.as_ref().unwrap().index.as_ref().unwrap()));
+    // Toggle works while the flattened view's text field owns keyboard focus.
+    d.frame(vec![toggle]);
+    d.until("normal folder", |a| a.tab().search.is_none() && !a.tab().loading);
+    assert_eq!(d.app.tab().entries.len(), 3);
+    assert_eq!(d.app.tab().path, dir);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn folder_inspector_browses_nested_folders_and_files_independently() {
     let dir = sandbox("inspector-browse");
     fs::create_dir_all(dir.join("dest/nested")).unwrap();

@@ -48,6 +48,7 @@ If you installed from your own clone, run `./install.sh --uninstall` there inste
 - **Tabs and split view.** Work in several folders at once, and drag files between panes.
 - **Find anything.** Type to filter the current folder, or press Ctrl+F to search all its subfolders. Both support case-insensitive fuzzy matching (`nd` finds `NaDya`), with the best matches first. Exact names, prefixes and substrings rank above scattered letters; space-separated words must all match.
 - **Refine searches.** Matched letters are highlighted in every view. Add `ext:pdf,jpg`, `type:file` or `type:folder`; quote a literal phrase (`"annual report"`) or use `=report.pdf` for an exact filename. Recursive searches reuse their filename scan when you change the query; F5 rescans. The best 20,000 matches are retained across the complete scan.
+- **Flatten folders.** Ctrl+Shift+F shows the current folder and all its descendants as one list, with each item's parent folder alongside it. Filter the flattened view with the same search syntax, or press Ctrl+Shift+F again to return to the normal folder view.
 - **Command palette.** Ctrl+P reaches every action.
 - **Go To.** Ctrl+K fuzzy-searches open tabs, bookmarks, recent folders and standard places. Choosing an open folder switches to its tab; recent folders are remembered between launches.
 - **Several views.** Switch between details, list and icon views, and zoom with Ctrl+scroll.
@@ -70,6 +71,7 @@ If you installed from your own clone, run `./install.sh --uninstall` there inste
 | <kbd>Ctrl</kbd>+<kbd>K</kbd> | Go To: folders and open tabs |
 | *start typing* | Filter the current folder (<kbd>Esc</kbd> clears) |
 | <kbd>Ctrl</kbd>+<kbd>F</kbd> | Search subfolders |
+| <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F</kbd> | Toggle flattened folder view |
 | <kbd>Enter</kbd> | Open |
 | <kbd>Backspace</kbd> / <kbd>Alt</kbd>+<kbd>↑</kbd> | Go up a folder |
 | <kbd>Alt</kbd>+<kbd>←</kbd> / <kbd>Alt</kbd>+<kbd>→</kbd> | Back / forward |

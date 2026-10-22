@@ -15,6 +15,7 @@ pub enum Cmd {
     Duplicate,
     SelectAll,
     Search,
+    Flatten,
     Refresh,
     ToggleHidden,
     TogglePreview,
@@ -47,6 +48,7 @@ pub enum Cmd {
 
 pub const COMMANDS: &[(Cmd, &str, &str)] = &[
     (Cmd::Search, "Search in this folder (recursive)", "Ctrl+F"),
+    (Cmd::Flatten, "Toggle flattened folder view", "Ctrl+Shift+F"),
     (Cmd::NewTab, "New tab", "Ctrl+T"),
     (Cmd::CloseTab, "Close tab", "Ctrl+W"),
     (Cmd::ToggleSplit, "Toggle split view", "F6"),

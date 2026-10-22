@@ -657,7 +657,7 @@ impl App {
                 ui.horizontal_centered(|ui| {
                     paint_glyph(ui.painter(), ui.cursor().min + vec2(8.0, 12.0), Glyph::Search, pal().dim);
                     ui.add_space(20.0);
-                    let hint = format!("Search in {}", s.root.display());
+                    let hint = format!("{} {}", if s.flatten { "Filter flattened folder:" } else { "Search in" }, s.root.display());
                     let resp = ui.add(
                         egui::TextEdit::singleline(&mut s.query)
                             .id(egui::Id::new(("search", tab_id)))
@@ -1208,7 +1208,7 @@ impl App {
             if let Some(s) = &tab.search {
                 let n = tab.view.len();
                 let more = if s.truncated { "+" } else { "" };
-                ui.label(small(format!("{n}{more} results")));
+                ui.label(small(format!("{n}{more} {}", if s.flatten { "items · subfolders included" } else { "results" })));
                 if s.running {
                     ui.add(egui::Spinner::new().size(11.0).color(pal().dim));
                     ui.label(small("searching".into()));
@@ -1849,7 +1849,11 @@ fn empty_state(ui: &mut Ui, tab: &Tab) {
     let msg = if let Some(e) = &tab.error {
         format!("Cannot open folder: {e}")
     } else if let Some(s) = &tab.search {
-        if s.query.trim().is_empty() {
+        if s.flatten && s.running {
+            "Scanning this folder and all subfolders…".into()
+        } else if s.flatten && s.query.trim().is_empty() {
+            "No items in this folder or its subfolders".into()
+        } else if s.query.trim().is_empty() {
             "Type to search this folder and all subfolders".into()
         } else if s.running {
             "Searching…".into()
