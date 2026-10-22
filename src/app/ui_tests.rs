@@ -1153,6 +1153,45 @@ fn picker_chooses_files_folders_and_save_names() {
 }
 
 #[test]
+fn space_toggles_preview_without_filtering_and_still_types_in_search() {
+    let dir = sandbox("space-preview");
+    let mut d = Driver::new(dir.clone());
+    d.app.show_preview = false;
+    d.until("listing", |a| a.row_rects.contains_key(&dir.join("a.txt")));
+    let row = d.row(&dir.join("a.txt"));
+    d.move_to(row.center());
+    d.button(true);
+    d.button(false);
+    let selected = (d.app.tab().cursor, d.app.tab().marked.clone());
+    let key = |modifiers| Event::Key { key: Key::Space, physical_key: None, pressed: true, repeat: false, modifiers };
+    d.frame(vec![key(Modifiers::NONE), Event::Text(" ".into())]);
+    assert!(d.app.show_preview);
+    assert!(d.app.tab().filter.is_empty());
+    assert!(d.app.tab().search.is_none());
+    assert_eq!((d.app.tab().cursor, d.app.tab().marked.clone()), selected);
+    d.until("preview", |a| a.preview.path.as_deref() == Some(dir.join("a.txt").as_path())
+        && matches!(a.preview.state, crate::preview::State::Ready(crate::preview::Content::Text { .. })));
+    d.frame(vec![key(Modifiers::NONE), Event::Text(" ".into())]);
+    assert!(!d.app.show_preview);
+    assert!(d.app.tab().filter.is_empty());
+
+    // Ctrl+Space keeps its selection shortcut.
+    d.modifiers = Modifiers::COMMAND;
+    d.frame(vec![key(Modifiers::COMMAND)]);
+    assert!(!d.app.show_preview);
+    assert!(d.app.tab().marked.contains(&dir.join("a.txt")));
+    d.modifiers = Modifiers::NONE;
+
+    d.app.run_cmd(Cmd::Search);
+    d.frame(Vec::new());
+    d.frame(vec![Event::Text("annual".into())]);
+    d.frame(vec![key(Modifiers::NONE), Event::Text(" ".into())]);
+    assert!(!d.app.show_preview);
+    assert_eq!(d.app.tab().search.as_ref().unwrap().query, "annual ");
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn preview_width_survives_resize_toggle_and_session() {
     let dir = sandbox("preview-width");
     let mut d = Driver::new(dir.clone());

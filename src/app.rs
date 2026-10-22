@@ -1655,6 +1655,7 @@ impl App {
                 (alt, Key::Home, GoHome),
                 (none, Key::F2, Rename),
                 (none, Key::F3, TogglePreview),
+                (none, Key::Space, TogglePreview),
                 (none, Key::F5, Refresh),
                 (none, Key::F6, ToggleSplit),
                 (ctrl, Key::Backslash, ToggleSplit),
@@ -1701,6 +1702,10 @@ impl App {
             // Type-to-filter.
             for ev in &i.events {
                 if let Event::Text(t) = ev {
+                    // Space belongs to the preview shortcut outside text fields.
+                    if t.trim().is_empty() {
+                        continue;
+                    }
                     tab.filter.push_str(t);
                     filter_changed = true;
                 }

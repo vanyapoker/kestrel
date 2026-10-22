@@ -93,7 +93,7 @@ If you installed from your own clone, run `./install.sh --uninstall` there inste
 | <kbd>Ctrl</kbd>+<kbd>G</kbd> | Icons / details view |
 | <kbd>Ctrl</kbd>+scroll | Zoom from details through list to icons |
 | <kbd>Ctrl</kbd>+<kbd>H</kbd> | Show hidden files |
-| <kbd>F3</kbd> | Preview panel |
+| <kbd>Space</kbd> / <kbd>F3</kbd> | Toggle preview panel (outside text fields) |
 | <kbd>Ctrl</kbd>+<kbd>B</kbd> | Sidebar |
 | <kbd>F5</kbd> | Refresh |
 
