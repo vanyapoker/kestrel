@@ -536,6 +536,101 @@ fn file_drop_on_a_tab_still_moves_files_with_draggable_tabs() {
 }
 
 #[test]
+fn tabs_keep_full_names_when_they_fit_and_reserve_close_button_space() {
+    let dir = sandbox("tab-label-space");
+    let long = "quarterly-planning-and-delivery-notes";
+    for name in ["diagnostics", long] { fs::create_dir(dir.join(name)).unwrap(); }
+    let mut d = Driver::new(dir.clone());
+    d.app.show_preview = false;
+    d.app.show_sidebar = false;
+    d.app.open_tab(dir.join("diagnostics"));
+    d.app.open_tab(dir.join(long));
+    for _ in 0..3 { d.frame(Vec::new()); }
+    for tab in &d.app.panes[0].tabs {
+        let title = tab.title();
+        let (body, close) = d.app.tab_rects[&tab.id];
+        let label = d.texts.iter().find(|(text, r)| text == &title && r.top() < 40.0 && body.contains(r.center())).unwrap().1;
+        let natural = d.ctx.fonts_mut(|f| f.layout_no_wrap(title, FontId::proportional(13.0), Color32::WHITE)).size().x;
+        assert!((label.width() - natural).abs() < 3.0, "full label should fit: {label:?}, {natural}");
+        assert!(label.right() <= close.left() - 4.0, "label overlaps close button");
+        if tab.path.ends_with(long) { assert!(body.width() > 230.0, "roomy tabs should not use the old width cap"); }
+    }
+    // Close still targets the button, without activating or dragging a different tab.
+    let first = d.app.panes[0].tabs[1].id;
+    let close = d.app.tab_rects[&first].1.center();
+    d.move_to(close);
+    d.button(true);
+    d.button(false);
+    assert!(d.app.panes[0].tabs.iter().all(|t| t.id != first));
+    assert_eq!(d.app.tab().path, dir.join(long));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn crowded_tabs_elide_names_without_painting_under_close_buttons() {
+    let dir = sandbox("crowded-tabs");
+    let mut d = Driver::new(dir.clone());
+    d.app.show_preview = false;
+    d.app.show_sidebar = false;
+    for i in 0..18 {
+        let path = dir.join(format!("diagnostics-results-{i:02}"));
+        fs::create_dir(&path).unwrap();
+        d.app.open_tab(path);
+    }
+    for _ in 0..20 { d.frame(Vec::new()); }
+    for tab in d.app.panes[0].tabs.iter().skip(1) {
+        let (body, close) = d.app.tab_rects[&tab.id];
+        let title = tab.title();
+        let label = d.texts.iter().find(|(text, r)| text == &title && r.top() < 40.0).unwrap().1;
+        let natural = d.ctx.fonts_mut(|f| f.layout_no_wrap(title, FontId::proportional(13.0), Color32::WHITE)).size().x;
+        assert!(body.width() >= 100.0);
+        assert!(label.width() < natural - 10.0, "crowded labels should be elided");
+        assert!(label.right() <= close.left() - 4.0);
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn plain_mouse_wheel_scrolls_the_hovered_tab_strip_without_switching_tabs_or_zooming() {
+    let dir = sandbox("tab-wheel");
+    let mut d = Driver::new(dir.clone());
+    d.app.show_preview = false;
+    d.app.show_sidebar = false;
+    for i in 0..25 {
+        let path = dir.join(format!("folder-{i:02}"));
+        fs::create_dir(&path).unwrap();
+        d.app.open_tab(path);
+    }
+    d.app.panes[0].active = 0;
+    for _ in 0..20 { d.frame(Vec::new()); }
+    let active = d.app.tab().id;
+    let mode = d.app.tab().mode;
+    let location = |d: &Driver| d.app.tab_rects[&active].0.left();
+    let start = location(&d);
+    d.move_to(egui::pos2(650.0, 20.0));
+    let wheel = |delta, unit| Event::MouseWheel { unit, delta, modifiers: Modifiers::NONE, phase: egui::TouchPhase::Move };
+    d.frame(vec![wheel(vec2(0.0, -300.0), egui::MouseWheelUnit::Point)]);
+    for _ in 0..20 { d.frame(Vec::new()); }
+    let after_vertical = location(&d);
+    assert!(after_vertical < start - 100.0, "vertical wheel did not move tabs: {start} -> {after_vertical}");
+    d.frame(vec![wheel(vec2(-200.0, 0.0), egui::MouseWheelUnit::Point)]);
+    for _ in 0..20 { d.frame(Vec::new()); }
+    assert!(location(&d) < after_vertical - 100.0, "horizontal wheel stopped working");
+    d.frame(vec![wheel(vec2(0.0, 4.0), egui::MouseWheelUnit::Line)]);
+    for _ in 0..20 { d.frame(Vec::new()); }
+    assert!(location(&d) > after_vertical - 150.0, "reverse wheel did not scroll back");
+    assert_eq!(d.app.tab().id, active);
+    assert_eq!(d.app.tab().mode, mode);
+    // Wheel input over the file pane must not keep moving the tab strip.
+    let before_files = location(&d);
+    d.move_to(egui::pos2(650.0, 450.0));
+    d.frame(vec![wheel(vec2(0.0, -300.0), egui::MouseWheelUnit::Point)]);
+    for _ in 0..20 { d.frame(Vec::new()); }
+    assert!((location(&d) - before_files).abs() < 1.0);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn long_tab_strips_scroll_to_the_active_tab() {
     let dir = sandbox("tab-scroll");
     for i in 0..20 { fs::create_dir(dir.join(format!("folder-{i:02}"))).unwrap(); }

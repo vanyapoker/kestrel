@@ -35,7 +35,9 @@ icon, update command, and file-dialog backend. The first build takes a few minut
 Switch between **Details**, **List**, **Icons**, and **Miller columns** from the View menu,
 which shows the available keyboard shortcuts. Tabs can be reordered or dragged between
 split panes; drag the divider to resize them, or double-click it for equal widths.
-Long tab strips scroll horizontally. Up to 32 recently closed tabs or splits can be
+Tab names stay complete when space allows and use an ellipsis when crowded.
+Scroll long tab strips horizontally with the mouse wheel; hover a tab for its full path.
+Up to 32 recently closed tabs or splits can be
 reopened during the current window session, including through Go To.
 
 Icons view shows miniature file contents for Markdown, source code, plain text,

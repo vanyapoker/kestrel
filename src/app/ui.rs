@@ -519,82 +519,98 @@ impl App {
             d.insert_temp(id, active_id);
             changed
         });
-        ScrollArea::horizontal().id_salt(("tab_scroll", p))
-            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-            .auto_shrink([false, true]).show(ui, |ui| {
-            ui.horizontal_centered(|ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
-                let pane = &self.panes[p];
-                let top_round = CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 };
-                for (i, tab) in pane.tabs.iter().enumerate() {
-                    let active = i == pane.active;
-                    let color = if active { pal().text } else { pal().dim };
-                    let galley = ui.painter().layout_no_wrap(tab.title(), FontId::proportional(13.0), color);
-                    let w = (galley.size().x + 52.0).clamp(100.0, 230.0);
-                    let (rect, resp) = ui.allocate_exact_size(vec2(w, ui.available_height()), Sense::click_and_drag());
-                    if active && reveal { resp.scroll_to_me(Some(Align::Center)); }
-                    if resp.drag_started_by(egui::PointerButton::Primary) {
-                        DragAndDrop::set_payload(ui.ctx(), TabDrag { id: tab.id });
-                    }
-                    let close_rect =
-                        Rect::from_center_size(Pos2::new(rect.right() - 15.0, rect.center().y), vec2(18.0, 18.0));
-                    let close = ui.interact(close_rect, ui.id().with(("tab_close", tab.id)), Sense::click());
-                    let painter = ui.painter();
-                    let drop_hover = resp.dnd_hover_payload::<DragPaths>().is_some();
-                    // The active tab flows into the toolbar below it.
-                    let body = if active { rect.expand2(vec2(0.0, 0.0)).with_max_y(rect.bottom() + 4.0) } else { rect };
-                    if active {
-                        painter.rect_filled(body, top_round, pal().panel);
-                        let line = Rect::from_min_size(rect.min + vec2(0.0, 0.0), vec2(rect.width(), 2.0));
-                        painter.rect_filled(line, CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 }, if pane_active { pal().accent } else { pal().faint });
-                    } else if resp.hovered() || drop_hover {
-                        painter.rect_filled(rect.shrink2(vec2(0.0, 3.0)).with_max_y(rect.bottom() - 3.0), CornerRadius::same(6), pal().hover);
-                    }
-                    if drop_hover {
-                        painter.rect_stroke(body, top_round, Stroke::new(1.5, pal().accent), egui::StrokeKind::Inside);
-                    }
-                    draw_folder(painter, Pos2::new(rect.left() + 16.0, rect.center().y + 1.0), 0.8);
-                    let text_rect = Rect::from_min_max(
-                        Pos2::new(rect.left() + 28.0, rect.top()),
-                        Pos2::new(rect.right() - 28.0, rect.bottom()),
-                    );
-                    painter
-                        .with_clip_rect(text_rect)
-                        .galley(Pos2::new(text_rect.left(), rect.center().y - galley.size().y / 2.0 + 1.0), galley, color);
-                    if resp.hovered() || close.hovered() || active {
-                        if close.hovered() {
-                            painter.circle_filled(close_rect.center(), 9.0, pal().select);
+        let natural: Vec<f32> = self.panes[p].tabs.iter().map(|tab| {
+            (ui.painter().layout_no_wrap(tab.title(), FontId::proportional(13.0), pal().text).size().x + 60.0).max(100.0)
+        }).collect();
+        // Reserve the new-tab button and spacing, then shrink only the tabs that
+        // need it. Once every tab reaches 100px the strip scrolls instead.
+        let budget = (ui.available_width() - 28.0 - natural.len() as f32 * 2.0).max(0.0);
+        let widths = tab_widths(&natural, budget);
+        ui.scope(|ui| {
+            ui.style_mut().always_scroll_the_only_direction = true;
+            ScrollArea::horizontal().id_salt(("tab_scroll", p))
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .auto_shrink([false, true]).show(ui, |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    let pane = &self.panes[p];
+                    let top_round = CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 };
+                    for (i, tab) in pane.tabs.iter().enumerate() {
+                        let active = i == pane.active;
+                        let color = if active { pal().text } else { pal().dim };
+                        let w = widths[i];
+                        let mut job = egui::text::LayoutJob::simple(tab.title(), FontId::proportional(13.0), color, (w - 60.0).max(1.0));
+                        job.wrap.max_rows = 1;
+                        job.wrap.break_anywhere = true;
+                        let galley = ui.painter().layout_job(job);
+                        let (rect, resp) = ui.allocate_exact_size(vec2(w, ui.available_height()), Sense::click_and_drag());
+                        if active && reveal { resp.scroll_to_me(Some(Align::Center)); }
+                        if resp.drag_started_by(egui::PointerButton::Primary) {
+                            DragAndDrop::set_payload(ui.ctx(), TabDrag { id: tab.id });
                         }
-                        let c = close_rect.center();
-                        let arm = 3.0;
-                        let stroke = Stroke::new(1.4, if close.hovered() { pal().text } else { pal().dim });
-                        painter.line_segment([c + vec2(-arm, -arm), c + vec2(arm, arm)], stroke);
-                        painter.line_segment([c + vec2(-arm, arm), c + vec2(arm, -arm)], stroke);
-                    }
-                    if resp.dnd_hover_payload::<TabDrag>().is_some() {
-                        let left = ui.input(|i| i.pointer.interact_pos()).is_some_and(|pos| pos.x < rect.center().x);
-                        let before = if left { Some(tab.id) } else { pane.tabs.get(i + 1).map(|t| t.id) };
-                        painter.vline(if left { rect.left() } else { rect.right() }, rect.y_range(), Stroke::new(3.0, pal().accent));
-                        if ui.input(|i| i.pointer.primary_released()) {
-                            if let Some(drag) = DragAndDrop::take_payload::<TabDrag>(ui.ctx()) {
-                                actions.push(Action::MoveTab { id: drag.id, pane: p, before });
+                        let close_rect =
+                            Rect::from_center_size(Pos2::new(rect.right() - 15.0, rect.center().y), vec2(18.0, 18.0));
+                        let close = ui.interact(close_rect, ui.id().with(("tab_close", tab.id)), Sense::click());
+                        resp.clone().on_hover_text(tab.path.display().to_string());
+                        #[cfg(test)]
+                        self.tab_rects.insert(tab.id, (rect, close_rect));
+                        let painter = ui.painter();
+                        let drop_hover = resp.dnd_hover_payload::<DragPaths>().is_some();
+                        // The active tab flows into the toolbar below it.
+                        let body = if active { rect.expand2(vec2(0.0, 0.0)).with_max_y(rect.bottom() + 4.0) } else { rect };
+                        if active {
+                            painter.rect_filled(body, top_round, pal().panel);
+                            let line = Rect::from_min_size(rect.min + vec2(0.0, 0.0), vec2(rect.width(), 2.0));
+                            painter.rect_filled(line, CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 }, if pane_active { pal().accent } else { pal().faint });
+                        } else if resp.hovered() || drop_hover {
+                            painter.rect_filled(rect.shrink2(vec2(0.0, 3.0)).with_max_y(rect.bottom() - 3.0), CornerRadius::same(6), pal().hover);
+                        }
+                        if drop_hover {
+                            painter.rect_stroke(body, top_round, Stroke::new(1.5, pal().accent), egui::StrokeKind::Inside);
+                        }
+                        draw_folder(painter, Pos2::new(rect.left() + 16.0, rect.center().y + 1.0), 0.8);
+                        let text_rect = Rect::from_min_max(
+                            Pos2::new(rect.left() + 28.0, rect.top()),
+                            Pos2::new(close_rect.left() - 6.0, rect.bottom()),
+                        );
+                        painter
+                            .with_clip_rect(text_rect.intersect(painter.clip_rect()))
+                            .galley(Pos2::new(text_rect.left(), rect.center().y - galley.size().y / 2.0 + 1.0), galley, color);
+                        if resp.hovered() || close.hovered() || active {
+                            if close.hovered() {
+                                painter.circle_filled(close_rect.center(), 9.0, pal().select);
+                            }
+                            let c = close_rect.center();
+                            let arm = 3.0;
+                            let stroke = Stroke::new(1.4, if close.hovered() { pal().text } else { pal().dim });
+                            painter.line_segment([c + vec2(-arm, -arm), c + vec2(arm, arm)], stroke);
+                            painter.line_segment([c + vec2(-arm, arm), c + vec2(arm, -arm)], stroke);
+                        }
+                        if resp.dnd_hover_payload::<TabDrag>().is_some() {
+                            let left = ui.input(|i| i.pointer.interact_pos()).is_some_and(|pos| pos.x < rect.center().x);
+                            let before = if left { Some(tab.id) } else { pane.tabs.get(i + 1).map(|t| t.id) };
+                            painter.vline(if left { rect.left() } else { rect.right() }, rect.y_range(), Stroke::new(3.0, pal().accent));
+                            if ui.input(|i| i.pointer.primary_released()) {
+                                if let Some(drag) = DragAndDrop::take_payload::<TabDrag>(ui.ctx()) {
+                                    actions.push(Action::MoveTab { id: drag.id, pane: p, before });
+                                }
                             }
                         }
+                        if let Some(paths) = take_file_drop(&resp) {
+                            let copy = ui.input(|i| i.modifiers.ctrl);
+                            actions.push(Action::Drop { paths: paths.0.clone(), dest: tab.path.clone(), copy });
+                        }
+                        if close.clicked() || resp.middle_clicked() {
+                            actions.push(Action::CloseTab(p, i));
+                        } else if resp.clicked() {
+                            actions.push(Action::SwitchTab(p, i));
+                        }
                     }
-                    if let Some(paths) = take_file_drop(&resp) {
-                        let copy = ui.input(|i| i.modifiers.ctrl);
-                        actions.push(Action::Drop { paths: paths.0.clone(), dest: tab.path.clone(), copy });
+                    if glyph_button(ui, Glyph::Plus, true, false, "New tab (Ctrl+T)") {
+                        actions.push(Action::FocusPane(p));
+                        actions.push(Action::Cmd(Cmd::NewTab));
                     }
-                    if close.clicked() || resp.middle_clicked() {
-                        actions.push(Action::CloseTab(p, i));
-                    } else if resp.clicked() {
-                        actions.push(Action::SwitchTab(p, i));
-                    }
-                }
-                if glyph_button(ui, Glyph::Plus, true, false, "New tab (Ctrl+T)") {
-                    actions.push(Action::FocusPane(p));
-                    actions.push(Action::Cmd(Cmd::NewTab));
-                }
+                });
             });
         });
         if background.dnd_hover_payload::<TabDrag>().is_some() && ui.input(|i| i.pointer.primary_released()) {
@@ -2083,6 +2099,18 @@ impl App {
                 }
             });
     }
+}
+
+/// Preserve natural label widths when possible; cap longer tabs first on overflow.
+fn tab_widths(natural: &[f32], budget: f32) -> Vec<f32> {
+    if natural.iter().sum::<f32>() <= budget { return natural.to_vec(); }
+    let (mut low, mut high) = (100.0_f32, natural.iter().copied().fold(100.0_f32, f32::max));
+    for _ in 0..24 {
+        let cap = (low + high) * 0.5;
+        if natural.iter().map(|w| w.min(cap)).sum::<f32>() > budget { high = cap; }
+        else { low = cap; }
+    }
+    natural.iter().map(|w| w.min(low)).collect()
 }
 
 // ---------------------------------------------------------------- row helpers

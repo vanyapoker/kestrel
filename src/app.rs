@@ -189,6 +189,8 @@ pub struct App {
     /// Where each visible row was drawn last frame (for UI tests).
     #[cfg(test)]
     row_rects: HashMap<PathBuf, egui::Rect>,
+    #[cfg(test)]
+    tab_rects: HashMap<u64, (egui::Rect, egui::Rect)>,
     /// Session file; `None` in tests, so they never touch the real one.
     session_file: Option<PathBuf>,
     /// The session text last written, to skip identical saves.
@@ -297,6 +299,8 @@ impl App {
             folder_rects: Vec::new(),
             #[cfg(test)]
             row_rects: HashMap::new(),
+            #[cfg(test)]
+            tab_rects: HashMap::new(),
             session_file: None,
             undo: Vec::new(),
             saved_session: String::new(),
