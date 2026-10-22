@@ -135,7 +135,12 @@ template. Numbering supports a starting value and zero padding. Conflicts block 
 
 - **Folder sizes and sorting.** Folder sizes are calculated live. Sort by name, size,
   modified date, or type; click a Details header again to reverse the order. The status
-  bar shows selection totals and free disk space.
+  bar shows selection totals and free disk space. Size scans use four dedicated workers,
+  share work across tabs and columns, and cache completed subfolder totals (a history
+  of up to 32,768 folders, with open rows retained). Cached sizes expire after 30
+  seconds; detected changes and manual refresh invalidate them sooner. Sizes sum
+  file lengths, skip symlinks and other
+  filesystems, and may lag changes inside folders that are not directly watched.
 - **Background work and live updates.** Folder listings, size calculations, searches,
   previews, and file operations run in the background. Listings refresh when files change.
 - **Copy, move, and undo.** File operations show byte progress and can be cancelled

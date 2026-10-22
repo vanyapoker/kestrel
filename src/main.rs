@@ -11,6 +11,7 @@ mod preview;
 mod rename;
 mod search;
 mod session;
+mod sizes;
 mod tab;
 mod theme;
 mod thumbs;

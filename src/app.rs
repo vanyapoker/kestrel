@@ -36,11 +36,6 @@ struct Listing {
     result: Result<Vec<Entry>, String>,
 }
 
-struct SizeMsg {
-    path: PathBuf,
-    size: Option<u64>,
-}
-
 pub struct Pane {
     tabs: Vec<Tab>,
     active: usize,
@@ -131,8 +126,7 @@ pub struct App {
     next_tab_id: u64,
     list_tx: Sender<Listing>,
     list_rx: Receiver<Listing>,
-    size_tx: Sender<SizeMsg>,
-    size_rx: Receiver<SizeMsg>,
+    size_service: crate::sizes::Sizes,
     search_tx: Sender<SearchMsg>,
     search_rx: Receiver<SearchMsg>,
     sizes: HashMap<PathBuf, u64>,
@@ -241,7 +235,6 @@ impl App {
     fn with_ctx(ctx: egui::Context, start: PathBuf) -> Self {
         theme::apply(&ctx);
         let (list_tx, list_rx) = channel();
-        let (size_tx, size_rx) = channel();
         let (search_tx, search_rx) = channel();
         let (dev_tx, dev_rx) = channel();
         let mut app = Self {
@@ -252,7 +245,7 @@ impl App {
             theme_watch: theme::watch(ctx.clone()),
             theme_reload_at: None,
             ops: Ops::new(ctx.clone()),
-            ctx,
+            ctx: ctx.clone(),
             panes: vec![Pane { tabs: Vec::new(), active: 0 }],
             active_pane: 0,
             split_ratio: 0.5,
@@ -262,8 +255,7 @@ impl App {
             next_tab_id: 0,
             list_tx,
             list_rx,
-            size_tx,
-            size_rx,
+            size_service: crate::sizes::Sizes::new(ctx.clone()),
             search_tx,
             search_rx,
             sizes: HashMap::new(),
@@ -579,7 +571,7 @@ impl App {
 
     fn refresh(&mut self) {
         let path = self.tab().path.clone();
-        self.sizes.retain(|p, _| !p.starts_with(&path));
+        self.size_service.invalidate(&path, &mut self.sizes);
         self.preview.invalidate();
         let tab = self.tab_mut();
         if tab.search.is_some() {
@@ -733,41 +725,6 @@ impl App {
             } else if l.soft {
                 tab.restore_selection(kept.0, kept.1);
             }
-            let id = tab.id;
-            self.start_sizing(id);
-        }
-
-        let mut resort = false;
-        while let Ok(msg) = self.size_rx.try_recv() {
-            self.sizing.remove(&msg.path);
-            match msg.size {
-                Some(size) => {
-                    self.sizes.insert(msg.path, size);
-                    resort = true;
-                }
-                None => {
-                    // Cancelled; another open tab may still want it.
-                    let ids: Vec<u64> = self
-                        .tabs_mut()
-                        .filter(|t| Some(t.path.as_path()) == msg.path.parent())
-                        .map(|t| t.id)
-                        .collect();
-                    for id in ids {
-                        self.start_sizing(id);
-                    }
-                }
-            }
-        }
-        if resort {
-            let (sizes, hidden) = (&self.sizes, self.show_hidden);
-            for tab in self.panes.iter_mut().flat_map(|p| p.tabs.iter_mut()).filter(|t| t.sort == SortKey::Size) {
-                tab.apply_view(sizes, hidden);
-                if let Some(c) = &mut tab.columns {
-                    for (i, item) in c.items.iter_mut().enumerate() {
-                        if i != c.active { item.apply_view(sizes, hidden); }
-                    }
-                }
-            }
         }
 
         let mut searched = HashSet::new();
@@ -832,9 +789,7 @@ impl App {
 
         // File watcher: debounce, then soft-reload affected tabs.
         for p in self.watcher.drain() {
-            for a in p.ancestors() {
-                self.sizes.remove(a);
-            }
+            self.size_service.invalidate(&p, &mut self.sizes);
             self.thumbs.invalidate(&p);
             if self.preview.path.as_deref().is_some_and(|path| path == p || p.parent() == Some(path)) {
                 self.preview.invalidate();
@@ -895,6 +850,7 @@ impl App {
             }))
             .collect();
         self.watcher.sync(wanted);
+        self.sync_sizes(now);
 
         self.toasts.retain(|t| t.until > now);
         if self.ops.queued.load(Ordering::Relaxed) > 0 {
@@ -904,36 +860,36 @@ impl App {
         self.preview.poll(ctx);
     }
 
-    /// Queues background size calculation for every subfolder shown in a tab.
-    fn start_sizing(&mut self, tab_id: u64) {
-        let Some(tab) = self.panes.iter().flat_map(|p| p.tabs.iter()).find(|t| t.id == tab_id) else { return };
-        if tab.search.is_some() {
-            return;
+    /// Gather interests independently of tab listing cancellation, including passive columns.
+    fn sync_sizes(&mut self, now: Instant) {
+        let mut wanted = Vec::new();
+        for tab in self.panes.iter().flat_map(|p| &p.tabs).filter(|t| t.search.is_none()) {
+            let mut add = |tab: &Tab| {
+                wanted.extend(tab.entries.iter().filter(|e| e.is_dir && !e.is_link).map(|e| e.path.clone()));
+            };
+            add(tab);
+            if let Some(c) = &tab.columns {
+                for (i, item) in c.items.iter().enumerate() {
+                    if i != c.active { add(item); }
+                }
+            }
         }
-        let Some(dev) = fsops::device_of(&tab.path) else { return };
-        for e in tab.entries.iter().filter(|e| e.is_dir && !e.is_link) {
-            if self.sizes.contains_key(&e.path) || self.sizing.contains(&e.path) {
-                continue;
+        if self.size_service.sync(wanted, &mut self.sizes, &mut self.sizing, now) {
+            let (sizes, hidden) = (&self.sizes, self.show_hidden);
+            for tab in self.panes.iter_mut().flat_map(|p| &mut p.tabs) {
+                if tab.sort == SortKey::Size { tab.apply_view(sizes, hidden); }
+                if let Some(c) = &mut tab.columns {
+                    for (i, item) in c.items.iter_mut().enumerate() {
+                        if i != c.active && item.sort == SortKey::Size { item.apply_view(sizes, hidden); }
+                    }
+                }
             }
-            if fsops::device_of(&e.path) != Some(dev) {
-                continue; // mount point: skip
-            }
-            self.sizing.insert(e.path.clone());
-            let (path, cancel) = (e.path.clone(), tab.cancel.clone());
-            let (tx, ctx) = (self.size_tx.clone(), self.ctx.clone());
-            rayon::spawn(move || {
-                let size = fsops::dir_size(&path, dev, &cancel);
-                let _ = tx.send(SizeMsg { path, size });
-                ctx.request_repaint();
-            });
         }
     }
 
     fn job_done(&mut self, done: ops::Done) {
         for d in &done.dirs {
-            for a in d.ancestors() {
-                self.sizes.remove(a);
-            }
+            self.size_service.invalidate(d, &mut self.sizes);
         }
         let select = done.created.first().cloned();
         let (list_tx, ctx) = (&self.list_tx, &self.ctx);
@@ -1101,9 +1057,8 @@ impl App {
         match std::fs::rename(path, &target) {
             Ok(()) => {
                 self.push_undo(ops::Undo::MoveBack(vec![(path.to_path_buf(), target.clone())]));
-                if let Some(s) = self.sizes.remove(path) {
-                    self.sizes.insert(target.clone(), s);
-                }
+                self.size_service.invalidate(path, &mut self.sizes);
+                self.size_service.invalidate(&target, &mut self.sizes);
                 let tab = self.tab_mut();
                 tab.marked.clear();
                 tab.select_after_load = Some(target);

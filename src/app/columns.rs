@@ -176,7 +176,7 @@ impl App {
         }
         tab.columns = Some(cols);
         self.remember_dir(self.tab().path.clone());
-        self.start_sizing(self.tab().id);
+        self.sync_sizes(Instant::now());
     }
 
     pub(super) fn column_step(&mut self, delta: i32) {

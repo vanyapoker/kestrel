@@ -2013,3 +2013,42 @@ fn wrapped_links_are_clickable_and_copy_without_soft_newlines() {
     let (out, ..) = run(vec![Event::Copy]);
     assert!(out.commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(t) if t == &url)), "{:?}", out.commands);
 }
+
+#[test]
+fn folder_sizes_sort_refresh_and_update_passive_columns() {
+    let dir = sandbox("folder-sizes");
+    let small = dir.join("small");
+    let large = dir.join("large");
+    fs::create_dir_all(small.join("nested")).unwrap();
+    fs::create_dir_all(&large).unwrap();
+    fs::write(small.join("nested/data"), vec![0; 11]).unwrap();
+    fs::write(large.join("data"), vec![0; 29]).unwrap();
+    let mut d = Driver::new(dir.clone());
+    d.app.show_sidebar = false;
+    d.app.show_preview = false;
+    d.until("folder totals", |a| !a.tab().loading && a.sizes.get(&small) == Some(&11) && a.sizes.get(&large) == Some(&29));
+    d.app.tab_mut().sort = SortKey::Size;
+    d.app.tab_mut().ascending = true;
+    d.app.refilter_all();
+    let position = |a: &App, path: &Path| a.tab().view.iter().position(|&i| a.tab().entries[i].path == path).unwrap();
+    assert!(position(&d.app, &small) < position(&d.app, &large));
+    // This edit is below the nonrecursive watcher. Explicit refresh must clear
+    // both the descendant cache and ancestor totals before scanning again.
+    fs::write(small.join("nested/data"), vec![0; 41]).unwrap();
+    d.app.refresh();
+    d.until("refreshed totals and sort", |a| !a.tab().loading && a.sizes.get(&small) == Some(&41) && a.sizes.get(&large) == Some(&29));
+    assert!(position(&d.app, &large) < position(&d.app, &small));
+
+    // Passive columns contribute size interests too, and their sort order updates
+    // independently of which directory is focused.
+    d.app.tab_mut().select_path(&small);
+    d.app.set_view(ViewMode::Columns);
+    let nested = small.join("nested");
+    d.until("passive child totals", |a| a.tab().columns.as_ref().is_some_and(|c|
+        c.items.iter().any(|t| t.path == small && !t.loading)) && a.sizes.get(&nested) == Some(&41));
+    // A watched immediate file edit also invalidates cached ancestor sizes.
+    fs::write(small.join("new"), vec![0; 2]).unwrap();
+    d.until("watched column totals", |a| a.sizes.get(&small) == Some(&43) && a.sizes.get(&nested) == Some(&41));
+    drop(d);
+    fs::remove_dir_all(dir).unwrap();
+}

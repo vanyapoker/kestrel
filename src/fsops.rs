@@ -72,17 +72,32 @@ pub fn device_of(path: &Path) -> Option<u64> {
 
 /// Recursive apparent size of a directory. Does not follow symlinks or cross
 /// filesystem boundaries (so /proc, network mounts etc. are skipped).
+/// Reuses cached subtree totals and publishes each completed directory bottom-up.
 /// Returns `None` if cancelled.
-pub fn dir_size(path: &Path, dev: u64, cancel: &AtomicBool) -> Option<u64> {
+pub fn dir_size(
+    path: &Path,
+    dev: u64,
+    cancel: &AtomicBool,
+    cached: &(impl Fn(&Path) -> Option<u64> + Sync),
+    completed: &(impl Fn(&Path, u64) + Sync),
+) -> Option<u64> {
     if cancel.load(Ordering::Relaxed) {
         return None;
     }
+    if let Some(size) = cached(path) {
+        return Some(size);
+    }
     let Ok(rd) = fs::read_dir(path) else {
+        if cancel.load(Ordering::Relaxed) { return None; }
+        completed(path, 0);
         return Some(0);
     };
     let mut total = 0u64;
     let mut subdirs = Vec::new();
     for de in rd.flatten() {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
         let Ok(ft) = de.file_type() else { continue };
         if ft.is_dir() {
             subdirs.push(de.path());
@@ -94,10 +109,15 @@ pub fn dir_size(path: &Path, dev: u64, cancel: &AtomicBool) -> Option<u64> {
     }
     let sub: Option<u64> = subdirs
         .par_iter()
-        .filter(|d| device_of(d) == Some(dev))
-        .map(|d| dir_size(d, dev, cancel))
+        .filter(|d| !cancel.load(Ordering::Relaxed) && device_of(d) == Some(dev))
+        .map(|d| dir_size(d, dev, cancel, cached, completed))
         .sum();
-    Some(total + sub?)
+    let total = total + sub?;
+    if cancel.load(Ordering::Relaxed) {
+        return None;
+    }
+    completed(path, total);
+    Some(total)
 }
 
 /// (free, total) bytes of the filesystem containing `path`.
@@ -358,7 +378,7 @@ mod tests {
         let mut size = 0;
         for _ in 0..15 {
             let t = Instant::now();
-            size = dir_size(dir, device_of(dir).unwrap(), &AtomicBool::new(false)).unwrap();
+            size = dir_size(dir, device_of(dir).unwrap(), &AtomicBool::new(false), &|_| None, &|_, _| {}).unwrap();
             times.push(t.elapsed());
         }
         times.sort();
