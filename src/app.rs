@@ -3,6 +3,7 @@ mod ui;
 mod goto;
 mod tabs;
 mod columns;
+mod preview_text;
 #[cfg(test)]
 mod ui_tests;
 
@@ -1578,6 +1579,11 @@ impl App {
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
         if self.palette.open || self.dialog.is_some() || ctx.text_edit_focused() {
+            if let crate::preview::State::Ready(crate::preview::Content::Text { layout, .. }) = &mut self.preview.state
+                && let Some(chunks) = &mut layout.chunks {
+                chunks.active = false;
+                chunks.selection = None;
+            }
             ctx.plugin::<egui::text_selection::LabelSelectionState>().lock().clear_selection();
         }
         if self.palette.open || self.dialog.is_some() {
@@ -1607,13 +1613,22 @@ impl App {
             egui::DragAndDrop::clear_payload(ctx); // cancel the drag
             return;
         }
+        if self.show_preview
+            && let crate::preview::State::Ready(crate::preview::Content::Text { job, layout, .. }) = &mut self.preview.state
+            && let Some(chunks) = &mut layout.chunks
+            && preview_text::selection_keys(ctx, job, chunks) {
+            return;
+        }
         // Tab focus-navigation can park focus on a button; keys belong to the file list.
         if let Some(id) = ctx.memory(|m| m.focused()) {
             ctx.memory_mut(|m| m.surrender_focus(id));
         }
         let mut actions: Vec<Action> = Vec::new();
         let mut filter_changed = false;
-        let text_selected = ctx.plugin::<egui::text_selection::LabelSelectionState>().lock().has_selection()
+        let preview_selected = self.show_preview && matches!(&self.preview.state,
+            crate::preview::State::Ready(crate::preview::Content::Text { layout, .. })
+                if layout.chunks.as_ref().is_some_and(|c| c.active && c.selection.is_some_and(|(a, b)| a != b)));
+        let text_selected = (preview_selected || ctx.plugin::<egui::text_selection::LabelSelectionState>().lock().has_selection())
             && !ctx.input(|i| i.pointer.any_pressed());
         let columns = self.tab().mode == ViewMode::Columns && self.tab().search.is_none();
         let grid_cols = if self.tab().mode.is_grid() { self.tab().grid_cols.max(1) as isize } else { 0 };

@@ -29,7 +29,7 @@ fn main() -> eframe::Result {
             return Ok(());
         }
         Some("--help" | "-h") => {
-            println!("Usage: kestrel [FOLDER]\n\nUpdate with `kestrel-update`.");
+            println!("Usage: kestrel [FOLDER]\n\nUpdates: https://github.com/vanyapoker/kestrel/releases/latest\nSource installations can also run `kestrel-update`.");
             return Ok(());
         }
         Some("--portal") => {

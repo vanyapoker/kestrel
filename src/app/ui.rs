@@ -26,21 +26,15 @@ pub(super) fn preview_code(ui: &mut Ui, job: &egui::text::LayoutJob, links: &[Te
 }
 
 pub(super) fn preview_code_cached(ui: &mut Ui, job: &egui::text::LayoutJob, links: &[TextLink], cache: &mut crate::preview::CodeLayout) {
+    if job.text.len() > 32 * 1024 {
+        super::preview_text::show(ui, job, links, cache);
+        return;
+    }
     let font = FontId::monospace(12.5);
     let glyph = ui.fonts_mut(|f| f.glyph_width(&font, '0'));
     let width = (ui.available_width() - glyph * 6.0).max(1.0);
-    let (now, dragging) = ui.input(|i| (i.time, i.pointer.primary_down()));
     let pixels = ui.ctx().pixels_per_point();
-    if cache.pending_width != width {
-        cache.pending_width = width;
-        cache.changed_at = now;
-    }
-    let changed = cache.width != width;
-    // Large documents retain their prepared geometry during resize. Paint clips
-    // to the live panel width; one reflow follows 80ms after the drag settles.
-    let large = job.text.len() > 32 * 1024;
-    let settled = !dragging && now - cache.changed_at >= 0.080;
-    if cache.galley.is_none() || cache.pixels_per_point != pixels || (changed && (!large || settled)) {
+    if cache.galley.is_none() || cache.pixels_per_point != pixels || cache.width != width {
         let mut wrapped = job.clone();
         wrapped.wrap.max_width = width;
         let galley = ui.fonts_mut(|f| f.layout_job(wrapped));
@@ -57,8 +51,6 @@ pub(super) fn preview_code_cached(ui: &mut Ui, job: &egui::text::LayoutJob, link
         cache.pixels_per_point = pixels;
         #[cfg(test)]
         { cache.builds += 1; }
-    } else if changed && !dragging {
-        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64((0.080 - (now - cache.changed_at)).max(0.001)));
     }
     let galley = cache.galley.as_ref().unwrap().clone();
     ui.scope(|ui| {
@@ -94,10 +86,14 @@ pub(super) fn preview_text(ui: &mut Ui, job: &egui::text::LayoutJob, links: &[Te
     paint_preview_text(ui, pos, &galley, &response, links, None);
 }
 
-fn paint_preview_text(ui: &Ui, pos: Pos2, galley: &Arc<egui::Galley>, response: &egui::Response, links: &[TextLink], rows: Option<&[crate::preview::CodeRow]>) {
+pub(super) fn paint_preview_text(ui: &Ui, pos: Pos2, galley: &Arc<egui::Galley>, response: &egui::Response, links: &[TextLink], rows: Option<&[crate::preview::CodeRow]>) {
     egui::text_selection::LabelSelectionState::label_text_selection(
         ui, response, pos, galley.clone(), pal().text, Stroke::NONE,
     );
+    paint_preview_links(ui, pos, galley, response, links, rows);
+}
+
+pub(super) fn paint_preview_links(ui: &Ui, pos: Pos2, galley: &Arc<egui::Galley>, response: &egui::Response, links: &[TextLink], rows: Option<&[crate::preview::CodeRow]>) {
     if links.is_empty() { return; }
     let top = ui.clip_rect().top() - pos.y;
     let bottom = ui.clip_rect().bottom() - pos.y;
@@ -1600,18 +1596,25 @@ impl App {
                     ui.painter().image(tex.id(), r, UV, Color32::WHITE);
                 });
             }
-            State::Ready(Content::Text { job, links, truncated, layout, .. }) => {
+            State::Ready(Content::Text { job, links, truncated, plain, layout, .. }) => {
                 Frame::new()
                     .fill(pal().bg)
                     .corner_radius(CornerRadius::same(6))
                     .inner_margin(Margin::same(8))
                     .show(ui, |ui| {
-                        ScrollArea::vertical().auto_shrink([false; 2]).id_salt("preview_text").show(ui, |ui| {
+                        if *plain {
+                            ui.label(RichText::new("Plain-text preview: highlighting limit reached.").small().color(pal().faint));
+                        }
+                        if *truncated {
+                            ui.label(RichText::new("… preview truncated").color(pal().faint).italics());
+                        }
+                        if job.text.len() > 32 * 1024 {
                             preview_code_cached(ui, job, links, layout);
-                            if *truncated {
-                                ui.label(RichText::new("… preview truncated").color(pal().faint).italics());
-                            }
-                        });
+                        } else {
+                            ScrollArea::vertical().auto_shrink([false; 2]).id_salt("preview_text").show(ui, |ui| {
+                                preview_code_cached(ui, job, links, layout);
+                            });
+                        }
                     });
             }
             State::Ready(Content::Table(table)) => {

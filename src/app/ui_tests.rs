@@ -1735,6 +1735,39 @@ fn preview_selects_unicode_multiline_text_and_keeps_file_copy_separate() {
 }
 
 #[test]
+fn large_code_preview_select_all_copies_offscreen_source_without_file_shortcuts() {
+    let dir = sandbox("large-code-copy");
+    let text = "const привет = 'https://example.com';\n".repeat(2500);
+    let path = dir.join("large.js");
+    fs::write(&path, &text).unwrap();
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| !a.tab().loading);
+    d.app.tab_mut().select_path(&path);
+    d.until("chunked preview", |a| matches!(&a.preview.state,
+        crate::preview::State::Ready(crate::preview::Content::Text { layout, .. }) if layout.chunks.is_some()));
+    let at = match &d.app.preview.state {
+        crate::preview::State::Ready(crate::preview::Content::Text { layout, links, .. }) => {
+            assert!(links.is_empty());
+            layout.chunks.as_ref().unwrap().rect.unwrap().min + vec2(60.0, 5.0)
+        }
+        _ => unreachable!(),
+    };
+    d.move_to(at);
+    d.button(true);
+    d.button(false);
+    d.frame(vec![press(Key::A, Modifiers::COMMAND)]);
+    d.frame(vec![Event::Copy]);
+    assert!(d.commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(t) if t == &text)));
+    assert!(d.app.clip.is_none(), "preview copy ran file copy");
+    assert!(d.opened_urls.is_empty(), "code URL was clickable");
+    d.app.tab_mut().select_path(&dir.join("b.txt"));
+    d.frame(Vec::new());
+    d.frame(vec![Event::Copy]);
+    assert!(d.app.clip.is_some(), "obsolete preview selection captured file copy");
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn preview_table_cells_and_details_are_selectable() {
     for (name, filename, text, selected) in [
         ("csv-copy", "data.csv", "name,value\nПривет,42\n", "Привет"),
@@ -1806,18 +1839,18 @@ fn large_preview_keeps_one_layout_during_resize_and_reflows_after_settling() {
         out.textures_delta.clear();
     };
     draw(650.0, vec![], &mut cache);
-    let initial = cache.galley.as_ref().unwrap().clone();
+    let initial = cache.chunks.as_ref().unwrap().chunks[0].galley.as_ref().unwrap().clone();
     assert_eq!(cache.builds, 1);
     draw(650.0, vec![Event::PointerButton { pos: egui::pos2(2.0, 2.0), button: PointerButton::Primary,
         pressed: true, modifiers: Modifiers::NONE }], &mut cache);
     for i in 1..=40 { draw(650.0 - i as f32 * 5.0, vec![], &mut cache); }
     assert_eq!(cache.builds, 1, "dragging should not re-layout the document");
-    assert!(std::sync::Arc::ptr_eq(&initial, cache.galley.as_ref().unwrap()));
+    assert!(std::sync::Arc::ptr_eq(&initial, cache.chunks.as_ref().unwrap().chunks[0].galley.as_ref().unwrap()));
     draw(450.0, vec![Event::PointerButton { pos: egui::pos2(2.0, 2.0), button: PointerButton::Primary,
         pressed: false, modifiers: Modifiers::NONE }], &mut cache);
     for _ in 0..10 { draw(450.0, vec![], &mut cache); }
     assert_eq!(cache.builds, 2, "resize should perform one final reflow");
-    assert!(cache.galley.as_ref().unwrap().size().x <= cache.width);
+    assert!(cache.chunks.as_ref().unwrap().chunks[0].galley.as_ref().unwrap().size().x <= cache.width);
     for _ in 0..10 { draw(450.0, vec![], &mut cache); }
     assert_eq!(cache.builds, 2, "idle frames should reuse the prepared layout");
     // Window-manager resizing may not send a pressed button to the app either.
@@ -1835,7 +1868,7 @@ fn preview_divider_drag_does_not_relayout_large_files_or_change_the_preview_requ
     let mut d = Driver::new(dir.clone());
     d.until("listing", |a| !a.tab().loading);
     d.app.tab_mut().select_path(&path);
-    d.until("prepared preview", |a| matches!(&a.preview.state, crate::preview::State::Ready(crate::preview::Content::Text { layout, .. }) if layout.galley.is_some()));
+    d.until("prepared preview", |a| matches!(&a.preview.state, crate::preview::State::Ready(crate::preview::Content::Text { layout, .. }) if layout.chunks.is_some()));
     for _ in 0..10 { d.frame(Vec::new()); }
     let builds = |d: &Driver| match &d.app.preview.state {
         crate::preview::State::Ready(crate::preview::Content::Text { layout, .. }) => layout.builds,
@@ -1852,7 +1885,7 @@ fn preview_divider_drag_does_not_relayout_large_files_or_change_the_preview_requ
     let replacement = "// UPDATED PREVIEW\nfunction updated() { return 42; }\n".repeat(1000);
     fs::write(&path, &replacement).unwrap();
     d.until("reloaded document geometry", |a| matches!(&a.preview.state,
-        crate::preview::State::Ready(crate::preview::Content::Text { layout, .. }) if layout.galley.as_ref().is_some_and(|g| g.text() == replacement)));
+        crate::preview::State::Ready(crate::preview::Content::Text { job, layout, .. }) if job.text == replacement && layout.chunks.is_some()));
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -1865,29 +1898,48 @@ fn benchmark_large_preview_resize() {
         fs::File::open(path).unwrap().take(256 * 1024).read_to_end(&mut bytes).unwrap();
         String::from_utf8_lossy(&bytes).replace('\t', "    ")
     } else { "function example(value) { return \"hello\" + value; }\n".repeat(5000) };
+    let parse = Instant::now();
     let job = crate::preview::highlight_text(Path::new("example.js"), &text, 3000, FontId::monospace(12.5)).0;
-    let run = |fresh_each_frame: bool| {
+    let parse_ms = parse.elapsed().as_secs_f64() * 1000.0;
+    let run = |legacy: bool| {
         let ctx = egui::Context::default();
         let mut cache = crate::preview::CodeLayout::default();
-        let mut elapsed = Duration::ZERO;
-        for i in 0..31 {
-            if fresh_each_frame { cache = crate::preview::CodeLayout::default(); }
+        let mut drag = Vec::new();
+        let mut settle = Vec::new();
+        for i in 0..70 {
+            // Warm up the initial geometry, drag for 30 frames, then settle.
+            let width = if i < 15 { 650.0 } else if i < 45 { 650.0 - (i - 15) as f32 * 5.0 } else { 505.0 };
+            let events = match i {
+                15 => vec![Event::PointerButton { pos: egui::pos2(2.0, 2.0), button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE }],
+                45 => vec![Event::PointerButton { pos: egui::pos2(2.0, 2.0), button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE }],
+                _ => vec![],
+            };
             let start = Instant::now();
             let mut out = ctx.run_ui(RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(650.0 - i as f32 * 5.0, 700.0))),
-                time: Some(i as f64 / 60.0),
-                events: if i == 0 { vec![Event::PointerButton { pos: egui::pos2(2.0, 2.0), button: PointerButton::Primary,
-                    pressed: true, modifiers: Modifiers::NONE }] } else { vec![] }, ..Default::default()
-            }, |ui| { egui::CentralPanel::default().show(ui, |ui| super::ui::preview_code_cached(ui, &job, &[], &mut cache)); });
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(width, 700.0))),
+                time: Some(i as f64 / 60.0), events, ..Default::default()
+            }, |ui| { egui::CentralPanel::default().show(ui, |ui| {
+                if legacy {
+                    let mut whole = job.clone();
+                    whole.wrap.max_width = (ui.available_width() - 45.0).max(1.0);
+                    let galley = ui.fonts_mut(|f| f.layout_job(whole));
+                    ui.painter().galley(ui.min_rect().min, galley, Color32::WHITE);
+                } else { super::ui::preview_code_cached(ui, &job, &[], &mut cache); }
+            }); });
+            // Include CPU mesh preparation, not just layout. No GPU/window is
+            // created by this benchmark, so it does not measure GPU presentation.
+            let _meshes = ctx.tessellate(std::mem::take(&mut out.shapes), out.pixels_per_point);
             out.textures_delta.clear();
-            if i > 0 { elapsed += start.elapsed(); }
+            let ms = start.elapsed().as_secs_f64() * 1000.0;
+            if (16..45).contains(&i) { drag.push(ms); }
+            if i >= 45 { settle.push(ms); }
         }
-        elapsed.as_secs_f64() * 1000.0 / 30.0
+        (drag.iter().sum::<f64>() / drag.len() as f64, settle.into_iter().fold(0.0f64, f64::max))
     };
-    let full = run(true);
-    let cached = run(false);
-    println!("{} bytes, {} syntax sections: full reflow {:.2}ms/frame; cached drag {:.2}ms/frame ({:.1}x)",
-        job.text.len(), job.sections.len(), full, cached, full / cached);
+    let legacy = run(true);
+    let chunks = run(false);
+    println!("{} bytes, {} syntax sections; parse {:.2}ms; CPU layout + tessellation: whole-document drag {:.2}ms/frame, chunked drag {:.2}ms/frame; worst settle frame whole {:.2}ms, chunked {:.2}ms",
+        job.text.len(), job.sections.len(), parse_ms, legacy.0, chunks.0, legacy.1, chunks.1);
 }
 
 #[test]
