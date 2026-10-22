@@ -1,6 +1,7 @@
 mod icons;
 mod ui;
 mod goto;
+mod tabs;
 #[cfg(test)]
 mod ui_tests;
 
@@ -51,6 +52,8 @@ struct Clip {
 }
 
 enum Dialog {
+    SaveWorkspace { name: String, focus: bool },
+    Workspaces,
     BatchRename(Box<crate::rename::Editor>),
     Rename { path: PathBuf, name: String, focus: bool },
     Create { dir: PathBuf, name: String, folder: bool, focus: bool },
@@ -67,6 +70,8 @@ struct Toast {
 /// Drag-and-drop payload.
 struct DragPaths(Vec<PathBuf>);
 
+struct TabDrag { id: u64 }
+
 enum Action {
     Navigate(PathBuf),
     OpenEntry(usize),
@@ -74,6 +79,8 @@ enum Action {
     NewTab(PathBuf),
     CloseTab(usize, usize),
     SwitchTab(usize, usize),
+    MoveTab { id: u64, pane: usize, before: Option<u64> },
+    ReopenClosed(usize),
     FocusPane(usize),
     Sort(SortKey),
     CopyPath(PathBuf),
@@ -112,6 +119,10 @@ pub struct App {
     ctx: egui::Context,
     panes: Vec<Pane>,
     active_pane: usize,
+    split_ratio: f32,
+    closed_tabs: Vec<tabs::Closed>,
+    workspaces: std::collections::BTreeMap<String, crate::session::Session>,
+    workspace_file: Option<PathBuf>,
     next_tab_id: u64,
     list_tx: Sender<Listing>,
     list_rx: Receiver<Listing>,
@@ -208,6 +219,13 @@ impl App {
             app.saved_session = s.to_text();
         }
         app.session_file = crate::session::file();
+        app.workspace_file = crate::workspaces::file();
+        if let Some(file) = &app.workspace_file {
+            match crate::workspaces::load(file) {
+                Ok(workspaces) => app.workspaces = workspaces,
+                Err(error) => app.toast(format!("Could not load workspaces: {error}"), true),
+            }
+        }
         app.devices = crate::devices::scan();
         app.devices_rx = Some(crate::devices::watch(app.ctx.clone()));
         app
@@ -230,6 +248,10 @@ impl App {
             ctx,
             panes: vec![Pane { tabs: Vec::new(), active: 0 }],
             active_pane: 0,
+            split_ratio: 0.5,
+            closed_tabs: Vec::new(),
+            workspaces: Default::default(),
+            workspace_file: None,
             next_tab_id: 0,
             list_tx,
             list_rx,
@@ -321,6 +343,7 @@ impl App {
 
     /// Applies saved settings, and the saved tabs too when `tabs` is set.
     fn restore(&mut self, s: &crate::session::Session, tabs: bool) {
+        self.split_ratio = s.split_ratio;
         self.recent_dirs = s.recent_dirs.clone();
         self.show_hidden = s.show_hidden;
         self.show_preview = s.show_preview;
@@ -333,6 +356,11 @@ impl App {
         if let Some(w) = s.preview_width {
             self.preview_width = w;
         }
+        // Existing panel memory otherwise overrides the newly restored widths.
+        self.ctx.data_mut(|d| {
+            d.remove::<egui::containers::panel::PanelState>(egui::Id::new("sidebar"));
+            d.remove::<egui::containers::panel::PanelState>(egui::Id::new("preview"));
+        });
         if !tabs || s.panes.is_empty() {
             // Opened on a specific folder: keep it, but in the view it was last seen in.
             if let Some(t) = s.panes.get(s.active_pane).and_then(|p| p.tabs.get(p.active)) {
@@ -345,6 +373,7 @@ impl App {
         for pane in std::mem::take(&mut self.panes) {
             for tab in pane.tabs {
                 tab.cancel.store(true, Ordering::Relaxed);
+                if let Some(s) = tab.search { s.cancel.store(true, Ordering::Relaxed); }
             }
         }
         for ps in &s.panes {
@@ -395,6 +424,7 @@ impl App {
             sidebar_width: Some(self.sidebar_width),
             preview_width: Some(self.preview_width),
             recent_dirs: self.recent_dirs.clone(),
+            split_ratio: self.split_ratio,
         }
     }
 
@@ -444,7 +474,10 @@ impl App {
             return;
         }
         let tab = pane.tabs.remove(i);
+        self.closed_tabs.push(tabs::Closed::Tab { pane: p, position: i, state: tabs::state(&tab) });
+        if self.closed_tabs.len() > 32 { self.closed_tabs.remove(0); }
         tab.cancel.store(true, Ordering::Relaxed);
+        if let Some(s) = tab.search { s.cancel.store(true, Ordering::Relaxed); }
         if pane.active >= pane.tabs.len() || pane.active > i {
             pane.active = pane.active.saturating_sub(1);
         }
@@ -461,8 +494,14 @@ impl App {
     }
 
     fn close_split(&mut self, p: usize) {
-        for tab in self.panes.remove(p).tabs {
+        let pane = self.panes.remove(p);
+        self.closed_tabs.push(tabs::Closed::Pane { position: p, state: crate::session::PaneState {
+            tabs: pane.tabs.iter().map(tabs::state).collect(), active: pane.active,
+        } });
+        if self.closed_tabs.len() > 32 { self.closed_tabs.remove(0); }
+        for tab in pane.tabs {
             tab.cancel.store(true, Ordering::Relaxed);
+            if let Some(s) = tab.search { s.cancel.store(true, Ordering::Relaxed); }
         }
         self.active_pane = 0;
     }
@@ -1067,6 +1106,11 @@ impl App {
 
     fn run_cmd(&mut self, cmd: Cmd) {
         match cmd {
+            Cmd::ReopenTab => {
+                if let Some(i) = self.closed_tabs.len().checked_sub(1) { self.reopen_closed(i); }
+            }
+            Cmd::SaveWorkspace => self.dialog = Some(Dialog::SaveWorkspace { name: String::new(), focus: true }),
+            Cmd::Workspaces => self.dialog = Some(Dialog::Workspaces),
             Cmd::GoTo => self.palette.show_goto(),
             Cmd::NewTab => {
                 let tab = self.tab();
@@ -1287,6 +1331,8 @@ impl App {
 
     fn apply(&mut self, action: Action) {
         match action {
+            Action::MoveTab { id, pane, before } => self.move_tab(id, pane, before),
+            Action::ReopenClosed(i) => self.reopen_closed(i),
             Action::Navigate(p) => self.navigate(p, true),
             Action::OpenEntry(vi) => {
                 let Some(e) = self.tab().entry(vi) else { return };
@@ -1494,6 +1540,10 @@ impl App {
         }
         if ctx.input_mut(|i| take(i, Modifiers::COMMAND | Modifiers::SHIFT, Key::F)) {
             self.run_cmd(Cmd::Flatten);
+            return;
+        }
+        if ctx.input_mut(|i| take(i, Modifiers::COMMAND | Modifiers::SHIFT, Key::T)) {
+            self.run_cmd(Cmd::ReopenTab);
             return;
         }
         let search_id = egui::Id::new(("search", self.tab().id));

@@ -115,6 +115,199 @@ fn sandbox(name: &str) -> PathBuf {
 }
 
 #[test]
+fn tab_drag_crosses_panes_and_collapses_an_empty_source_pane() {
+    let dir = sandbox("tab-cross-drag");
+    for name in ["one", "two"] { fs::create_dir(dir.join(name)).unwrap(); }
+    let mut d = Driver::new(dir.clone());
+    d.app.show_preview = false;
+    d.app.show_sidebar = false;
+    d.app.toggle_split();
+    d.app.navigate(dir.join("two"), true);
+    d.app.active_pane = 0;
+    d.app.open_tab(dir.join("one"));
+    d.frame(Vec::new());
+    d.frame(Vec::new());
+    let at = |d: &Driver, name: &str| d.texts.iter().find(|(t, r)| t == name && r.top() < 40.0).unwrap().1;
+    let from = at(&d, "one").center();
+    let to = at(&d, "two").center() + vec2(25.0, 0.0);
+    d.drag(from, to, |_| {});
+    assert_eq!(d.app.panes[0].tabs.len(), 1);
+    assert_eq!(d.app.panes[1].tabs.len(), 2);
+    assert_eq!(d.app.active_pane, 1);
+    assert_eq!(d.app.tab().path, dir.join("one"));
+    let name = dir.file_name().unwrap().to_str().unwrap();
+    let rect = at(&d, name);
+    let from = egui::pos2(rect.left() + 20.0, rect.center().y);
+    let to = at(&d, "two").left_center() - vec2(10.0, 0.0);
+    d.drag(from, to, |_| {});
+    assert_eq!(d.app.panes.len(), 1);
+    assert_eq!(d.app.panes[0].tabs.len(), 3);
+    assert_eq!(d.app.tab().path, dir);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn file_drop_on_a_tab_still_moves_files_with_draggable_tabs() {
+    let dir = sandbox("file-to-tab");
+    let mut d = Driver::new(dir.clone());
+    d.app.open_tab(dir.join("dest"));
+    d.app.panes[0].active = 0;
+    d.until("listing", |a| a.row_rects.contains_key(&dir.join("a.txt")));
+    let from = d.row(&dir.join("a.txt")).center();
+    let to = d.texts.iter().find(|(t, r)| t == "dest" && r.top() < 40.0 && r.center().x < d.app.pane_rects[0].right()).unwrap().1.center();
+    d.drag(from, to, |d| {
+        assert!(egui::DragAndDrop::has_payload_of_type::<DragPaths>(&d.ctx), "file drag payload disappeared before release");
+    });
+    d.until("file moved to tab", |_| dir.join("dest/a.txt").exists());
+    assert!(!dir.join("a.txt").exists());
+    assert_eq!(d.app.panes[0].tabs.len(), 2);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn long_tab_strips_scroll_to_the_active_tab() {
+    let dir = sandbox("tab-scroll");
+    for i in 0..20 { fs::create_dir(dir.join(format!("folder-{i:02}"))).unwrap(); }
+    let mut d = Driver::new(dir.clone());
+    d.app.show_preview = false;
+    d.app.show_sidebar = false;
+    for i in 0..20 { d.app.open_tab(dir.join(format!("folder-{i:02}"))); }
+    for _ in 0..20 { d.frame(Vec::new()); }
+    let rect = d.texts.iter().find(|(t, r)| t == "folder-19" && r.top() < 40.0).unwrap().1;
+    assert!(rect.left() >= d.app.pane_rects[0].left());
+    assert!(rect.right() <= d.app.pane_rects[0].right());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn dragging_tabs_reorders_them_without_file_operations() {
+    let dir = sandbox("tab-drag");
+    for name in ["one", "two", "three"] { fs::create_dir(dir.join(name)).unwrap(); }
+    let mut d = Driver::new(dir.clone());
+    d.app.show_preview = false;
+    d.app.show_sidebar = false;
+    for name in ["one", "two", "three"] { d.app.open_tab(dir.join(name)); }
+    d.frame(Vec::new());
+    d.frame(Vec::new());
+    let at = |d: &Driver, name: &str| d.texts.iter().find(|(t, r)| t == name && r.top() < 40.0).unwrap().1.center();
+    let from = at(&d, "one");
+    let to = at(&d, "three") + vec2(25.0, 0.0);
+    d.drag(from, to, |d| assert!(egui::DragAndDrop::has_payload_of_type::<TabDrag>(&d.ctx)));
+    let names: Vec<_> = d.app.panes[0].tabs.iter().map(|t| t.path.file_name().unwrap().to_string_lossy().into_owned()).collect();
+    assert_eq!(&names[1..], ["two", "three", "one"]);
+    assert_eq!(d.app.tab().path, dir.join("one"));
+    assert_eq!(d.app.ops.queued.load(Ordering::Relaxed), 0);
+    assert!(dir.join("one").is_dir() && dir.join("three").is_dir());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn moving_tabs_between_panes_keeps_live_tab_state_and_removes_empty_panes() {
+    let dir = sandbox("tab-cross-pane");
+    let mut d = Driver::new(dir.clone());
+    d.app.tab_mut().mode = ViewMode::Icons(2);
+    let id = d.app.tab().id;
+    d.app.toggle_split();
+    d.app.move_tab(id, 1, None);
+    assert_eq!(d.app.panes.len(), 1);
+    assert_eq!(d.app.panes[0].tabs.len(), 2);
+    assert_eq!(d.app.active_pane, 0);
+    assert_eq!(d.app.tab().id, id);
+    assert_eq!(d.app.tab().mode, ViewMode::Icons(2));
+    assert!(d.app.closed_tabs.is_empty(), "moving a tab must not create a closed tab");
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn closed_tabs_and_splits_reopen_with_their_views() {
+    let dir = sandbox("reopen-tabs");
+    let mut d = Driver::new(dir.clone());
+    d.app.open_tab(dir.join("dest"));
+    d.app.tab_mut().mode = ViewMode::Icons(2);
+    d.app.tab_mut().sort = SortKey::Size;
+    d.app.close_tab(0, 1);
+    assert!(d.app.goto_items().iter().any(|(_, detail, action)| detail.starts_with("Closed tab") && matches!(action, Action::ReopenClosed(_))));
+    d.modifiers = Modifiers::COMMAND | Modifiers::SHIFT;
+    d.frame(vec![Event::Key { key: Key::T, physical_key: None, pressed: true, repeat: false, modifiers: d.modifiers }]);
+    assert_eq!(d.app.tab().path, dir.join("dest"));
+    assert_eq!(d.app.tab().mode, ViewMode::Icons(2));
+    assert_eq!(d.app.tab().sort, SortKey::Size);
+    d.app.toggle_split();
+    d.app.close_split(0);
+    assert_eq!(d.app.panes.len(), 1);
+    d.app.run_cmd(Cmd::ReopenTab);
+    assert_eq!(d.app.panes.len(), 2);
+    assert_eq!(d.app.panes[0].tabs.len(), 2);
+    assert_eq!(d.app.panes[0].tabs[1].mode, ViewMode::Icons(2));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn split_divider_resizes_and_restores_through_session() {
+    let dir = sandbox("split-divider");
+    let mut d = Driver::new(dir.clone());
+    d.app.show_preview = false;
+    d.app.show_sidebar = false;
+    d.app.toggle_split();
+    d.frame(Vec::new());
+    let mid = (d.app.pane_rects[0].right() + d.app.pane_rects[1].left()) / 2.0;
+    d.drag(egui::pos2(mid, 450.0), egui::pos2(mid + 180.0, 450.0), |_| {});
+    assert!(d.app.split_ratio > 0.6);
+    assert!(d.app.pane_rects[0].width() > d.app.pane_rects[1].width());
+    let session = crate::session::parse(&d.app.session().to_text());
+    let mut restored = Driver::new(dir.clone());
+    restored.app.restore(&session, true);
+    assert_eq!(restored.app.split_ratio, d.app.split_ratio);
+    assert_eq!(restored.app.panes.len(), 2);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn named_workspaces_save_load_delete_and_persist_layouts() {
+    let dir = sandbox("workspaces");
+    let file = dir.join("state/workspaces.json");
+    let mut d = Driver::new(dir.clone());
+    d.app.workspace_file = Some(file.clone());
+    d.app.open_tab(dir.join("dest"));
+    d.app.tab_mut().mode = ViewMode::Icons(3);
+    d.app.toggle_split();
+    d.app.split_ratio = 0.65;
+    d.app.preview_width = 440.0;
+    d.app.sidebar_width = 250.0;
+    d.app.show_sidebar = false;
+    d.app.run_cmd(Cmd::SaveWorkspace);
+    d.frame(Vec::new());
+    d.frame(vec![Event::Text("Development".into())]);
+    d.frame(Vec::new());
+    d.click_text("Save workspace");
+    assert!(d.app.dialog.is_none());
+    assert!(file.exists());
+    let mut restored = Driver::new(dir.clone());
+    restored.app.workspace_file = Some(file.clone());
+    restored.app.workspaces = crate::workspaces::load(&file).unwrap();
+    restored.app.run_cmd(Cmd::Workspaces);
+    restored.frame(Vec::new());
+    restored.frame(Vec::new());
+    restored.click_text("Load");
+    assert_eq!(restored.app.panes.len(), 2);
+    assert_eq!(restored.app.panes[0].tabs.len(), 2);
+    assert_eq!(restored.app.panes[0].tabs[1].mode, ViewMode::Icons(3));
+    assert_eq!(restored.app.split_ratio, 0.65);
+    assert!(!restored.app.show_sidebar);
+    restored.frame(Vec::new());
+    let preview = egui::containers::panel::PanelState::load(&restored.ctx, egui::Id::new("preview")).unwrap().size().x;
+    assert!((preview - 440.0).abs() < 1.0);
+    assert_eq!(restored.app.sidebar_width, 250.0);
+    restored.app.run_cmd(Cmd::Workspaces);
+    restored.frame(Vec::new());
+    restored.frame(Vec::new());
+    restored.click_text("Delete");
+    assert!(restored.app.workspaces.is_empty());
+    assert!(crate::workspaces::load(&file).unwrap().is_empty());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn batch_rename_previews_applies_and_undoes_as_one_operation() {
     let dir = sandbox("batch-rename");
     let mut d = Driver::new(dir.clone());

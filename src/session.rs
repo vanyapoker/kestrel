@@ -32,6 +32,7 @@ pub struct Session {
     pub sidebar_width: Option<f32>,
     pub preview_width: Option<f32>,
     pub recent_dirs: Vec<PathBuf>,
+    pub split_ratio: f32,
 }
 
 impl Default for Session {
@@ -46,6 +47,7 @@ impl Default for Session {
             sidebar_width: None,
             preview_width: None,
             recent_dirs: Vec::new(),
+            split_ratio: 0.5,
         }
     }
 }
@@ -112,6 +114,7 @@ impl Session {
             out += &format!("preview_width {}\n", w.round());
         }
         out += &format!("active_pane {}\n", self.active_pane);
+        out += &format!("split_ratio {}\n", self.split_ratio);
         for path in self.recent_dirs.iter().take(64) {
             let path = path.to_string_lossy();
             if !path.contains('\n') {
@@ -147,6 +150,11 @@ pub fn parse(text: &str) -> Session {
             "sidebar_width" => s.sidebar_width = rest.parse().ok(),
             "preview_width" => s.preview_width = rest.parse().ok(),
             "active_pane" => s.active_pane = rest.parse().unwrap_or(0),
+            "split_ratio" => {
+                if let Ok(ratio) = rest.parse::<f32>() {
+                    if ratio.is_finite() { s.split_ratio = ratio.clamp(0.15, 0.85); }
+                }
+            }
             "recent" if s.recent_dirs.len() < 64 && Path::new(rest).is_absolute() => {
                 let path = PathBuf::from(rest);
                 if !s.recent_dirs.contains(&path) {
@@ -206,6 +214,7 @@ mod tests {
             sidebar_width: Some(210.0),
             preview_width: Some(400.0),
             recent_dirs: vec!["/home/a b".into(), "/tmp".into()],
+            split_ratio: 0.65,
         };
         assert_eq!(parse(&s.to_text()), s);
     }
@@ -215,5 +224,7 @@ mod tests {
         let s = parse("garbage\ntab size\npane x\ntab name asc nonsense /x\nactive_pane 7\n");
         assert!(s.panes.is_empty());
         assert_eq!(s.active_pane, 0);
+        assert_eq!(parse("split_ratio NaN\n").split_ratio, 0.5);
+        assert_eq!(parse("split_ratio 50\n").split_ratio, 0.85);
     }
 }

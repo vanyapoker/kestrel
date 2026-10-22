@@ -16,6 +16,7 @@ mod theme;
 mod thumbs;
 mod util;
 mod watch;
+mod workspaces;
 mod wl_dnd;
 
 use eframe::egui;

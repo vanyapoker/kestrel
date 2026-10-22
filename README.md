@@ -46,6 +46,7 @@ If you installed from your own clone, run `./install.sh --uninstall` there inste
 - **Preview panel.** See images, code with syntax highlighting, text, PDFs, videos, SVGs and audio details without opening anything. Text wraps to the panel width, and JSON is automatically formatted for reading without changing the file.
 - **Folder inspector.** Select a folder to browse its contents in the preview panel. Click through nested folders and preview files, use the inspector's Back button, or open the inspected folder in the main view. Your main folder and selection stay in place while you inspect.
 - **Tabs and split view.** Work in several folders at once, and drag files between panes.
+- **Arrange your workspace.** Drag tabs to reorder them or move them between panes; long tab strips scroll horizontally. Ctrl+Shift+T reopens the last closed tab or split (up to 32 recent closes in the current window), also available through Go To. Drag the split divider to resize panes, or double-click it for equal widths. Use “Save current workspace” and “Workspaces: load or delete” in Ctrl+P to keep named layouts between launches, including tabs, views and panel widths.
 - **Find anything.** Type to filter the current folder, or press Ctrl+F to search all its subfolders. Both support case-insensitive fuzzy matching (`nd` finds `NaDya`), with the best matches first. Exact names, prefixes and substrings rank above scattered letters; space-separated words must all match.
 - **Refine searches.** Matched letters are highlighted in every view. Add `ext:pdf,jpg`, `type:file` or `type:folder`; quote a literal phrase (`"annual report"`) or use `=report.pdf` for an exact filename. Recursive searches reuse their filename scan when you change the query; F5 rescans. The best 20,000 matches are retained across the complete scan.
 - **Flatten folders.** Ctrl+Shift+F shows the current folder and all its descendants as one list, with each item's parent folder alongside it. Filter the flattened view with the same search syntax, or press Ctrl+Shift+F again to return to the normal folder view.
@@ -86,6 +87,7 @@ If you installed from your own clone, run `./install.sh --uninstall` there inste
 | <kbd>Alt</kbd>+<kbd>C</kbd> | Copy path |
 | <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>T</kbd> | Open a terminal here |
 | <kbd>Ctrl</kbd>+<kbd>T</kbd> / <kbd>Ctrl</kbd>+<kbd>W</kbd> | New / close tab |
+| <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> | Reopen closed tab or split |
 | <kbd>Ctrl</kbd>+<kbd>Tab</kbd>, <kbd>Ctrl</kbd>+<kbd>1</kbd>…<kbd>9</kbd> | Switch tabs |
 | <kbd>F6</kbd> or <kbd>Ctrl</kbd>+<kbd>\\</kbd> | Split view (<kbd>Tab</kbd> switches pane) |
 | <kbd>Ctrl</kbd>+<kbd>G</kbd> | Icons / details view |
