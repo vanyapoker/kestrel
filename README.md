@@ -9,8 +9,14 @@
 </p>
 
 <p align="center">
-  <img src="assets/screenshot.png" alt="Kestrel showing a source folder with a syntax-highlighted preview" width="900">
+  Tabs, split panes, Miller columns, fuzzy search, and previews — in your desktop's colors.
 </p>
+
+<p align="center">
+  <a href="assets/screenshots/overview.png"><img src="assets/screenshots/overview.png" alt="Kestrel in a dark navy Omarchy theme: a fictional Aurora project in one pane, nine landscape artwork thumbnails in another, and an image preview on the right" width="1200"></a>
+</p>
+
+<p align="center"><sub>Real app captures with fictional studio projects, original sample artwork, and the active Omarchy theme. Click any screenshot to see it at full size.</sub></p>
 
 ## Install
 
@@ -18,53 +24,110 @@
 curl -fsSL https://raw.githubusercontent.com/vanyapoker/kestrel/master/install.sh | bash
 ```
 
-Then open **Kestrel** from the app launcher (Super + Space) or run `kestrel` in a terminal.
+Open **Kestrel** from the app launcher (Super + Space), or run `kestrel` in a terminal.
+Pass a folder to open it directly: `kestrel ~/Downloads`.
 
-The installer installs anything it needs to build (Rust, git), compiles Kestrel and
-adds a launcher entry and icon. The first build takes a few minutes.
+The installer sets up missing build tools, compiles Kestrel, and installs its launcher,
+icon, update command, and file-dialog backend. The first build takes a few minutes.
 
-## Update
+## Browse with context
 
-```sh
-kestrel-update
-```
+Switch between **Details**, **List**, **Icons**, and **Miller columns** from the View menu,
+which shows the available keyboard shortcuts. Tabs can be reordered or dragged between
+split panes; drag the divider to resize them, or double-click it for equal widths.
+Long tab strips scroll horizontally. Up to 32 recently closed tabs or splits can be
+reopened during the current window session, including through Go To.
 
-This pulls the latest version and rebuilds it. Running the install command again does the same thing.
+In Miller columns, selecting a folder reveals its contents to the right. **Right** or
+**Enter** enters that column; **Left** returns to its parent. Each column keeps its own
+selection, filter, and scroll position. Preview and file operations follow the active column.
 
-## Uninstall
+[![Miller columns showing Projects, Aurora, Website, and src, with App.tsx selected and its syntax-highlighted code preview](assets/screenshots/columns.png)](assets/screenshots/columns.png)
 
-```sh
-bash ~/.local/share/kestrel/source/install.sh --uninstall
-```
+**Ctrl+K** opens Go To: fuzzy-search open tabs, bookmarks, recent folders, and standard
+places. **Ctrl+Shift+T** reopens a closed tab or split. Save named layouts through
+**Save current workspace** in the **Ctrl+P** command palette; use **Workspaces** to load
+or delete them. Open tabs, view modes, pane sizes, and panel layout also survive restarts.
 
-If you installed from your own clone, run `./install.sh --uninstall` there instead.
+## Find the best match
 
-## Features
+Start typing to filter the current folder, or press **Ctrl+F** to search its subfolders.
+Matching is case-insensitive and fuzzy: `nd` finds `NaDya`. Exact names, prefixes, and
+substrings rank above scattered letters, with matched characters highlighted.
 
-- **Fast.** All disk work runs in the background, so the window never freezes, even on huge folders or slow drives.
-- **Folder sizes.** Every folder shows its real size, worked out live as you browse.
-- **Preview panel.** See images, code with syntax highlighting, text, PDFs, videos, SVGs and audio details without opening anything. Text wraps to the panel width, and JSON is automatically formatted for reading without changing the file.
-- **Folder inspector.** Select a folder to browse its contents in the preview panel. Click through nested folders and preview files, use the inspector's Back button, or open the inspected folder in the main view. Your main folder and selection stay in place while you inspect.
-- **Tabs and split view.** Work in several folders at once, and drag files between panes.
-- **Miller columns.** Choose Miller columns from the View menu or press Ctrl+Shift+M. Selecting a folder reveals its children; Right or Enter enters that column, Left returns to its parent. Each column keeps its selection, filter and scroll position. File operations and preview follow the active column. Recursive search and flattened browsing temporarily show a results list; columns return when you leave. Ctrl+G switches to Icons/Details; zoom leaves columns unchanged.
-- **Arrange your workspace.** Drag tabs to reorder them or move them between panes; long tab strips scroll horizontally. Ctrl+Shift+T reopens the last closed tab or split (up to 32 recent closes in the current window), also available through Go To. Drag the split divider to resize panes, or double-click it for equal widths. Use “Save current workspace” and “Workspaces: load or delete” in Ctrl+P to keep named layouts between launches, including tabs, views and panel widths.
-- **Find anything.** Type to filter the current folder, or press Ctrl+F to search all its subfolders. Both support case-insensitive fuzzy matching (`nd` finds `NaDya`), with the best matches first. Exact names, prefixes and substrings rank above scattered letters; space-separated words must all match.
-- **Refine searches.** Matched letters are highlighted in every view. Add `ext:pdf,jpg`, `type:file` or `type:folder`; quote a literal phrase (`"annual report"`) or use `=report.pdf` for an exact filename. Recursive searches reuse their filename scan when you change the query; F5 rescans. The best 20,000 matches are retained across the complete scan.
-- **Flatten folders.** Ctrl+Shift+F shows the current folder and all its descendants as one list, with each item's parent folder alongside it. Filter the flattened view with the same search syntax, or press Ctrl+Shift+F again to return to the normal folder view.
-- **Command palette.** Ctrl+P reaches every action.
-- **Go To.** Ctrl+K fuzzy-searches open tabs, bookmarks, recent folders and standard places. Choosing an open folder switches to its tab; recent folders are remembered between launches.
-- **Several views.** Switch between details, list and icon views, and zoom with Ctrl+scroll.
-- **Safe file operations.** Copy and move run in the background with progress. Deleted files go to the trash, files are never overwritten (a copy with the same name gets a " (2)" suffix), and Ctrl+Z undoes renames, moves, copies and trashing.
-- **Batch rename.** Select several items and press F2 for a live before/after preview. Replace text, change name case, and use `{name}`, `{ext}`, `{n}` or `{date}` in a template for numbering and modified dates. Conflicts block applying; grouped renames support swaps and undo together with Ctrl+Z.
-- **Instant copies on btrfs and xfs.** Large files copy in no time.
-- **Drag and drop** within Kestrel and to or from other apps. Copy and paste files to and from other file managers too.
-- **Matches your Omarchy theme.** Kestrel uses your current theme's colors, light or dark, and updates live when you switch themes.
-- **Archives.** Extract zip, tar.gz/xz/zst, 7z and rar files right where they are, or compress a selection to .zip.
-- **Open with any app.** Right-click a file for every app that can open it, and change which one opens that type by default.
-- **File dialogs.** Kestrel registers as the file chooser for apps that use xdg-desktop-portal, so uploads and saves in Firefox open Kestrel with a Select / Save bar. In Firefox, set `widget.use-xdg-desktop-portal.file-picker` to `1` in `about:config`. The picker window has the class `kestrel-picker`, so you can float it with a window rule.
-- **Bookmarks shared with GTK,** so they also show up in Nautilus and in file pickers.
-- **Picks up where you left off.** Tabs, split view, view modes, sorting and panel layout are restored on the next launch. Opening a specific folder (`kestrel ~/Downloads`) opens just that folder.
-- **Live updates.** The view refreshes on its own when files change.
+[![Recursive search for nd, with ND.md first, fuzzy matches including NaDya filenames, highlighted matching letters, relative folder paths, and a text preview](assets/screenshots/search.png)](assets/screenshots/search.png)
+
+| Query | Matches |
+|---|---|
+| `nd` | Names containing those letters in order, including `NaDya` |
+| `annual report` | Names matching both terms |
+| `ext:pdf,jpg` | PDF or JPG files |
+| `type:folder` / `type:file` | Folders or files |
+| `"annual report"` | A contiguous literal phrase |
+| `=report.pdf` | An exact filename |
+
+Recursive searches reuse their filename scan as you refine the query. **F5** rescans;
+the best 20,000 matches are retained across the complete scan. **Ctrl+Shift+F** flattens
+a folder and its descendants into one list, with relative parent paths. Search and
+flattened results temporarily use Details when browsing in Miller columns; leaving
+them restores columns.
+
+## Preview and inspect
+
+Press **Space** or **F3** to toggle previews without opening another app. Preview images,
+syntax-highlighted code, text, PDFs, videos, SVGs, audio details, and CSV tables. Text
+wraps to the panel width; JSON is formatted for reading without changing the file.
+Select and copy text directly from previews, including table cells and file details.
+Web links in text and CSV previews open in your browser; tables scroll horizontally
+and keep their header visible.
+
+Select a folder to inspect its contents inside the preview panel. Click through nested
+folders and files, go back within the inspector, or open the inspected folder in the
+main view. Your main selection stays in place while you inspect.
+
+## Rename with a preview
+
+Select several items and press **F2** to preview every new name before applying it.
+Replace text, change name case, or combine `{name}`, `{ext}`, `{n}`, and `{date}` in a
+template. Numbering supports a starting value and zero padding. Conflicts block applying;
+**Ctrl+Z** undoes the batch as one operation.
+
+[![Batch rename preview for nine Aurora artwork exports using aurora-{n}{ext}, with numbered destination filenames and zero conflicts](assets/screenshots/batch-rename.png)](assets/screenshots/batch-rename.png)
+
+## More everyday tools
+
+- **Folder sizes and sorting.** Folder sizes are calculated live. Sort by name, size,
+  modified date, or type; click a Details header again to reverse the order. The status
+  bar shows selection totals and free disk space.
+- **Background work and live updates.** Folder listings, size calculations, searches,
+  previews, and file operations run in the background. Listings refresh when files change.
+- **Copy, move, and undo.** File operations show byte progress and can be cancelled
+  from the status bar or command palette. Delete sends files to the trash;
+  permanent deletion asks for confirmation. Existing destination names get numbered
+  alternatives. Undo supports renames, moves, copies, new folders, and trashing.
+- **Drag and drop.** Move files between panes or other apps; hold Ctrl to copy. Copy and
+  paste files to and from other file managers, too.
+- **Archives.** Extract beside the archive, into a folder named after it, or into the
+  other split pane. Create zip, tar.gz, tar.xz, tar.zst, tar.bz2, or 7z archives through
+  **Compress…**, with Fast, Normal, or Best compression; zip also supports Store.
+  **Compress to .zip** is available as a quick action. Extraction also supports rar
+  and other formats handled by `bsdtar`.
+- **Efficient copies.** Copies use the kernel's `copy_file_range` where supported, with
+  a streamed fallback. Copied files retain their permissions and modification times.
+- **Drives.** Mount, unmount, and eject drives from the Devices section. Mounted
+  drives show usage bars; device changes appear automatically.
+- **Command palette.** **Ctrl+P** reaches every action, including creating an empty
+  file, sorting, cancelling an operation, batch rename, and workspace management.
+- **Paths and terminals.** **Ctrl+L** edits the current path, with Tab completion for
+  folders. Copy a selected item's path with **Alt+C**, or open a terminal in the current
+  folder with **Ctrl+Alt+T**.
+- **Open with.** Choose an app from a file's context menu and set defaults for that file type.
+- **Shared bookmarks.** GTK bookmarks also appear in Kestrel. Add folders through their
+  context menu or drag them onto the sidebar's Bookmarks section.
+- **Your Omarchy theme.** Colors follow the current light or dark theme and update live
+  when you switch it.
+- **Native file dialogs.** Kestrel can handle uploads and saves for apps using
+  xdg-desktop-portal. See the setup notes below.
 
 ## Keyboard shortcuts
 
@@ -77,11 +140,13 @@ If you installed from your own clone, run `./install.sh --uninstall` there inste
 | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F</kbd> | Toggle flattened folder view |
 | <kbd>Enter</kbd> | Open |
 | <kbd>Backspace</kbd> / <kbd>Alt</kbd>+<kbd>↑</kbd> | Go up a folder |
-| <kbd>Alt</kbd>+<kbd>←</kbd> / <kbd>Alt</kbd>+<kbd>→</kbd> | Back / forward |
+| <kbd>Alt</kbd>+<kbd>←</kbd> / <kbd>Alt</kbd>+<kbd>→</kbd>, Mouse 4 / 5 | Back / forward |
+| <kbd>Alt</kbd>+<kbd>Home</kbd> | Go to the home folder |
 | <kbd>Ctrl</kbd>+<kbd>L</kbd> | Type a path (<kbd>Tab</kbd> completes folder names) |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> / <kbd>X</kbd> / <kbd>V</kbd> | Copy / cut / paste |
 | <kbd>Ctrl</kbd>+<kbd>Z</kbd> | Undo (rename, move, copy, new folder, move to trash) |
 | <kbd>Ctrl</kbd>+<kbd>D</kbd> | Duplicate |
+| <kbd>Ctrl</kbd>+<kbd>A</kbd> / <kbd>Ctrl</kbd>+<kbd>Space</kbd> | Select all / toggle the current item |
 | <kbd>F2</kbd> | Rename |
 | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd> | New folder |
 | <kbd>Delete</kbd> / <kbd>Shift</kbd>+<kbd>Delete</kbd> | Move to trash / delete permanently (confirm with <kbd>Enter</kbd>, cancel with <kbd>Esc</kbd> or <kbd>Backspace</kbd>) |
@@ -89,41 +154,88 @@ If you installed from your own clone, run `./install.sh --uninstall` there inste
 | <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>T</kbd> | Open a terminal here |
 | <kbd>Ctrl</kbd>+<kbd>T</kbd> / <kbd>Ctrl</kbd>+<kbd>W</kbd> | New / close tab |
 | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> | Reopen closed tab or split |
-| <kbd>Ctrl</kbd>+<kbd>Tab</kbd>, <kbd>Ctrl</kbd>+<kbd>1</kbd>…<kbd>9</kbd> | Switch tabs |
+| <kbd>Ctrl</kbd>+<kbd>Tab</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Tab</kbd> | Next / previous tab |
+| <kbd>Ctrl</kbd>+<kbd>1</kbd>…<kbd>9</kbd> | Switch to a tab by position |
 | <kbd>F6</kbd> or <kbd>Ctrl</kbd>+<kbd>\\</kbd> | Split view (<kbd>Tab</kbd> switches pane) |
 | <kbd>Ctrl</kbd>+<kbd>G</kbd> | Icons / details view |
 | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd> | Toggle Miller columns |
 | <kbd>←</kbd> / <kbd>→</kbd> | Parent / child column (in Miller columns; outside text fields) |
-| <kbd>Ctrl</kbd>+scroll | Zoom from details through list to icons |
+| <kbd>Ctrl</kbd>+scroll | Zoom through Details, List and icon sizes (outside Miller columns) |
 | <kbd>Ctrl</kbd>+<kbd>H</kbd> | Show hidden files |
 | <kbd>Space</kbd> / <kbd>F3</kbd> | Toggle preview panel (outside text fields) |
 | <kbd>Ctrl</kbd>+<kbd>B</kbd> | Sidebar |
 | <kbd>F5</kbd> | Refresh |
 
 Use <kbd>Shift</kbd> with the arrow keys or Ctrl/Shift+click to select several items.
-Hold <kbd>Ctrl</kbd> while dragging to copy instead of move.
+Hold <kbd>Ctrl</kbd> while dragging to copy instead of move. Middle-click a folder
+to open it in a new tab. Navigation shortcuts leave text-field cursor movement intact.
 
-## Tips
+## Setup notes
 
-- **Make Kestrel your default file manager:**
-  `xdg-mime default kestrel.desktop inode/directory`
-- **Bookmark a folder** from its right-click menu, or drag it onto the Bookmarks section of the sidebar.
-- **Optional extras for previews:** Omarchy ships these already. On other systems, install them for PDF, video and SVG previews:
-  `sudo pacman -S poppler ffmpeg librsvg wl-clipboard`
-- **Try out a theme** without switching your desktop:
-  `KESTREL_OMARCHY_THEME=/usr/share/omarchy/themes/gruvbox kestrel`
+- **Update:** run `kestrel-update`. This pulls the latest source and rebuilds it.
+  Running the install command again does the same thing.
+- **Default file manager:** run `xdg-mime default kestrel.desktop inode/directory`.
+- **Preview helpers:** Omarchy includes these already. On other systems, install
+  `poppler ffmpeg librsvg wl-clipboard` for PDF/video/SVG previews and clipboard support.
+- **Firefox file dialogs:** set `widget.use-xdg-desktop-portal.file-picker` to `1` in
+  `about:config`. The installer registers Kestrel's portal backend; if a portal preference
+  file already exists, follow the installer's instructions to select Kestrel.
+- **Archive and drive helpers:** archives use `bsdtar` from libarchive; drive
+  operations use `udisksctl` from udisks2.
+- **Picker window rules:** the file-dialog window class is `kestrel-picker`.
+- **Try a different theme for Kestrel:** use
+  `KESTREL_OMARCHY_THEME=/usr/share/omarchy/themes/gruvbox kestrel` without changing
+  your desktop theme.
+
+### Use Kestrel from scripts
+
+The file picker can also run directly from a shell, without a portal integration:
+
+```sh
+kestrel --pick open --multiple --dir ~/Pictures --title "Choose images"
+kestrel --pick folder --dir ~/Projects
+kestrel --pick save --dir ~/Documents --name report.md
+```
+
+It prints selected paths to standard output, one per line, and prints nothing when
+cancelled. Open and folder pickers accept `--multiple`; all three modes accept
+`--title` and `--dir`, and Save accepts a suggested filename through `--name`.
+Picker windows use a temporary session and leave your regular layout unchanged.
+
+### Uninstall
+
+```sh
+bash ~/.local/share/kestrel/source/install.sh --uninstall
+```
+
+If you installed from your own clone, run `./install.sh --uninstall` there instead.
 
 ## Building from source
 
 ```sh
 git clone https://github.com/vanyapoker/kestrel.git
 cd kestrel
-./install.sh          # build and install
-cargo run --release   # or just run it
+./install.sh          # build and install this checkout
+cargo run --release   # or run without installing
+cargo test --locked
 ```
 
-Kestrel is written in Rust with [egui](https://github.com/emilk/egui). It ships a lightly patched
-`egui-winit` (see `vendor/egui-winit/KESTREL_PATCHES.md`) so drag and drop works on Hyprland.
+Kestrel is written in Rust with [egui](https://github.com/emilk/egui). It ships a lightly
+patched `egui-winit` (see [the patch notes](vendor/egui-winit/KESTREL_PATCHES.md)) so drag
+and drop works on Hyprland.
+
+### Recreating the screenshots
+
+```sh
+python3 scripts/screenshots.py
+```
+
+Requires Cargo, Xvfb, ImageMagick, librsvg, and libXtst. The script builds this checkout,
+generates fictional projects and original SVG/PNG artwork, and drives the actual app
+on an isolated display. It uses the active Omarchy theme, saves captures under
+`assets/screenshots/`, and cleans up its temporary files. Your desktop theme, personal
+files, and saved Kestrel session stay unchanged. Set `KESTREL_OMARCHY_THEME` to capture
+a different theme.
 
 ## License
 
