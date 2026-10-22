@@ -24,7 +24,7 @@ pub enum Content {
     Image { tex: egui::TextureHandle, info: Info },
     Text { job: LayoutJob, links: Vec<TextLink>, lines: usize, truncated: bool },
     Table(Table),
-    Dir { items: Option<usize> },
+    Dir { entries: Vec<crate::fsops::Entry> },
     Binary { info: Info },
     Error(String),
 }
@@ -38,7 +38,7 @@ enum Payload {
     Image(ColorImage, Info),
     Text(LayoutJob, Vec<TextLink>, usize, bool),
     Table(Table),
-    Dir(Option<usize>),
+    Dir(Vec<crate::fsops::Entry>),
     Binary(Info),
     Error(String),
 }
@@ -253,7 +253,7 @@ impl Preview {
                 },
                 Payload::Text(job, links, lines, truncated) => Content::Text { job, links, lines, truncated },
                 Payload::Table(table) => Content::Table(table),
-                Payload::Dir(items) => Content::Dir { items },
+                Payload::Dir(entries) => Content::Dir { entries },
                 Payload::Binary(info) => Content::Binary { info },
                 Payload::Error(e) => Content::Error(e),
             });
@@ -263,7 +263,14 @@ impl Preview {
 
 fn load(path: &Path, is_dir: bool) -> Payload {
     if is_dir {
-        return Payload::Dir(crate::fsops::count_entries(path));
+        return match crate::fsops::list_dir(path) {
+            Ok(mut entries) => {
+                entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir)
+                    .then_with(|| crate::util::natural_cmp(&a.name, &b.name)));
+                Payload::Dir(entries)
+            }
+            Err(error) => Payload::Error(error),
+        };
     }
     let ext = path
         .extension()

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 
+#[derive(Clone)]
 pub struct Entry {
     pub name: String,
     pub path: PathBuf,
@@ -97,10 +98,6 @@ pub fn dir_size(path: &Path, dev: u64, cancel: &AtomicBool) -> Option<u64> {
         .map(|d| dir_size(d, dev, cancel))
         .sum();
     Some(total + sub?)
-}
-
-pub fn count_entries(path: &Path) -> Option<usize> {
-    fs::read_dir(path).ok().map(|rd| rd.count())
 }
 
 /// (free, total) bytes of the filesystem containing `path`.

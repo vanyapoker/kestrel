@@ -74,6 +74,14 @@ impl Driver {
         self.frame(vec![Event::PointerMoved(pos)]);
     }
 
+    fn click_text(&mut self, label: &str) {
+        let rect = self.texts.iter().find(|(text, _)| text == label)
+            .unwrap_or_else(|| panic!("no visible text {label:?}")).1;
+        self.move_to(rect.center());
+        self.button(true);
+        self.button(false);
+    }
+
     fn button(&mut self, pressed: bool) {
         self.mouse_button(PointerButton::Primary, pressed);
     }
@@ -103,6 +111,52 @@ fn sandbox(name: &str) -> PathBuf {
     fs::write(d.join("a.txt"), "a").unwrap();
     fs::write(d.join("b.txt"), "b").unwrap();
     d
+}
+
+#[test]
+fn folder_inspector_browses_nested_folders_and_files_independently() {
+    let dir = sandbox("inspector-browse");
+    fs::create_dir_all(dir.join("dest/nested")).unwrap();
+    fs::write(dir.join("dest/nested/message.txt"), "inspector content").unwrap();
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| !a.tab().loading);
+    d.app.tab_mut().select_path(&dir.join("dest"));
+    d.frame(Vec::new());
+    d.until("folder preview", |a| matches!(&a.preview.state, crate::preview::State::Ready(crate::preview::Content::Dir { entries }) if entries.iter().any(|e| e.name == "nested")));
+    d.click_text("nested");
+    d.until("nested preview", |a| matches!(&a.preview.state, crate::preview::State::Ready(crate::preview::Content::Dir { entries }) if entries.iter().any(|e| e.name == "message.txt")));
+    d.click_text("message.txt");
+    d.until("file preview", |a| matches!(&a.preview.state, crate::preview::State::Ready(crate::preview::Content::Text { job, .. }) if job.text == "inspector content"));
+    assert_eq!(d.app.tab().path, dir);
+    assert_eq!(d.app.tab().cursor_entry().unwrap().path, dir.join("dest"));
+    assert_eq!(d.app.preview.path, Some(dir.join("dest/nested/message.txt")));
+    d.click_text("‹ Back");
+    d.until("back to nested", |a| matches!(&a.preview.state, crate::preview::State::Ready(crate::preview::Content::Dir { .. })));
+    assert_eq!(d.app.preview.path, Some(dir.join("dest/nested")));
+    d.click_text("‹ Back");
+    d.until("back to root", |a| matches!(&a.preview.state, crate::preview::State::Ready(crate::preview::Content::Dir { .. })));
+    assert_eq!(d.app.preview.path, Some(dir.join("dest")));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn folder_inspector_tracks_changes_hides_dotfiles_and_opens_in_main_view() {
+    let dir = sandbox("inspector-refresh");
+    fs::create_dir_all(dir.join("dest/nested")).unwrap();
+    fs::write(dir.join("dest/.secret"), "hidden").unwrap();
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| !a.tab().loading);
+    d.app.tab_mut().select_path(&dir.join("dest"));
+    d.frame(Vec::new());
+    d.until("folder preview", |a| matches!(&a.preview.state, crate::preview::State::Ready(crate::preview::Content::Dir { .. })));
+    assert!(!d.texts.iter().any(|(text, _)| text == ".secret"));
+    fs::write(dir.join("dest/new.txt"), "new").unwrap();
+    d.until("live inspector", |a| matches!(&a.preview.state, crate::preview::State::Ready(crate::preview::Content::Dir { entries }) if entries.iter().any(|e| e.name == "new.txt")));
+    d.click_text("nested");
+    d.until("nested preview", |a| matches!(&a.preview.state, crate::preview::State::Ready(crate::preview::Content::Dir { .. })));
+    d.click_text("Open folder in main view ↗");
+    assert_eq!(d.app.tab().path, dir.join("dest/nested"));
+    fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

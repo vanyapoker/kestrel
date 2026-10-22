@@ -44,6 +44,7 @@ If you installed from your own clone, run `./install.sh --uninstall` there inste
 - **Fast.** All disk work runs in the background, so the window never freezes, even on huge folders or slow drives.
 - **Folder sizes.** Every folder shows its real size, worked out live as you browse.
 - **Preview panel.** See images, code with syntax highlighting, text, PDFs, videos, SVGs and audio details without opening anything. Text wraps to the panel width, and JSON is automatically formatted for reading without changing the file.
+- **Folder inspector.** Select a folder to browse its contents in the preview panel. Click through nested folders and preview files, use the inspector's Back button, or open the inspected folder in the main view. Your main folder and selection stay in place while you inspect.
 - **Tabs and split view.** Work in several folders at once, and drag files between panes.
 - **Find anything.** Type to filter the current folder, or press Ctrl+F to search all its subfolders. Both support case-insensitive fuzzy matching (`nd` finds `NaDya`), with the best matches first. Exact names, prefixes and substrings rank above scattered letters; space-separated words must all match.
 - **Refine searches.** Matched letters are highlighted in every view. Add `ext:pdf,jpg`, `type:file` or `type:folder`; quote a literal phrase (`"annual report"`) or use `=report.pdf` for an exact filename. Recursive searches reuse their filename scan when you change the query; F5 rescans. The best 20,000 matches are retained across the complete scan.

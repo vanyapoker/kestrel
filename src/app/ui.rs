@@ -291,8 +291,7 @@ impl App {
         }
 
         if self.show_preview {
-            let sel = self.tab().cursor_entry().map(|e| (e.path.clone(), e.is_dir));
-            self.preview.request(sel.as_ref().map(|(p, d)| (p.as_path(), *d)));
+            self.sync_inspector();
         }
         let title = format!("{} — Kestrel", self.tab().path.display());
         if title != self.window_title {
@@ -1276,9 +1275,29 @@ impl App {
         });
     }
 
+    fn sync_inspector(&mut self) {
+        let selected = self.tab().cursor_entry();
+        let origin = self.inspector.first().map(|e| &e.path);
+        if origin != selected.map(|e| &e.path) {
+            self.inspector = selected.filter(|e| e.is_dir).cloned().into_iter().collect();
+        }
+        let target = self.inspector.last().or_else(|| self.tab().cursor_entry()).map(|e| (e.path.clone(), e.is_dir));
+        self.preview.request(target.as_ref().map(|(path, dir)| (path.as_path(), *dir)));
+    }
+
     fn preview_panel(&mut self, ui: &mut Ui) {
+        self.sync_inspector();
+        if self.inspector.len() > 1 {
+            ui.horizontal(|ui| {
+                if ui.button("‹ Back").on_hover_text("Back within the inspector").clicked() {
+                    self.inspector.pop();
+                    self.sync_inspector();
+                }
+                ui.label(RichText::new("Inspector").size(12.0).color(pal().faint));
+            });
+        }
         // Keep label selections scoped to the file whose content was selected.
-        let path = self.tab().cursor_entry().map(|e| e.path.clone());
+        let path = self.inspector.last().or_else(|| self.tab().cursor_entry()).map(|e| e.path.clone());
         let selection_id = ui.id().with("selection_path");
         let previous = ui.data_mut(|d| d.get_temp::<Option<PathBuf>>(selection_id));
         if previous.as_ref() != Some(&path) {
@@ -1286,8 +1305,7 @@ impl App {
             ui.data_mut(|d| d.insert_temp(selection_id, path));
         }
         ui.style_mut().interaction.selectable_labels = true;
-        let tab = self.tab();
-        let Some(e) = tab.cursor_entry() else {
+        let Some(e) = self.inspector.last().or_else(|| self.tab().cursor_entry()).cloned() else {
             ui.add_space(40.0);
             ui.vertical_centered(|ui| ui.label(RichText::new("No selection").color(pal().faint)));
             return;
@@ -1320,7 +1338,7 @@ impl App {
                     rows.push(("Rows".into(), format!("{}{plus}", t.rows.len().saturating_sub(1))));
                     rows.push(("Columns".into(), t.widths.len().to_string()));
                 }
-                Content::Dir { items: Some(n) } => rows.push(("Items".into(), n.to_string())),
+                Content::Dir { entries } => rows.push(("Items".into(), entries.iter().filter(|e| self.show_hidden || !e.hidden).count().to_string())),
                 _ => {}
             }
         }
@@ -1339,6 +1357,11 @@ impl App {
                 });
             });
 
+        let mut inspect = None;
+        let mut open_folder = None;
+        if e.is_dir && ui.small_button("Open folder in main view ↗").clicked() {
+            open_folder = Some(e.path.clone());
+        }
         CentralPanel::default().frame(Frame::new()).show(ui, |ui| match &self.preview.state {
             State::Loading => {
                 ui.add_space(30.0);
@@ -1377,16 +1400,20 @@ impl App {
                     .inner_margin(Margin::same(8))
                     .show(ui, |ui| preview_table(ui, table));
             }
-            State::Ready(Content::Dir { items }) => {
-                ui.add_space(40.0);
-                ui.vertical_centered(|ui| {
-                    let (r, _) = ui.allocate_exact_size(vec2(80.0, 64.0), Sense::hover());
-                    draw_path_folder(ui.painter(), r.center(), 4.0, &e.path);
-                    ui.add_space(10.0);
-                    if let Some(n) = items {
-                        ui.label(RichText::new(format!("{n} items")).color(pal().dim));
-                    }
-                });
+            State::Ready(Content::Dir { entries }) => {
+                let entries: Vec<_> = entries.iter().filter(|e| self.show_hidden || !e.hidden).collect();
+                if entries.is_empty() { ui.label(RichText::new("Empty folder").color(pal().faint)); }
+                ScrollArea::vertical().id_salt(("inspector", &e.path)).auto_shrink([false; 2])
+                    .show_rows(ui, ROW_H, entries.len(), |ui, range| {
+                        for i in range {
+                            let entry = entries[i];
+                            let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
+                            if resp.hovered() { ui.painter().rect_filled(rect, 4.0, pal().hover); }
+                            paint_cell(ui.painter(), rect, entry, false, &crate::search::Query::new(""));
+                            if resp.clicked() { inspect = Some(entry.clone()); }
+                            resp.on_hover_text(format!("Inspect {}", entry.path.display()));
+                        }
+                    });
             }
             State::Ready(Content::Binary { .. }) => {
                 ui.add_space(40.0);
@@ -1402,6 +1429,11 @@ impl App {
                 ui.vertical_centered(|ui| ui.label(RichText::new(err).color(pal().faint)));
             }
         });
+        if let Some(entry) = inspect {
+            self.inspector.push(entry);
+            self.sync_inspector();
+        }
+        if let Some(path) = open_folder { self.navigate(path, true); }
     }
 
     // ------------------------------------------------------------ overlays

@@ -121,6 +121,8 @@ pub struct App {
     sizes: HashMap<PathBuf, u64>,
     sizing: HashSet<PathBuf>,
     preview: Preview,
+    /// Inspector navigation is independent of the main folder and its selection.
+    inspector: Vec<Entry>,
     thumbs: Thumbs,
     watcher: Watcher,
     /// Follows `omarchy theme set`; kept alive for its notifications.
@@ -218,6 +220,7 @@ impl App {
         let (dev_tx, dev_rx) = channel();
         let mut app = Self {
             preview: Preview::new(ctx.clone()),
+            inspector: Vec::new(),
             thumbs: Thumbs::new(ctx.clone()),
             watcher: Watcher::new(ctx.clone()),
             theme_watch: theme::watch(ctx.clone()),
@@ -764,7 +767,7 @@ impl App {
                 self.sizes.remove(a);
             }
             self.thumbs.invalidate(&p);
-            if self.preview.path.as_deref() == Some(&p) {
+            if self.preview.path.as_deref().is_some_and(|path| path == p || p.parent() == Some(path)) {
                 self.preview.invalidate();
             }
             for tab in self.tabs_mut() {
@@ -815,6 +818,9 @@ impl App {
             .flat_map(|p| p.tabs.iter())
             .filter(|t| t.search.is_none())
             .map(|t| t.path.clone())
+            .chain(self.inspector.last().filter(|_| self.show_preview).and_then(|e| {
+                if e.is_dir { Some(e.path.clone()) } else { e.path.parent().map(Path::to_path_buf) }
+            }))
             .collect();
         self.watcher.sync(wanted);
 
