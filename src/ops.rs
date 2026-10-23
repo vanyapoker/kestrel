@@ -28,6 +28,8 @@ pub enum JobKind {
     Extract,
     /// Zip `srcs` into `dest`, named `name`.
     Compress,
+    /// Save image bytes received from another application.
+    SaveImage,
 }
 
 /// Archive format for `Compress`.
@@ -122,6 +124,7 @@ pub struct Job {
     pub format: Format,
     pub level: Level,
     pub extract_to: ExtractTo,
+    pub image: Option<(String, Vec<u8>)>,
 }
 
 impl Job {
@@ -136,6 +139,7 @@ impl Job {
             format: Format::Zip,
             level: Level::Normal,
             extract_to: ExtractTo::Here,
+            image: None,
         }
     }
 
@@ -237,7 +241,7 @@ impl Ops {
     }
 
     pub fn submit(&self, job: Job) {
-        if job.srcs.is_empty() {
+        if job.srcs.is_empty() && job.image.is_none() {
             return;
         }
         self.queued.fetch_add(1, Ordering::Relaxed);
@@ -299,6 +303,7 @@ impl Worker {
             JobKind::Untrash => format!("Restoring {what}"),
             JobKind::Extract => format!("Extracting {what}"),
             JobKind::Compress => format!("Compressing {what}"),
+            JobKind::SaveImage => "Saving dropped image".into(),
         };
         *self.progress.lock().unwrap() = Some(Progress { title, ..Default::default() });
         self.ctx.request_repaint();
@@ -328,6 +333,18 @@ impl Worker {
         }
 
         match job.kind {
+            JobKind::SaveImage => {
+                if let (Some(dest), Some((name, bytes))) = (job.dest.as_deref(), job.image) {
+                    match self.save_image(dest, &name, &bytes) {
+                        Ok(path) => {
+                            done.created.push(path);
+                            done.undo = Some(Undo::TrashCreated(done.created.clone()));
+                        }
+                        Err(e) => done.errors.push(format!("Could not save dropped image: {e}")),
+                    }
+                }
+                done.summary = "Saved dropped image".into();
+            }
             JobKind::Rename => {
                 if self.cancelled() { done.cancelled = true; }
                 else {
@@ -410,6 +427,37 @@ impl Worker {
         }
         done.cancelled = self.cancelled();
         done
+    }
+
+    /// Saves a browser's encoded image without overwriting existing files.
+    fn save_image(&mut self, dest: &Path, name: &str, bytes: &[u8]) -> io::Result<PathBuf> {
+        // Validate the payload before creating a file. Keep the source's encoded bytes.
+        image::load_from_memory(bytes).map_err(io::Error::other)?;
+        let (path, mut file) = loop {
+            let path = unique_dest(dest, name);
+            match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => break (path, file),
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e),
+            }
+        };
+        self.update(|p| p.bytes_total = bytes.len() as u64);
+        let result = (|| {
+            for chunk in bytes.chunks(64 * 1024) {
+                if self.cancelled() {
+                    return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+                }
+                file.write_all(chunk)?;
+                self.update(|p| p.bytes_done += chunk.len() as u64);
+            }
+            file.flush()
+        })();
+        if let Err(e) = result {
+            drop(file);
+            let _ = fs::remove_file(&path);
+            return Err(e);
+        }
+        Ok(path)
     }
 
     /// Copies or moves `srcs` into `dest`. Returns (source, new path) for each item moved.
@@ -866,6 +914,39 @@ mod tests {
         let ops = Ops::new(egui::Context::default());
         ops.submit(job);
         ops.done_rx.recv_timeout(Duration::from_secs(10)).unwrap()
+    }
+
+    #[test]
+    fn dropped_image_preserves_bytes_handles_collisions_and_supports_undo() {
+        let dir = tmpdir("dropped-image");
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(2, 2).write_to(&mut encoded, image::ImageFormat::Png).unwrap();
+        let bytes = encoded.into_inner();
+        fs::write(dir.join("image.png"), b"existing image").unwrap();
+        let mut job = Job::new(JobKind::SaveImage, Vec::new(), Some(dir.clone()));
+        job.image = Some(("image.png".into(), bytes.clone()));
+        let done = run(job);
+        let saved = dir.join("image (2).png");
+        assert!(done.errors.is_empty(), "{:?}", done.errors);
+        assert_eq!(fs::read(dir.join("image.png")).unwrap(), b"existing image");
+        assert_eq!(fs::read(&saved).unwrap(), bytes);
+        assert_eq!(done.created, vec![saved.clone()]);
+        assert_eq!(done.dirs, vec![dir.clone()]);
+        assert_eq!(done.undo, Some(Undo::TrashCreated(vec![saved])));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn invalid_dropped_image_reports_error_without_creating_file() {
+        let dir = tmpdir("invalid-dropped-image");
+        let mut job = Job::new(JobKind::SaveImage, Vec::new(), Some(dir.clone()));
+        job.image = Some(("image.png".into(), b"not an image".to_vec()));
+        let done = run(job);
+        assert_eq!(done.errors.len(), 1);
+        assert!(done.created.is_empty());
+        assert!(done.undo.is_none());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

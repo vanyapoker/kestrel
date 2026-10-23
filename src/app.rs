@@ -922,7 +922,7 @@ impl App {
         } else if let Some(first) = done.errors.first() {
             let more = if done.errors.len() > 1 { format!(" (+{} more errors)", done.errors.len() - 1) } else { String::new() };
             self.toast(format!("{first}{more}"), true);
-        } else if matches!(done.kind, JobKind::Copy | JobKind::Move | JobKind::Rename | JobKind::Trash | JobKind::Delete | JobKind::Extract | JobKind::Compress) {
+        } else if matches!(done.kind, JobKind::Copy | JobKind::Move | JobKind::Rename | JobKind::Trash | JobKind::Delete | JobKind::Extract | JobKind::Compress | JobKind::SaveImage) {
             self.toast(done.summary, false);
         }
     }
@@ -1802,6 +1802,19 @@ impl App {
             match ev {
                 crate::wl_dnd::DndEvent::Hover { pos } => self.ext_hover = Some(pos),
                 crate::wl_dnd::DndEvent::Leave => self.ext_hover = None,
+                crate::wl_dnd::DndEvent::Error(error) => {
+                    self.ext_hover = None;
+                    self.toast(error, true);
+                }
+                crate::wl_dnd::DndEvent::Image { name, bytes, pos } => {
+                    self.ext_hover = None;
+                    if let Some((dest, pane)) = self.drop_destination(pos) {
+                        self.active_pane = pane;
+                        let mut job = Job::new(JobKind::SaveImage, Vec::new(), Some(dest));
+                        job.image = Some((name, bytes));
+                        self.ops.submit(job);
+                    }
+                }
                 crate::wl_dnd::DndEvent::Drop { paths, pos, own } => {
                     self.ext_hover = None;
                     if let Some((dest, pane)) = self.drop_destination(pos) {

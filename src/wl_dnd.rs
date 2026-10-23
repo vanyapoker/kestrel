@@ -32,6 +32,24 @@ use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum, event_crea
 
 const URI_LIST: &str = "text/uri-list";
 
+// Prefer image bytes to browser URLs: URLs can refer to remote or blob resources,
+// while Firefox can supply the actual pixels without a separate download.
+fn drop_mime(mimes: &[String]) -> Option<&'static str> {
+    ["image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif", URI_LIST]
+        .into_iter()
+        .find(|mime| mimes.iter().any(|m| m == mime))
+}
+
+fn image_name(mime: &str) -> Option<&'static str> {
+    match mime {
+        "image/png" => Some("image.png"),
+        "image/jpeg" | "image/jpg" => Some("image.jpg"),
+        "image/webp" => Some("image.webp"),
+        "image/gif" => Some("image.gif"),
+        _ => None,
+    }
+}
+
 /// `KESTREL_DEBUG=1` traces the drag-and-drop protocol on stderr.
 macro_rules! trace {
     ($($arg:tt)*) => {
@@ -56,6 +74,8 @@ pub enum DndEvent {
     Hover { pos: Pos2 },
     Leave,
     Drop { paths: Vec<PathBuf>, pos: Pos2, own: bool },
+    Image { name: String, bytes: Vec<u8>, pos: Pos2 },
+    Error(String),
 }
 
 #[derive(Default)]
@@ -550,7 +570,7 @@ struct State {
     shared: Arc<Mutex<Shared>>,
     tx: Sender<DndEvent>,
     ctx: egui::Context,
-    offer: Option<WlDataOffer>,
+    offer: Option<(WlDataOffer, &'static str)>,
     pos: Pos2,
 }
 
@@ -652,23 +672,26 @@ impl Dispatch<WlDataDevice, ()> for State {
         match event {
             wl_data_device::Event::Enter { serial, surface, x, y, id } => {
                 trace!("device enter ours={} offer={}", surface.id() == state.our_surface, id.is_some());
-                if let Some(old) = state.offer.take() {
+                if let Some((old, _)) = state.offer.take() {
                     old.destroy();
                 }
                 if surface.id() != state.our_surface {
                     return;
                 }
                 let Some(offer) = id else { return };
-                let has_uris = offer.data::<OfferData>().is_some_and(|d| d.mimes.lock().unwrap().iter().any(|m| m == URI_LIST));
-                if has_uris {
-                    offer.accept(serial, Some(URI_LIST.into()));
+                let mimes = offer.data::<OfferData>().map(|d| d.mimes.lock().unwrap().clone()).unwrap_or_default();
+                let mime = drop_mime(&mimes);
+                trace!("drop formats {mimes:?}, accepting {mime:?}");
+                if let Some(mime) = mime {
+                    offer.accept(serial, Some(mime.into()));
                     offer.set_actions(DndAction::Copy, DndAction::Copy);
                     state.pos = Pos2::new(x as f32, y as f32);
                     state.emit(DndEvent::Hover { pos: state.pos });
+                    state.offer = Some((offer, mime));
                 } else {
                     offer.accept(serial, None);
+                    offer.destroy();
                 }
-                state.offer = Some(offer);
             }
             wl_data_device::Event::Motion { x, y, .. } => {
                 if state.offer.is_some() {
@@ -677,7 +700,7 @@ impl Dispatch<WlDataDevice, ()> for State {
                 }
             }
             wl_data_device::Event::Leave => {
-                if let Some(offer) = state.offer.take() {
+                if let Some((offer, _)) = state.offer.take() {
                     offer.destroy();
                 }
                 state.emit(DndEvent::Leave);
@@ -690,28 +713,41 @@ impl Dispatch<WlDataDevice, ()> for State {
             }
             wl_data_device::Event::Drop => {
                 trace!("device drop, offer={}", state.offer.is_some());
-                let Some(offer) = state.offer.take() else { return };
+                let Some((offer, mime)) = state.offer.take() else { return };
+                state.emit(DndEvent::Leave);
                 let mut fds = [0; 2];
                 if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
                     offer.destroy();
                     return;
                 }
                 let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
-                offer.receive(URI_LIST.into(), write.as_fd());
+                offer.receive(mime.into(), write.as_fd());
                 drop(write); // libwayland dup'd it when marshalling
                 let _ = conn.flush();
                 let (tx, ctx, conn, pos) = (state.tx.clone(), state.ctx.clone(), conn.clone(), state.pos);
                 let own = state.shared.lock().unwrap().dragging_out;
                 std::thread::spawn(move || {
-                    let mut text = String::new();
-                    let _ = std::fs::File::from(read).read_to_string(&mut text);
+                    let mut bytes = Vec::new();
+                    let result = std::fs::File::from(read).read_to_end(&mut bytes);
                     offer.finish();
                     offer.destroy();
                     let _ = conn.flush();
-                    let paths = parse_uri_list(&text);
-                    if !paths.is_empty() {
-                        let _ = tx.send(DndEvent::Drop { paths, pos, own });
-                    }
+                    let event = match result {
+                        Err(e) => DndEvent::Error(format!("Could not receive dropped image or files: {e}")),
+                        Ok(_) if bytes.is_empty() => DndEvent::Error("The source sent no image or files".into()),
+                        Ok(_) => match image_name(mime) {
+                            Some(name) => DndEvent::Image { name: name.into(), bytes, pos },
+                            None => {
+                                let paths = parse_uri_list(&String::from_utf8_lossy(&bytes));
+                                if paths.is_empty() {
+                                    DndEvent::Error("The drop contains no local files or image data".into())
+                                } else {
+                                    DndEvent::Drop { paths, pos, own }
+                                }
+                            }
+                        },
+                    };
+                    let _ = tx.send(event);
                     ctx.request_repaint();
                 });
             }
@@ -735,6 +771,17 @@ impl Dispatch<WlDataOffer, OfferData> for State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_images_prefer_binary_data_and_file_drags_keep_uri_lists() {
+        let firefox = [URI_LIST, "text/x-moz-url", "text/html", "image/jpeg", "image/png"]
+            .map(String::from);
+        assert_eq!(drop_mime(&firefox), Some("image/png"));
+        assert_eq!(image_name(drop_mime(&firefox).unwrap()), Some("image.png"));
+        assert_eq!(drop_mime(&[URI_LIST.into(), "text/plain".into()]), Some(URI_LIST));
+        assert_eq!(drop_mime(&["image/jpeg".into()]), Some("image/jpeg"));
+        assert_eq!(drop_mime(&["text/html".into(), "text/plain".into()]), None);
+    }
 
     #[test]
     fn text_output_uses_wayland_and_keeps_backend_fallback() {
