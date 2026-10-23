@@ -50,6 +50,47 @@ fn image_name(mime: &str) -> Option<&'static str> {
     }
 }
 
+const IMAGE_NAME_MIMES: [&str; 4] = [
+    "application/x-moz-file-promise-dest-filename",
+    "_NETSCAPE_URL",
+    "text/x-moz-url",
+    URI_LIST,
+];
+
+fn source_image_name(mime: &str, bytes: &[u8], image_mime: &str) -> Option<String> {
+    // Mozilla's native text/x-moz-url can be UTF-16; _NETSCAPE_URL is UTF-8.
+    let text = if bytes.starts_with(&[0xff, 0xfe]) || bytes.get(1) == Some(&0) {
+        let bytes = bytes.strip_prefix(&[0xff, 0xfe]).unwrap_or(bytes);
+        String::from_utf16(&bytes.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect::<Vec<_>>()).ok()?
+    } else if bytes.starts_with(&[0xfe, 0xff]) || bytes.first() == Some(&0) {
+        let bytes = bytes.strip_prefix(&[0xfe, 0xff]).unwrap_or(bytes);
+        String::from_utf16(&bytes.chunks_exact(2).map(|b| u16::from_be_bytes([b[0], b[1]])).collect::<Vec<_>>()).ok()?
+    } else {
+        std::str::from_utf8(bytes).ok()?.to_owned()
+    };
+    let name = if mime == IMAGE_NAME_MIMES[0] {
+        text.trim_end_matches('\0').trim().to_owned()
+    } else {
+        let url = text.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with('#'))?;
+        let rest = ["https://", "http://", "file://"].into_iter().find_map(|prefix| url.strip_prefix(prefix))?;
+        let path = rest.find('/').map(|i| &rest[i..])?;
+        let path = path.split(['?', '#']).next()?;
+        crate::fsops::percent_decode(path.rsplit('/').next()?)
+    };
+    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\']) || name.chars().any(char::is_control) {
+        return None;
+    }
+    // The browser may encode a JPEG source as PNG during transfer.
+    let ext = Path::new(image_name(image_mime)?).extension()?.to_str()?;
+    let source_ext = Path::new(&name).extension().and_then(|e| e.to_str()).unwrap_or("");
+    let name = if source_ext.eq_ignore_ascii_case(ext) || (ext == "jpg" && source_ext.eq_ignore_ascii_case("jpeg")) {
+        name
+    } else {
+        Path::new(&name).with_extension(ext).to_str()?.to_owned()
+    };
+    (name.len() <= 255).then_some(name)
+}
+
 /// `KESTREL_DEBUG=1` traces the drag-and-drop protocol on stderr.
 macro_rules! trace {
     ($($arg:tt)*) => {
@@ -444,6 +485,10 @@ fn source_data(paths: &[PathBuf], cut: bool, clipboard: Option<u64>) -> SourceDa
 
 /// Asks the offer's owner for `mime` and reads it, giving up after a second.
 fn receive(conn: &Connection, offer: &WlDataOffer, mime: &str) -> Option<String> {
+    receive_bytes(conn, offer, mime).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn receive_bytes(conn: &Connection, offer: &WlDataOffer, mime: &str) -> Option<Vec<u8>> {
     let mut fds = [0; 2];
     if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
         return None;
@@ -468,7 +513,7 @@ fn receive(conn: &Connection, offer: &WlDataOffer, mime: &str) -> Option<String>
             Err(_) => return None,
         }
     }
-    Some(String::from_utf8_lossy(&out).into_owned())
+    Some(out)
 }
 
 /// Copies an image into a shared-memory buffer (ARGB8888, premultiplied).
@@ -729,6 +774,16 @@ impl Dispatch<WlDataDevice, ()> for State {
                 std::thread::spawn(move || {
                     let mut bytes = Vec::new();
                     let result = std::fs::File::from(read).read_to_end(&mut bytes);
+                    // Read optional naming metadata while the offer is still alive.
+                    let mimes = offer.data::<OfferData>().map(|d| d.mimes.lock().unwrap().clone()).unwrap_or_default();
+                    let source_name = if result.is_ok() && !bytes.is_empty() && image_name(mime).is_some() {
+                        IMAGE_NAME_MIMES.into_iter().filter(|m| mimes.iter().any(|offered| offered == m)).find_map(|name_mime| {
+                            let metadata = receive_bytes(&conn, &offer, name_mime)?;
+                            source_image_name(name_mime, &metadata, mime)
+                        })
+                    } else {
+                        None
+                    };
                     offer.finish();
                     offer.destroy();
                     let _ = conn.flush();
@@ -736,7 +791,7 @@ impl Dispatch<WlDataDevice, ()> for State {
                         Err(e) => DndEvent::Error(format!("Could not receive dropped image or files: {e}")),
                         Ok(_) if bytes.is_empty() => DndEvent::Error("The source sent no image or files".into()),
                         Ok(_) => match image_name(mime) {
-                            Some(name) => DndEvent::Image { name: name.into(), bytes, pos },
+                            Some(name) => DndEvent::Image { name: source_name.unwrap_or_else(|| name.into()), bytes, pos },
                             None => {
                                 let paths = parse_uri_list(&String::from_utf8_lossy(&bytes));
                                 if paths.is_empty() {
@@ -771,6 +826,30 @@ impl Dispatch<WlDataOffer, OfferData> for State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_names_come_from_source_urls_and_match_transferred_format() {
+        assert_eq!(source_image_name("_NETSCAPE_URL", b"https://example.com/photos/Red%20fox.jpg?size=large#image\nPage title", "image/png"), Some("Red fox.png".into()));
+        assert_eq!(source_image_name(URI_LIST, "# comment\r\nfile:///tmp/Лиса.png\r\n".as_bytes(), "image/png"), Some("Лиса.png".into()));
+        assert_eq!(source_image_name(IMAGE_NAME_MIMES[0], b"original.jpeg", "image/jpeg"), Some("original.jpeg".into()));
+        assert_eq!(source_image_name("_NETSCAPE_URL", b"https://example.com/render?filename=fox.jpg", "image/png"), Some("render.png".into()));
+        let utf16: Vec<u8> = "https://example.com/Лиса.jpg\nImage title".encode_utf16().flat_map(u16::to_le_bytes).collect();
+        assert_eq!(source_image_name("text/x-moz-url", &utf16, "image/png"), Some("Лиса.png".into()));
+    }
+
+    #[test]
+    fn unsafe_or_missing_source_names_use_the_default() {
+        for url in [
+            "https://example.com/", "https://example.com", "blob:https://example.com/uuid",
+            "data:image/png;base64,abc", "https://example.com/%2e%2e", "https://example.com/a%2Fb.png",
+            "https://example.com/a%5Cb.png", "https://example.com/a%00b.png", "https://example.com/a%0Ab.png",
+        ] {
+            assert_eq!(source_image_name(URI_LIST, url.as_bytes(), "image/png"), None, "{url}");
+        }
+        for name in ["../outside.png", "..", "", "a/b.png"] {
+            assert_eq!(source_image_name(IMAGE_NAME_MIMES[0], name.as_bytes(), "image/png"), None);
+        }
+    }
 
     #[test]
     fn browser_images_prefer_binary_data_and_file_drags_keep_uri_lists() {
