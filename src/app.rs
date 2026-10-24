@@ -93,6 +93,31 @@ struct TabDrag {
     id: u64,
 }
 
+/// How a drop transfers files. Ctrl forces a copy, Shift forces a move.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DropMode {
+    /// Move within a filesystem, copy across.
+    Auto,
+    Copy,
+    Move,
+}
+
+impl DropMode {
+    pub(super) fn held(ctrl: bool, shift: bool) -> Self {
+        if ctrl {
+            Self::Copy
+        } else if shift {
+            Self::Move
+        } else {
+            Self::Auto
+        }
+    }
+
+    fn from_input(ui: &egui::Ui) -> Self {
+        ui.input(|i| Self::held(i.modifiers.ctrl, i.modifiers.shift))
+    }
+}
+
 /// Whether navigating records the old folder for Back.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum History {
@@ -140,7 +165,7 @@ enum Action {
     Drop {
         paths: Vec<PathBuf>,
         dest: PathBuf,
-        copy: bool,
+        mode: DropMode,
     },
     Reveal(PathBuf),
     StopSearch,
@@ -1267,7 +1292,7 @@ impl App {
         Some(self.tab().path.clone())
     }
 
-    fn drop_paths(&mut self, paths: Vec<PathBuf>, dest: PathBuf, force_copy: bool) {
+    fn drop_paths(&mut self, paths: Vec<PathBuf>, dest: PathBuf, mode: DropMode) {
         let paths: Vec<PathBuf> = paths.into_iter().filter(|p| *p != dest).collect();
         if paths.is_empty() || !dest.is_dir() {
             return;
@@ -1279,10 +1304,11 @@ impl App {
                 .map(|m| Some(m.dev()) == dest_dev)
                 .unwrap_or(false)
         });
-        let kind = if force_copy || !same_fs {
-            JobKind::Copy
-        } else {
-            JobKind::Move
+        let kind = match mode {
+            DropMode::Copy => JobKind::Copy,
+            DropMode::Move => JobKind::Move,
+            DropMode::Auto if same_fs => JobKind::Move,
+            DropMode::Auto => JobKind::Copy,
         };
         if kind == JobKind::Move && paths.iter().all(|p| p.parent() == Some(dest.as_path())) {
             return;
@@ -1749,7 +1775,7 @@ impl App {
                 tab.scroll_to_cursor = true;
             }
             Action::Cmd(c) => self.run_cmd(c),
-            Action::Drop { paths, dest, copy } => self.drop_paths(paths, dest, copy),
+            Action::Drop { paths, dest, mode } => self.drop_paths(paths, dest, mode),
             Action::Reveal(p) => {
                 if let Some(parent) = p.parent().map(Path::to_path_buf) {
                     self.tab_mut().select_after_load = Some(p);
@@ -2225,7 +2251,11 @@ impl App {
                     if let Some((dest, pane)) = self.drop_destination(pos) {
                         self.active_pane = pane;
                         // Our own drag coming back behaves like an in-app drop; others always copy.
-                        self.drop_paths(paths, dest, !own);
+                        self.drop_paths(
+                            paths,
+                            dest,
+                            if own { DropMode::Auto } else { DropMode::Copy },
+                        );
                     }
                 }
             }

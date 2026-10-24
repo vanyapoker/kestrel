@@ -1976,6 +1976,34 @@ fn non_primary_release_does_not_drop_files() {
 }
 
 #[test]
+fn drop_onto_a_file_row_lands_in_the_viewed_folder() {
+    let dir = sandbox("drop-on-file-row");
+    fs::write(dir.join("dest/held.txt"), "held").unwrap();
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| a.row_rects.contains_key(&dir.join("b.txt")));
+    let from = d.row(&dir.join("a.txt")).center();
+    let file_row = d.row(&dir.join("b.txt")).center();
+    d.move_to(from);
+    d.button(true);
+    d.move_to(from + vec2(16.0, 0.0));
+    d.move_to(file_row);
+    egui::DragAndDrop::set_payload(&d.ctx, DragPaths(vec![dir.join("dest/held.txt")]));
+    d.button(false);
+    d.frame(Vec::new());
+    d.until("drop", |_| dir.join("held.txt").exists());
+    assert!(!dir.join("dest/held.txt").exists(), "same filesystem moves");
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn drop_mode_follows_modifiers() {
+    assert_eq!(DropMode::held(false, false), DropMode::Auto);
+    assert_eq!(DropMode::held(true, false), DropMode::Copy);
+    assert_eq!(DropMode::held(false, true), DropMode::Move);
+    assert_eq!(DropMode::held(true, true), DropMode::Copy);
+}
+
+#[test]
 fn deleted_folder_falls_back_to_parent() {
     let dir = sandbox("gone");
     let inner = dir.join("dest");

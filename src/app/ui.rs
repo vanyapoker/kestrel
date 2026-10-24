@@ -1,5 +1,5 @@
 use super::icons::*;
-use super::{Action, App, DragPaths, TabDrag};
+use super::{Action, App, DragPaths, DropMode, TabDrag};
 use crate::complete;
 use crate::fsops::{self, Entry};
 use crate::palette::Cmd;
@@ -629,11 +629,10 @@ impl App {
                                 }
                             }
                             if let Some(paths) = take_file_drop(&resp) {
-                                let copy = ui.input(|i| i.modifiers.ctrl);
                                 actions.push(Action::Drop {
                                     paths: paths.0.clone(),
                                     dest: tab.path.clone(),
-                                    copy,
+                                    mode: DropMode::from_input(ui),
                                 });
                             }
                             if close.clicked() || resp.middle_clicked() {
@@ -948,8 +947,7 @@ impl App {
                     let text = RichText::new(label).color(if n == last_index { pal().text } else { pal().dim });
                     let resp = ui.add(egui::Button::new(text).frame_when_inactive(false));
                     if let Some(paths) = take_file_drop(&resp) {
-                        let copy = ui.input(|i| i.modifiers.ctrl);
-                        actions.push(Action::Drop { paths: paths.0.clone(), dest: part.to_path_buf(), copy });
+                        actions.push(Action::Drop { paths: paths.0.clone(), dest: part.to_path_buf(), mode: DropMode::from_input(ui) });
                     }
                     if resp.clicked() {
                         actions.push(Action::FocusPane(p));
@@ -1412,11 +1410,10 @@ fn background_drop(ui: &mut Ui, tab: &Tab, rect: Rect, actions: &mut Vec<Action>
     if ctx.input(|i| i.pointer.primary_released())
         && let Some(paths) = DragAndDrop::take_payload::<DragPaths>(ctx)
     {
-        let copy = ctx.input(|i| i.modifiers.ctrl);
         actions.push(Action::Drop {
             paths: paths.0.clone(),
             dest: tab.path.clone(),
-            copy,
+            mode: DropMode::from_input(ui),
         });
     }
 }
@@ -1453,14 +1450,16 @@ fn row_interactions(
         };
         DragAndDrop::set_payload(ui.ctx(), DragPaths(paths));
     }
-    if let Some(paths) = take_file_drop(resp)
-        && e.is_dir
+    // Check the row first: taking the payload on a file row would swallow the drop that
+    // `background_drop` is meant to deliver to the folder being viewed.
+    if e.is_dir
+        && let Some(paths) = take_file_drop(resp)
         && !paths.0.contains(&e.path)
     {
         actions.push(Action::Drop {
             paths: paths.0.clone(),
             dest: e.path.clone(),
-            copy: ctrl,
+            mode: DropMode::held(ctrl, shift),
         });
     }
     if resp.double_clicked() {

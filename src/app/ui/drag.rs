@@ -1,5 +1,5 @@
 use crate::app::icons::*;
-use crate::app::{Action, App, DragPaths};
+use crate::app::{Action, App, DragPaths, DropMode};
 use crate::theme::*;
 use crate::thumbs;
 use crate::util;
@@ -73,7 +73,7 @@ impl App {
             actions.push(Action::Drop {
                 paths: dropped,
                 dest,
-                copy: true,
+                mode: DropMode::Copy,
             });
         }
     }
@@ -137,12 +137,16 @@ impl App {
 
         let n = payload.0.len();
         let target = ctx.data(|d| d.get_temp::<PathBuf>(drop_target_id()));
-        let force_copy = ctx.input(|i| i.modifiers.ctrl);
+        let mode = ctx.input(|i| DropMode::held(i.modifiers.ctrl, i.modifiers.shift));
         let bookmarking = ctx
             .data(|d| d.get_temp::<bool>(bookmark_hover_id()))
             .unwrap_or(false);
         let hint = target.as_ref().map(|t| {
-            let copy = force_copy || !same_filesystem(first, t);
+            let copy = match mode {
+                DropMode::Copy => true,
+                DropMode::Move => false,
+                DropMode::Auto => !same_filesystem(first, t),
+            };
             (copy, ops_name(t))
         });
         let is_dir = first.is_dir();

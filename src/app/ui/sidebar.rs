@@ -1,5 +1,5 @@
 use crate::app::icons::*;
-use crate::app::{Action, App};
+use crate::app::{Action, App, DropMode};
 use crate::devices::DevOp;
 use crate::fsops;
 use crate::theme::*;
@@ -199,11 +199,10 @@ impl App {
                             }
                         }
                         if !unmounted && let Some(paths) = take_file_drop(&resp) {
-                            let copy = ui.input(|i| i.modifiers.ctrl);
                             actions.push(Action::Drop {
                                 paths: paths.0.clone(),
                                 dest: path.clone(),
-                                copy,
+                                mode: DropMode::from_input(ui),
                             });
                         }
                         let hover = if unmounted {
