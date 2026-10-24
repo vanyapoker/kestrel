@@ -408,7 +408,7 @@ fn miller_columns_restore_modes_and_navigate_ancestors_and_empty_folders() {
         d.frame(vec![press(Key::ArrowLeft, Modifiers::NONE)]);
     }
     assert_eq!(d.app.tab().path, dir.parent().unwrap().parent().unwrap());
-    d.app.navigate(PathBuf::from("/"), true);
+    d.app.navigate(PathBuf::from("/"), History::Push);
     d.until("root", |a| !a.tab().loading);
     d.frame(vec![press(Key::ArrowLeft, Modifiers::NONE)]);
     assert_eq!(d.app.tab().path, PathBuf::from("/"));
@@ -602,7 +602,7 @@ fn miller_columns_scroll_active_columns_into_view_and_preserve_vertical_offsets(
     assert!(row.width() > 100.0);
     assert!(d.app.pane_rects[0].contains(row.center()));
     // A deep branch requires horizontal scrolling; its active row stays visible.
-    d.app.navigate(dir.join("dest/nested/deep"), true);
+    d.app.navigate(dir.join("dest/nested/deep"), History::Push);
     let mut current = dir.join("dest/nested/deep");
     for _ in 0..6 {
         current = current.join("child");
@@ -690,7 +690,7 @@ fn tab_drag_crosses_panes_and_collapses_an_empty_source_pane() {
     d.app.show_preview = false;
     d.app.show_sidebar = false;
     d.app.toggle_split();
-    d.app.navigate(dir.join("two"), true);
+    d.app.navigate(dir.join("two"), History::Push);
     d.app.active_pane = 0;
     d.app.open_tab(dir.join("one"));
     d.frame(Vec::new());
@@ -1352,7 +1352,7 @@ fn goto_switcher_jumps_to_bookmarks_recents_and_cancels() {
         modifiers: Modifiers::NONE,
     }]);
     assert_eq!(d.app.tab().path, dir.join("dest"));
-    d.app.navigate(dir.clone(), true);
+    d.app.navigate(dir.clone(), History::Push);
     d.app.places.bookmarks.clear();
     assert!(
         d.app
@@ -1382,8 +1382,8 @@ fn goto_shortcut_works_in_search_and_recents_survive_session_restore() {
     let dir = sandbox("goto-session");
     let mut d = Driver::new(dir.clone());
     d.until("listing", |a| !a.tab().loading);
-    d.app.navigate(dir.join("dest"), true);
-    d.app.navigate(dir.clone(), true);
+    d.app.navigate(dir.join("dest"), History::Push);
+    d.app.navigate(dir.clone(), History::Push);
     let session = crate::session::parse(&d.app.session().to_text());
     let mut restored = Driver::new(dir.clone());
     restored.app.restore(&session, true);
@@ -1892,7 +1892,7 @@ fn side_buttons_navigate_without_dragging_folders() {
         let dir = sandbox(&format!("mouse-history-{button:?}"));
         fs::create_dir(dir.join("dest/child")).unwrap();
         let mut d = Driver::new(dir.clone());
-        d.app.navigate(dir.join("dest"), true);
+        d.app.navigate(dir.join("dest"), History::Push);
         if button == PointerButton::Extra2 {
             d.app.go_back();
         }

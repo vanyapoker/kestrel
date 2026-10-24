@@ -12,7 +12,7 @@ use crate::ops::{self, Job, JobKind, Ops};
 use crate::palette::{Cmd, Palette};
 use crate::preview::Preview;
 use crate::search::{self, SearchMsg};
-use crate::tab::{Search, SortKey, Tab, ViewMode};
+use crate::tab::{Search, Select, SortKey, Tab, ViewMode};
 use crate::theme;
 use crate::thumbs::Thumbs;
 use crate::watch::Watcher;
@@ -91,6 +91,13 @@ struct DragPaths(Vec<PathBuf>);
 
 struct TabDrag {
     id: u64,
+}
+
+/// Whether navigating records the old folder for Back.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum History {
+    Push,
+    Replace,
 }
 
 /// What the "new" dialog creates.
@@ -629,7 +636,7 @@ impl App {
         start_listing(&mut pane.tabs[pane.active], &self.list_tx, &self.ctx, soft);
     }
 
-    fn navigate(&mut self, path: PathBuf, push_history: bool) {
+    fn navigate(&mut self, path: PathBuf, history: History) {
         self.remember_dir(path.clone());
         let tab = self.tab_mut();
         if path == tab.path && tab.search.is_none() {
@@ -640,7 +647,7 @@ impl App {
             s.cancel.store(true, Ordering::Relaxed);
         }
         if path != tab.path {
-            if push_history {
+            if history == History::Push {
                 let old = std::mem::replace(&mut tab.path, path);
                 tab.back.push(old);
                 tab.fwd.clear();
@@ -658,7 +665,7 @@ impl App {
         let tab = self.tab_mut();
         if let Some(parent) = tab.path.parent().map(Path::to_path_buf) {
             tab.select_after_load = Some(tab.path.clone());
-            self.navigate(parent, true);
+            self.navigate(parent, History::Push);
         }
     }
 
@@ -668,7 +675,7 @@ impl App {
             let cur = tab.path.clone();
             tab.fwd.push(cur.clone());
             tab.select_after_load = Some(cur);
-            self.navigate(p, false);
+            self.navigate(p, History::Replace);
         }
     }
 
@@ -677,7 +684,7 @@ impl App {
         if let Some(p) = tab.fwd.pop() {
             let cur = tab.path.clone();
             tab.back.push(cur);
-            self.navigate(p, false);
+            self.navigate(p, History::Replace);
         }
     }
 
@@ -1557,7 +1564,7 @@ impl App {
                 self.completer = Default::default(); // pick up folders created since
                 self.path_edit_focus = true;
             }
-            Cmd::GoHome => self.navigate(fsops::home_dir(), true),
+            Cmd::GoHome => self.navigate(fsops::home_dir(), History::Push),
             Cmd::GoUp => self.go_up(),
             Cmd::Back => self.go_back(),
             Cmd::Forward => self.go_forward(),
@@ -1658,7 +1665,7 @@ impl App {
             Action::SetView(mode) => self.set_view(mode),
             Action::MoveTab { id, pane, before } => self.move_tab(id, pane, before),
             Action::ReopenClosed(i) => self.reopen_closed(i),
-            Action::Navigate(p) => self.navigate(p, true),
+            Action::Navigate(p) => self.navigate(p, History::Push),
             Action::OpenEntry(vi) => {
                 let Some(e) = self.tab().entry(vi) else {
                     return;
@@ -1669,7 +1676,7 @@ impl App {
                         self.column_step(1);
                     } else {
                         let p = e.path.clone();
-                        self.navigate(p, true);
+                        self.navigate(p, History::Push);
                     }
                 } else if self.picker.is_some() {
                     // Opening a file in a picker means choosing it.
@@ -1743,7 +1750,7 @@ impl App {
             Action::Reveal(p) => {
                 if let Some(parent) = p.parent().map(Path::to_path_buf) {
                     self.tab_mut().select_after_load = Some(p);
-                    self.navigate(parent, true);
+                    self.navigate(parent, History::Push);
                 }
             }
             Action::StopSearch => self.stop_search(),
@@ -1847,7 +1854,7 @@ impl App {
                     DevOp::Eject => self.toast(format!("{} can be unplugged", r.name)),
                 }
                 if let Some(p) = mounted {
-                    self.navigate(p, true);
+                    self.navigate(p, History::Push);
                 }
                 // Tabs left on the drive go home.
                 if let Some(old) = left.filter(|_| r.op != DevOp::Mount) {
@@ -1858,7 +1865,7 @@ impl App {
                                 let (ap, at) = (self.active_pane, self.panes[pi].active);
                                 self.active_pane = pi;
                                 self.panes[pi].active = ti;
-                                self.navigate(home.clone(), true);
+                                self.navigate(home.clone(), History::Push);
                                 self.active_pane = ap;
                                 self.panes[pi].active = at;
                             }
@@ -1977,17 +1984,17 @@ impl App {
                 (Key::End, isize::MAX / 2),
             ] {
                 if take(i, shift, key) {
-                    tab.move_cursor(delta, true);
+                    tab.move_cursor(delta, Select::Extend);
                 } else if take(i, none, key) {
-                    tab.move_cursor(delta, false);
+                    tab.move_cursor(delta, Select::Only);
                 }
             }
             if grid_cols > 0 {
                 for (key, delta) in [(Key::ArrowRight, 1), (Key::ArrowLeft, -1)] {
                     if take(i, shift, key) {
-                        tab.move_cursor(delta, true);
+                        tab.move_cursor(delta, Select::Extend);
                     } else if take(i, none, key) {
-                        tab.move_cursor(delta, false);
+                        tab.move_cursor(delta, Select::Only);
                     }
                 }
             }
@@ -2144,10 +2151,10 @@ impl App {
         ctx.input_mut(|i| {
             let tab = self.tab_mut();
             if take(i, Modifiers::NONE, Key::ArrowDown) {
-                tab.move_cursor(1, false);
+                tab.move_cursor(1, Select::Only);
             }
             if take(i, Modifiers::NONE, Key::ArrowUp) {
-                tab.move_cursor(-1, false);
+                tab.move_cursor(-1, Select::Only);
             }
             if take(i, Modifiers::NONE, Key::Enter) {
                 open = tab.cursor;

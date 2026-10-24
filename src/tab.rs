@@ -15,6 +15,15 @@ pub enum SortKey {
     Kind,
 }
 
+/// How moving the cursor treats the selection.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Select {
+    /// Select just the item under the cursor.
+    Only,
+    /// Extend the selection from its anchor to the cursor.
+    Extend,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ViewMode {
     /// One row per item with size, date and type columns.
@@ -290,16 +299,15 @@ impl Tab {
             .collect();
     }
 
-    pub fn move_cursor(&mut self, delta: isize, extend: bool) {
+    pub fn move_cursor(&mut self, delta: isize, select: Select) {
         if self.view.is_empty() {
             return;
         }
         let cur = self.cursor.map(|s| s as isize).unwrap_or(-1);
         let next = (cur + delta).clamp(0, self.view.len() as isize - 1) as usize;
-        if extend {
-            self.select_range(next)
-        } else {
-            self.select_only(next)
+        match select {
+            Select::Extend => self.select_range(next),
+            Select::Only => self.select_only(next),
         }
     }
 
@@ -424,7 +432,7 @@ mod tests {
         t.select_only(1);
         t.select_range(3);
         assert_eq!(t.selection_count(), 3); // b..d
-        t.move_cursor(-1, false);
+        t.move_cursor(-1, Select::Only);
         assert_eq!(t.selection_count(), 1);
         t.select_all();
         assert_eq!(t.targets().len(), 4);

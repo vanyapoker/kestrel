@@ -1,5 +1,5 @@
 use super::icons::*;
-use super::{Action, App, Dialog, DragPaths, NewKind, TabDrag};
+use super::{Action, App, Dialog, DragPaths, History, NewKind, TabDrag};
 use crate::complete;
 use crate::devices::DevOp;
 use crate::fsops::{self, Entry};
@@ -2239,7 +2239,7 @@ impl App {
             self.sync_inspector();
         }
         if let Some(path) = open_folder {
-            self.navigate(path, true);
+            self.navigate(path, History::Push);
         }
     }
 
