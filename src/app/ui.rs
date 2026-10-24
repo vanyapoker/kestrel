@@ -1770,43 +1770,16 @@ fn paint_tile(
         Pos2::new(tile.center().x, tile.top() + 8.0 + side / 2.0),
         vec2(tile.width() - 16.0, side),
     );
-    let renderer = if e.is_dir {
-        None
-    } else {
-        thumbs::renderer_for(&e.ext)
-    };
     let mut drew = false;
-    if e.is_dir
-        && side >= PEEK_MIN_SIDE
-        && let Some(items) = thumbs.peek(&e.path)
-    {
-        paint_folder_peek(painter, thumbs, thumb_area.center(), side, &items, alpha);
-        drew = true;
-    }
-    if let Some(r) = renderer
-        && let Some(tex) = thumbs.get(&e.path, r)
-    {
-        let ts = tex.size_vec2();
-        let scale = (thumb_area.width() / ts.x)
-            .min(thumb_area.height() / ts.y)
-            .min(1.0);
-        let rect = Rect::from_center_size(thumb_area.center(), ts * scale);
-        painter.image(tex.id(), rect, UV, Color32::WHITE.gamma_multiply(alpha));
-        drew = true;
-    }
-    if renderer.is_none()
-        && !e.is_dir
-        && !matches!(
-            util::category(&e.ext, false),
-            util::Category::Audio
-                | util::Category::Archive
-                | util::Category::Document
-                | util::Category::Executable
-        )
-        && let Some(job) = thumbs.get_text(&e.path)
-    {
-        paint_text_thumbnail(painter, thumb_area, job, alpha);
-        drew = true;
+    if e.is_dir {
+        if side >= PEEK_MIN_SIDE
+            && let Some(item) = thumbs.peek(&e.path)
+        {
+            paint_folder_peek(painter, thumbs, thumb_area.center(), side, &item, alpha);
+            drew = true;
+        }
+    } else {
+        drew = paint_file_thumb(painter, thumbs, thumb_area, &e.path, &e.ext, alpha);
     }
     if !drew {
         let cat = util::category(&e.ext, e.is_dir);
@@ -1829,45 +1802,69 @@ fn paint_tile(
 /// Folder tiles at least this wide show their first children inside the folder.
 const PEEK_MIN_SIDE: f32 = 64.0;
 
-/// A folder with a 2×2 preview of its first children. Only cheap image kinds get real
-/// thumbnails here; everything else is a type badge so a screen of folders stays light.
+/// A folder with its newest file previewed inside it.
 fn paint_folder_peek(
     painter: &Painter,
     thumbs: &mut Thumbs,
     center: Pos2,
     side: f32,
-    items: &[thumbs::PeekItem],
+    item: &thumbs::PeekItem,
     alpha: f32,
 ) {
     let s = side / 18.0;
     draw_folder(painter, center, s);
-    let cell = 3.5 * s;
-    let gap = s;
-    let origin = center + vec2(0.0, s) - vec2(cell + gap / 2.0, cell + gap / 2.0);
-    for (i, item) in items.iter().enumerate().take(thumbs::PEEK_COUNT) {
-        let (col, row) = ((i % 2) as f32, (i / 2) as f32);
-        let slot = Rect::from_min_size(origin + vec2(col, row) * (cell + gap), vec2(cell, cell));
-        painter.rect_filled(
-            slot,
-            CornerRadius::same((0.6 * s) as u8),
-            Color32::BLACK.gamma_multiply(0.16),
-        );
-        let texture = match thumbs::renderer_for(&item.ext) {
-            Some(r @ (thumbs::Renderer::Raster | thumbs::Renderer::Svg)) if !item.is_dir => {
-                thumbs.get(&item.path, r).map(|t| (t.id(), t.size_vec2()))
-            }
-            _ => None,
-        };
-        if let Some((id, size)) = texture {
-            let scale = (cell / size.x).min(cell / size.y);
-            let rect = Rect::from_center_size(slot.center(), size * scale);
-            painter.image(id, rect, UV, Color32::WHITE.gamma_multiply(alpha));
-        } else {
-            let cat = util::category(&item.ext, item.is_dir);
-            let k = cell / if item.is_dir { 17.0 } else { 16.0 };
-            draw_icon_scaled(painter, slot.center(), cat, k);
-        }
+    let slot = Rect::from_center_size(center + vec2(0.0, s), vec2(15.0, 11.0) * s).shrink(1.5 * s);
+    painter.rect_filled(
+        slot,
+        CornerRadius::same((1.0 * s) as u8),
+        Color32::BLACK.gamma_multiply(0.16),
+    );
+    if !paint_file_thumb(
+        painter,
+        thumbs,
+        slot.shrink(0.5 * s),
+        &item.path,
+        &item.ext,
+        alpha,
+    ) {
+        let cat = util::category(&item.ext, false);
+        draw_icon_scaled(painter, slot.center(), cat, slot.height() / 16.0);
     }
+}
+
+/// Draws a file's image or text thumbnail inside `area`, if it has one and it is ready.
+fn paint_file_thumb(
+    painter: &Painter,
+    thumbs: &mut Thumbs,
+    area: Rect,
+    path: &Path,
+    ext: &str,
+    alpha: f32,
+) -> bool {
+    let renderer = thumbs::renderer_for(ext);
+    if let Some(r) = renderer
+        && let Some(tex) = thumbs.get(path, r)
+    {
+        let ts = tex.size_vec2();
+        let scale = (area.width() / ts.x).min(area.height() / ts.y).min(1.0);
+        let rect = Rect::from_center_size(area.center(), ts * scale);
+        painter.image(tex.id(), rect, UV, Color32::WHITE.gamma_multiply(alpha));
+        return true;
+    }
+    if renderer.is_none()
+        && !matches!(
+            util::category(ext, false),
+            util::Category::Audio
+                | util::Category::Archive
+                | util::Category::Document
+                | util::Category::Executable
+        )
+        && let Some(job) = thumbs.get_text(path)
+    {
+        paint_text_thumbnail(painter, area, job, alpha);
+        return true;
+    }
+    false
 }
 
 /// Decorative document content: tile responses continue to own every interaction.

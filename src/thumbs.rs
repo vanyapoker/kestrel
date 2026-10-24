@@ -274,48 +274,37 @@ fn text_thumbnail(path: &Path) -> Option<egui::text::LayoutJob> {
 
 // ---------------------------------------------------------------- cache
 
-/// One child shown inside a folder tile.
+/// The file shown inside a folder tile.
 pub struct PeekItem {
     pub path: PathBuf,
     /// Lowercased, without the dot.
     pub ext: String,
-    pub is_dir: bool,
 }
 
 /// Children inspected per folder; keeps huge directories cheap.
 const PEEK_SCAN: usize = 256;
-/// Children shown inside a folder tile.
-pub const PEEK_COUNT: usize = 4;
 
-/// The first few visible children of `dir` by name, or `None` if it is empty or unreadable.
-fn peek_dir(dir: &Path) -> Option<Vec<PeekItem>> {
-    let mut found: Vec<(std::ffi::OsString, bool)> = std::fs::read_dir(dir)
+/// The most recently modified visible file directly inside `dir`, or `None` if there is none.
+fn peek_dir(dir: &Path) -> Option<PeekItem> {
+    let (path, _) = std::fs::read_dir(dir)
         .ok()?
         .filter_map(Result::ok)
         .filter(|e| !e.file_name().as_encoded_bytes().starts_with(b"."))
         .take(PEEK_SCAN)
-        // `file_type` comes with the directory entry, so no per-child stat.
-        .map(|e| (e.file_name(), e.file_type().is_ok_and(|t| t.is_dir())))
-        .collect();
-    found.sort_by_cached_key(|(name, _)| name.to_string_lossy().to_lowercase());
-    found.truncate(PEEK_COUNT);
-    let items: Vec<PeekItem> = found
-        .into_iter()
-        .map(|(name, is_dir)| {
-            let path = dir.join(&name);
-            let ext = path
-                .extension()
-                .map(|e| e.to_string_lossy().to_lowercase())
-                .unwrap_or_default();
-            PeekItem { path, ext, is_dir }
-        })
-        .collect();
-    (!items.is_empty()).then_some(items)
+        // Directory entries know their type without a stat, so only files cost one.
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .filter_map(|e| Some((e.path(), e.metadata().ok()?.modified().ok()?)))
+        .max_by_key(|(_, modified)| *modified)?;
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    Some(PeekItem { path, ext })
 }
 
 pub enum Thumb {
     Pending,
-    Peek(Arc<[PeekItem]>),
+    Peek(Arc<PeekItem>),
     Ready(egui::TextureHandle),
     Text(Arc<egui::text::LayoutJob>),
     Failed,
@@ -341,7 +330,7 @@ struct Request {
 }
 
 enum Payload {
-    Peek(Vec<PeekItem>),
+    Peek(PeekItem),
     Image(ColorImage),
     Text(egui::text::LayoutJob),
 }
@@ -461,11 +450,11 @@ impl Thumbs {
         }
     }
 
-    /// The first few children of a folder, once listed in the background.
-    pub fn peek(&mut self, dir: &Path) -> Option<Arc<[PeekItem]>> {
+    /// The newest file in a folder, once found in the background.
+    pub fn peek(&mut self, dir: &Path) -> Option<Arc<PeekItem>> {
         self.request(dir, Kind::Peek);
         match self.cache.get(dir).map(|c| &c.value) {
-            Some(Thumb::Peek(items)) => Some(items.clone()),
+            Some(Thumb::Peek(item)) => Some(item.clone()),
             _ => None,
         }
     }
@@ -505,7 +494,7 @@ impl Thumbs {
                 egui::TextureOptions::LINEAR,
             )),
             Some(Payload::Text(job)) => Thumb::Text(Arc::new(job)),
-            Some(Payload::Peek(items)) => Thumb::Peek(items.into()),
+            Some(Payload::Peek(items)) => Thumb::Peek(Arc::new(items)),
             None => Thumb::Failed,
         };
     }
@@ -555,21 +544,23 @@ mod tests {
     }
 
     #[test]
-    fn peek_lists_first_visible_children_by_name() {
+    fn peek_picks_the_newest_visible_file() {
         let dir = directory();
         assert!(peek_dir(&dir).is_none(), "empty folder has nothing to show");
-        for name in ["b.png", "A.txt", ".hidden", "c.rs", "d.md", "e.md"] {
-            fs::write(dir.join(name), "x").unwrap();
-        }
-        fs::create_dir(dir.join("0dir")).unwrap();
-        let items = peek_dir(&dir).unwrap();
-        let names: Vec<_> = items
-            .iter()
-            .map(|i| i.path.file_name().unwrap().to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(names, ["0dir", "A.txt", "b.png", "c.rs"]);
-        assert!(items[0].is_dir && !items[1].is_dir);
-        assert_eq!(items[1].ext, "txt");
+        fs::create_dir(dir.join("subdir")).unwrap();
+        assert!(peek_dir(&dir).is_none(), "folders are not candidates");
+        let set = |name: &str, secs: u64| {
+            let file = fs::File::create(dir.join(name)).unwrap();
+            let when = std::time::UNIX_EPOCH + Duration::from_secs(secs);
+            file.set_modified(when).unwrap();
+        };
+        set("old.txt", 1_000);
+        set("New.PNG", 3_000);
+        set("mid.rs", 2_000);
+        set(".hidden", 9_000);
+        let item = peek_dir(&dir).unwrap();
+        assert_eq!(item.path, dir.join("New.PNG"));
+        assert_eq!(item.ext, "png");
         assert!(peek_dir(&dir.join("missing")).is_none());
     }
 
