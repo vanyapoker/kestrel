@@ -16,6 +16,7 @@ use crate::tab::{Search, SortKey, Tab, ViewMode};
 use crate::theme;
 use crate::thumbs::Thumbs;
 use crate::watch::Watcher;
+use crate::wl_dnd::ClipOp;
 use eframe::egui::{self, Event, InputState, Key, Modifiers};
 use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::MetadataExt;
@@ -43,7 +44,7 @@ pub struct Pane {
 
 struct Clip {
     paths: Vec<PathBuf>,
-    cut: bool,
+    op: ClipOp,
     /// What we put on the system clipboard, to tell our copy from someone else's.
     text: String,
 }
@@ -1143,7 +1144,7 @@ impl App {
         self.ops.submit(Job::undo(u));
     }
 
-    fn copy_to_clipboard(&mut self, cut: bool) {
+    fn copy_to_clipboard(&mut self, op: ClipOp) {
         let paths = self.tab().targets();
         if paths.is_empty() {
             return;
@@ -1156,18 +1157,37 @@ impl App {
         let on_system = self
             .wl
             .as_ref()
-            .is_some_and(|wl| wl.set_clipboard_files(&paths, cut));
+            .is_some_and(|wl| wl.set_clipboard_files(&paths, op));
         if !on_system {
             self.ctx.copy_text(text.clone());
         }
         let n = paths.len();
-        self.clip = Some(Clip { paths, cut, text });
+        self.clip = Some(Clip { paths, op, text });
         let what = if n == 1 {
             "1 item".into()
         } else {
             format!("{n} items")
         };
-        self.toast(format!("{} {what}", if cut { "Cut" } else { "Copied" }));
+        self.toast(format!(
+            "{} {what}",
+            if op == ClipOp::Cut { "Cut" } else { "Copied" }
+        ));
+    }
+
+    /// Pastes the app's own clipboard. A copy stays available for further pastes, a cut is consumed.
+    fn paste_internal(&mut self, dest: PathBuf) {
+        let Some(clip) = self.clip.take() else {
+            return;
+        };
+        if clip.op == ClipOp::Copy {
+            self.clip = Some(Clip {
+                paths: clip.paths.clone(),
+                op: ClipOp::Copy,
+                text: clip.text,
+            });
+        }
+        self.ops
+            .submit(Job::new(clip.op.job_kind(), clip.paths, Some(dest)));
     }
 
     fn set_text_clipboard(&mut self, text: String) {
@@ -1188,9 +1208,8 @@ impl App {
         if let Some(wl) = &self.wl {
             match wl.read_clipboard() {
                 crate::wl_dnd::ClipRead::Ours => {}
-                crate::wl_dnd::ClipRead::Files { paths, cut } => {
-                    let kind = if cut { JobKind::Move } else { JobKind::Copy };
-                    self.ops.submit(Job::new(kind, paths, Some(dest)));
+                crate::wl_dnd::ClipRead::Files { paths, op } => {
+                    self.ops.submit(Job::new(op.job_kind(), paths, Some(dest)));
                     return;
                 }
                 crate::wl_dnd::ClipRead::Nothing => {
@@ -1199,21 +1218,7 @@ impl App {
                 }
             }
             // Ours: the internal clipboard knows whether it was a cut.
-            if let Some(clip) = self.clip.take() {
-                let kind = if clip.cut {
-                    JobKind::Move
-                } else {
-                    JobKind::Copy
-                };
-                if !clip.cut {
-                    self.clip = Some(Clip {
-                        paths: clip.paths.clone(),
-                        cut: false,
-                        text: clip.text,
-                    });
-                }
-                self.ops.submit(Job::new(kind, clip.paths, Some(dest)));
-            }
+            self.paste_internal(dest);
             return;
         }
         let ours = match (&self.clip, &text) {
@@ -1222,20 +1227,7 @@ impl App {
             _ => false,
         };
         if ours {
-            let clip = self.clip.take().unwrap();
-            let kind = if clip.cut {
-                JobKind::Move
-            } else {
-                JobKind::Copy
-            };
-            if !clip.cut {
-                self.clip = Some(Clip {
-                    paths: clip.paths.clone(),
-                    cut: false,
-                    text: clip.text,
-                });
-            }
-            self.ops.submit(Job::new(kind, clip.paths, Some(dest)));
+            self.paste_internal(dest);
             return;
         }
         // Files copied in another app: plain paths, file:// URIs, or a uri-list.
@@ -1469,8 +1461,8 @@ impl App {
                     });
                 }
             }
-            Cmd::Copy => self.copy_to_clipboard(false),
-            Cmd::Cut => self.copy_to_clipboard(true),
+            Cmd::Copy => self.copy_to_clipboard(ClipOp::Copy),
+            Cmd::Cut => self.copy_to_clipboard(ClipOp::Cut),
             Cmd::Paste => self.paste(None),
             Cmd::Duplicate => {
                 let srcs = self.tab().targets();

@@ -139,13 +139,30 @@ macro_rules! trace {
     };
 }
 
+/// Whether pasted files are copied or moved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipOp {
+    Copy,
+    Cut,
+}
+
+impl ClipOp {
+    /// The file operation a paste of this kind performs.
+    pub fn job_kind(self) -> crate::ops::JobKind {
+        match self {
+            ClipOp::Copy => crate::ops::JobKind::Copy,
+            ClipOp::Cut => crate::ops::JobKind::Move,
+        }
+    }
+}
+
 /// What the system clipboard holds, from our point of view.
 pub enum ClipRead {
     /// We set it ourselves (the app's internal clipboard is authoritative).
     Ours,
     Files {
         paths: Vec<PathBuf>,
-        cut: bool,
+        op: ClipOp,
     },
     Nothing,
 }
@@ -456,7 +473,7 @@ impl WlDnd {
         if paths.is_empty() || shared.dragging_out {
             return false;
         }
-        let data = Arc::new(source_data(paths, false, None));
+        let data = Arc::new(source_data(paths, ClipOp::Copy, None));
         let source = self.manager.create_data_source(&self.qh, data.clone());
         for mime in [
             URI_LIST,
@@ -514,8 +531,8 @@ impl WlDnd {
     }
 
     /// Puts files on the system clipboard, in the formats file managers and browsers read.
-    pub fn set_clipboard_files(&self, paths: &[PathBuf], cut: bool) -> bool {
-        self.set_selection(source_data(paths, cut, None), &[URI_LIST, GNOME_FILES])
+    pub fn set_clipboard_files(&self, paths: &[PathBuf], op: ClipOp) -> bool {
+        self.set_selection(source_data(paths, op, None), &[URI_LIST, GNOME_FILES])
     }
 
     pub fn set_clipboard_text(&self, text: &str) -> bool {
@@ -579,7 +596,10 @@ impl WlDnd {
                 return if paths.is_empty() {
                     ClipRead::Nothing
                 } else {
-                    ClipRead::Files { paths, cut: false }
+                    ClipRead::Files {
+                        paths,
+                        op: ClipOp::Copy,
+                    }
                 };
             }
             match &shared.selection {
@@ -606,19 +626,23 @@ impl WlDnd {
         let Some(text) = receive(&self.conn, &offer, mime) else {
             return ClipRead::Nothing;
         };
-        let (paths, cut) = match mime {
+        let (paths, op) = match mime {
             GNOME_FILES => {
                 let mut lines = text.lines();
-                let cut = lines.next() == Some("cut");
-                (parse_uri_list(&lines.collect::<Vec<_>>().join("\n")), cut)
+                let op = if lines.next() == Some("cut") {
+                    ClipOp::Cut
+                } else {
+                    ClipOp::Copy
+                };
+                (parse_uri_list(&lines.collect::<Vec<_>>().join("\n")), op)
             }
-            URI_LIST => (parse_uri_list(&text), false),
-            _ => (crate::app::parse_path_list(&text), false),
+            URI_LIST => (parse_uri_list(&text), ClipOp::Copy),
+            _ => (crate::app::parse_path_list(&text), ClipOp::Copy),
         };
         if paths.is_empty() {
             ClipRead::Nothing
         } else {
-            ClipRead::Files { paths, cut }
+            ClipRead::Files { paths, op }
         }
     }
 
@@ -636,7 +660,7 @@ impl WlDnd {
     }
 }
 
-fn source_data(paths: &[PathBuf], cut: bool, clipboard: Option<u64>) -> SourceData {
+fn source_data(paths: &[PathBuf], op: ClipOp, clipboard: Option<u64>) -> SourceData {
     let uris: Vec<String> = paths.iter().map(|p| file_uri(p)).collect();
     SourceData {
         uri_list: uris.iter().map(|u| format!("{u}\r\n")).collect(),
@@ -645,7 +669,11 @@ fn source_data(paths: &[PathBuf], cut: bool, clipboard: Option<u64>) -> SourceDa
             .map(|p| p.display().to_string())
             .collect::<Vec<_>>()
             .join("\n"),
-        gnome: format!("{}\n{}", if cut { "cut" } else { "copy" }, uris.join("\n")),
+        gnome: format!(
+            "{}\n{}",
+            if op == ClipOp::Cut { "cut" } else { "copy" },
+            uris.join("\n")
+        ),
         clipboard,
         icon: Mutex::new(None),
     }

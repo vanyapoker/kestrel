@@ -9,6 +9,7 @@ use crate::tab::{ICON_SIZES, SortKey, Tab, ViewMode};
 use crate::theme::*;
 use crate::thumbs::{self, Thumbs};
 use crate::util;
+use crate::wl_dnd::ClipOp;
 use eframe::egui::{
     self, Align, Align2, CentralPanel, Color32, CornerRadius, DragAndDrop, FontId, Frame, Key,
     Layout, Margin, Modifiers, Painter, Panel, Pos2, Rect, RichText, ScrollArea, Sense, Stroke, Ui,
@@ -971,7 +972,11 @@ impl App {
     fn miller_columns(&mut self, ui: &mut Ui, p: usize, actions: &mut Vec<Action>) {
         let pane_active = p == self.active_pane;
         let bookmarks = &self.places.bookmarks;
-        let cut = self.clip.as_ref().filter(|c| c.cut).map(|c| &c.paths);
+        let cut = self
+            .clip
+            .as_ref()
+            .filter(|c| c.op == ClipOp::Cut)
+            .map(|c| &c.paths);
         let pane = &mut self.panes[p];
         let tab = &mut pane.tabs[pane.active];
         let id = tab.id;
@@ -1206,7 +1211,11 @@ impl App {
         let pane_active = p == self.active_pane;
         let sizes = &self.sizes;
         let sizing = &self.sizing;
-        let cut = self.clip.as_ref().filter(|c| c.cut).map(|c| &c.paths);
+        let cut = self
+            .clip
+            .as_ref()
+            .filter(|c| c.op == ClipOp::Cut)
+            .map(|c| &c.paths);
         let dragging = self.dragging.as_deref();
         let bookmarks = &self.places.bookmarks;
         #[cfg(test)]
@@ -1356,7 +1365,11 @@ impl App {
         let row_rects = &mut self.row_rects;
         let thumbs = &mut self.thumbs;
         let bookmarks = &self.places.bookmarks;
-        let cut = self.clip.as_ref().filter(|c| c.cut).map(|c| &c.paths);
+        let cut = self
+            .clip
+            .as_ref()
+            .filter(|c| c.op == ClipOp::Cut)
+            .map(|c| &c.paths);
         let dragging = self.dragging.as_deref();
         let pane = &mut self.panes[p];
         let tab = &mut pane.tabs[pane.active];
