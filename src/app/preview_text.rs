@@ -104,7 +104,8 @@ fn positions(chunks: &[TextChunk]) -> Vec<f32> {
     let mut ys = Vec::with_capacity(chunks.len() + 1);
     ys.push(0.0);
     for chunk in chunks {
-        ys.push(ys.last().unwrap() + chunk.height);
+        let last = ys.last().copied().unwrap_or_default();
+        ys.push(last + chunk.height);
     }
     ys
 }

@@ -357,7 +357,7 @@ pub fn spawn(req: Request, tx: Sender<SearchMsg>, ctx: egui::Context) {
                     .build_parallel()
                     .visit(&mut VisitorBuilder(&shared));
                 Arc::new(Index {
-                    candidates: shared.candidates.into_inner().unwrap(),
+                    candidates: shared.candidates.into_inner().expect("lock poisoned"),
                     show_hidden: req.show_hidden,
                 })
             }
@@ -467,7 +467,7 @@ impl Drop for Visitor<'_> {
         self.shared
             .candidates
             .lock()
-            .unwrap()
+            .expect("lock poisoned")
             .append(&mut self.candidates);
     }
 }

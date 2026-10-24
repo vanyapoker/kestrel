@@ -903,10 +903,11 @@ impl App {
 
         // Theme switches rewrite several files; wait for them to settle, then restyle.
         if let Some((_, rx)) = &self.theme_watch
-            && rx.try_iter().count() > 0 {
-                self.theme_reload_at = Some(now + Duration::from_millis(300));
-                ctx.request_repaint_after(Duration::from_millis(300));
-            }
+            && rx.try_iter().count() > 0
+        {
+            self.theme_reload_at = Some(now + Duration::from_millis(300));
+            ctx.request_repaint_after(Duration::from_millis(300));
+        }
         match self.theme_reload_at {
             Some(t) if now >= t => {
                 self.theme_reload_at = None;
@@ -938,12 +939,13 @@ impl App {
                     tab.reload_at.get_or_insert(now + WATCH_DEBOUNCE);
                 }
                 if let Some(s) = &mut tab.search
-                    && p.starts_with(&s.root) {
-                        s.cancel.store(true, Ordering::Relaxed);
-                        s.index = None;
-                        s.running = false;
-                        s.restart_at = Some(now + WATCH_DEBOUNCE);
-                    }
+                    && p.starts_with(&s.root)
+                {
+                    s.cancel.store(true, Ordering::Relaxed);
+                    s.index = None;
+                    s.running = false;
+                    s.restart_at = Some(now + WATCH_DEBOUNCE);
+                }
             }
         }
         let mut next_wake: Option<Instant> = None;
@@ -1988,13 +1990,15 @@ impl App {
                 }
             }
             if take(i, ctrl, Key::Space)
-                && let Some(c) = tab.cursor {
-                    tab.toggle_mark(c);
-                }
+                && let Some(c) = tab.cursor
+            {
+                tab.toggle_mark(c);
+            }
             if take(i, none, Key::Enter)
-                && let Some(c) = tab.cursor {
-                    actions.push(Action::OpenEntry(c));
-                }
+                && let Some(c) = tab.cursor
+            {
+                actions.push(Action::OpenEntry(c));
+            }
             if take(i, none, Key::Backspace) {
                 if tab.filter.pop().is_some() {
                     filter_changed = true;

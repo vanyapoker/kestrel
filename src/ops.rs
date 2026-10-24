@@ -313,7 +313,7 @@ impl Ops {
     }
 
     pub fn snapshot(&self) -> Option<Progress> {
-        self.progress.lock().unwrap().clone()
+        self.progress.lock().expect("lock poisoned").clone()
     }
 }
 
@@ -330,14 +330,14 @@ impl Worker {
             self.cancel.store(false, Ordering::Relaxed);
             let done = self.execute(job);
             queued.fetch_sub(1, Ordering::Relaxed);
-            *self.progress.lock().unwrap() = None;
+            *self.progress.lock().expect("lock poisoned") = None;
             let _ = done_tx.send(done);
             self.ctx.request_repaint();
         }
     }
 
     fn update(&mut self, f: impl FnOnce(&mut Progress)) {
-        if let Some(p) = self.progress.lock().unwrap().as_mut() {
+        if let Some(p) = self.progress.lock().expect("lock poisoned").as_mut() {
             f(p);
         }
         if self.last_repaint.elapsed() > Duration::from_millis(50) {
@@ -369,7 +369,7 @@ impl Worker {
             JobKind::Compress => format!("Compressing {what}"),
             JobKind::SaveImage => "Saving dropped image".into(),
         };
-        *self.progress.lock().unwrap() = Some(Progress {
+        *self.progress.lock().expect("lock poisoned") = Some(Progress {
             title,
             ..Default::default()
         });
@@ -860,9 +860,10 @@ impl Worker {
             r
         };
         if let Err(e) = res
-            && e.kind() != io::ErrorKind::Interrupted {
-                errors.push(format!("{}: {e}", src.display()));
-            }
+            && e.kind() != io::ErrorKind::Interrupted
+        {
+            errors.push(format!("{}: {e}", src.display()));
+        }
     }
 
     fn copy_file(&mut self, src: &Path, dst: &Path, meta: &fs::Metadata) -> io::Result<()> {
@@ -895,6 +896,8 @@ impl Worker {
                 return Err(io::ErrorKind::Interrupted.into());
             }
             let n = if kernel {
+                // SAFETY: both fds are open for the duration of the call and the null
+                // offset pointers make the kernel use and advance the file offsets.
                 let r = unsafe {
                     libc::copy_file_range(
                         input.as_raw_fd(),

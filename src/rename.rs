@@ -260,6 +260,7 @@ fn rename_no_replace(from: &Path, to: &Path) -> Result<(), String> {
     use std::os::unix::ffi::OsStrExt;
     let from_c = std::ffi::CString::new(from.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
     let to_c = std::ffi::CString::new(to.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
+    // SAFETY: both paths are NUL-terminated and outlive the call.
     let result = unsafe {
         libc::renameat2(
             libc::AT_FDCWD,

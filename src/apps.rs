@@ -36,11 +36,11 @@ const MAX_AGE: Duration = Duration::from_secs(30);
 static DB: Mutex<Option<Db>> = Mutex::new(None);
 
 fn with_db<T>(f: impl FnOnce(&Db) -> T) -> T {
-    let mut guard = DB.lock().unwrap();
+    let mut guard = DB.lock().expect("lock poisoned");
     if guard.as_ref().is_none_or(|d| d.loaded.elapsed() > MAX_AGE) {
         *guard = Some(Db::load());
     }
-    f(guard.as_ref().unwrap())
+    f(guard.get_or_insert_with(Db::load))
 }
 
 fn data_dirs() -> Vec<PathBuf> {
@@ -214,9 +214,10 @@ impl Db {
 
 fn glob_match(glob: &str, name: &str) -> bool {
     if let Some(suffix) = glob.strip_prefix('*')
-        && !suffix.contains(['*', '?', '[']) {
-            return name.ends_with(suffix);
-        }
+        && !suffix.contains(['*', '?', '['])
+    {
+        return name.ends_with(suffix);
+    }
     if !glob.contains(['*', '?', '[']) {
         return glob == name;
     }
@@ -353,7 +354,7 @@ pub fn set_default(app_id: &str, mime: &str) -> Result<(), String> {
         .args(["default", app_id, mime])
         .output()
         .map_err(|e| format!("xdg-mime: {e}"))?;
-    *DB.lock().unwrap() = None; // pick the change up on the next menu
+    *DB.lock().expect("lock poisoned") = None; // pick the change up on the next menu
     if out.status.success() {
         Ok(())
     } else {

@@ -39,3 +39,10 @@ wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 # egui-winit with two small kestrel patches (see vendor/egui-winit/KESTREL_PATCHES.md).
 [patch.crates-io]
 egui-winit = { path = "vendor/egui-winit" }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "warn"
+allow_attributes_without_reason = "warn"

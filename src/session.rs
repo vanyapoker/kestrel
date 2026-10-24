@@ -167,9 +167,10 @@ pub fn parse(text: &str) -> Session {
             "active_pane" => s.active_pane = rest.parse().unwrap_or(0),
             "split_ratio" => {
                 if let Ok(ratio) = rest.parse::<f32>()
-                    && ratio.is_finite() {
-                        s.split_ratio = ratio.clamp(0.15, 0.85);
-                    }
+                    && ratio.is_finite()
+                {
+                    s.split_ratio = ratio.clamp(0.15, 0.85);
+                }
             }
             "recent" if s.recent_dirs.len() < 64 && Path::new(rest).is_absolute() => {
                 let path = PathBuf::from(rest);

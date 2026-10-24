@@ -163,12 +163,15 @@ fn unescape(s: &str) -> String {
     let b = s.as_bytes();
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'\\' && i + 3 < b.len() && b[i + 1] == b'x'
-            && let Ok(v) = u8::from_str_radix(&s[i + 2..i + 4], 16) {
-                bytes.push(v);
-                i += 4;
-                continue;
-            }
+        if b[i] == b'\\'
+            && i + 3 < b.len()
+            && b[i + 1] == b'x'
+            && let Ok(v) = u8::from_str_radix(&s[i + 2..i + 4], 16)
+        {
+            bytes.push(v);
+            i += 4;
+            continue;
+        }
         bytes.push(b[i]);
         i += 1;
     }

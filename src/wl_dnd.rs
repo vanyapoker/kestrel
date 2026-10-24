@@ -71,7 +71,9 @@ fn source_image_name(mime: &str, bytes: &[u8], image_mime: &str) -> Option<Strin
         let bytes = bytes.strip_prefix(&[0xff, 0xfe]).unwrap_or(bytes);
         String::from_utf16(
             &bytes
-                .as_chunks::<2>().0.iter()
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|b| u16::from_le_bytes([b[0], b[1]]))
                 .collect::<Vec<_>>(),
         )
@@ -80,7 +82,9 @@ fn source_image_name(mime: &str, bytes: &[u8], image_mime: &str) -> Option<Strin
         let bytes = bytes.strip_prefix(&[0xfe, 0xff]).unwrap_or(bytes);
         String::from_utf16(
             &bytes
-                .as_chunks::<2>().0.iter()
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|b| u16::from_be_bytes([b[0], b[1]]))
                 .collect::<Vec<_>>(),
         )
@@ -230,7 +234,7 @@ impl ClipboardWriter {
     }
 
     fn set_selection(&self, mut data: SourceData, extra: &[&str]) -> bool {
-        let mut shared = self.shared.lock().unwrap();
+        let mut shared = self.shared.lock().expect("lock poisoned");
         let Some(serial) = shared.input_serial else {
             return false;
         };
@@ -304,6 +308,7 @@ impl Drop for WlDnd {
     fn drop(&mut self) {
         // The output plugin must release its proxies before winit frees the display.
         self.ctx.plugin::<ClipboardOutput>().lock().writer = None;
+        // SAFETY: writes one byte from a live buffer to our own open pipe fd.
         let _ = unsafe {
             libc::write(
                 std::os::fd::AsRawFd::as_raw_fd(&self.wake_tx),
@@ -339,6 +344,7 @@ fn dispatch_loop(mut queue: wayland_client::EventQueue<State>, mut state: State,
                 revents: 0,
             },
         ];
+        // SAFETY: `fds` is a valid array of two `pollfd`s.
         if unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) } < 0 {
             if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
                 continue;
@@ -371,6 +377,7 @@ impl WlDnd {
         surface: *mut c_void,
         ctx: egui::Context,
     ) -> Result<Self, String> {
+        // SAFETY: the caller guarantees `display` is a live `wl_display` (see `# Safety`).
         let backend = unsafe { Backend::from_foreign_display(display.cast()) };
         let conn = Connection::from_backend(backend);
         let (globals, queue) = registry_queue_init::<State>(&conn).map_err(|e| e.to_string())?;
@@ -380,6 +387,7 @@ impl WlDnd {
             globals.bind(&qh, 3..=3, ()).map_err(|e| e.to_string())?;
         let compositor: WlCompositor = globals.bind(&qh, 4..=6, ()).map_err(|e| e.to_string())?;
         let shm: WlShm = globals.bind(&qh, 1..=1, ()).map_err(|e| e.to_string())?;
+        // SAFETY: the caller guarantees `surface` is a live `wl_surface` (see `# Safety`).
         let surface_id = unsafe { ObjectId::from_ptr(WlSurface::interface(), surface.cast()) }
             .map_err(|e| e.to_string())?;
         let surface = WlSurface::from_id(&conn, surface_id).map_err(|e| e.to_string())?;
@@ -397,12 +405,8 @@ impl WlDnd {
             offer: None,
             pos: Pos2::ZERO,
         };
-        let mut fds = [0; 2];
-        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
-            return Err(std::io::Error::last_os_error().to_string());
-        }
         let (wake_rx, wake_tx) =
-            unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+            pipe(libc::O_CLOEXEC | libc::O_NONBLOCK).map_err(|e| e.to_string())?;
         let thread = std::thread::Builder::new()
             .name("wayland-dnd".into())
             .spawn(move || dispatch_loop(queue, state, wake_rx))
@@ -433,13 +437,13 @@ impl WlDnd {
     }
 
     pub fn dragging_out(&self) -> bool {
-        self.shared.lock().unwrap().dragging_out
+        self.shared.lock().expect("lock poisoned").dragging_out
     }
 
     /// Hands `paths` to the compositor as a system drag. Must be called while
     /// the mouse button that started the drag is still held.
     pub fn start_drag(&self, paths: &[PathBuf]) -> bool {
-        let mut shared = self.shared.lock().unwrap();
+        let mut shared = self.shared.lock().expect("lock poisoned");
         trace!(
             "start_drag {} paths, serial {:?}, on_us {}",
             paths.len(),
@@ -472,7 +476,7 @@ impl WlDnd {
         );
         if let Some(icon) = icon {
             icon.surface.commit();
-            *data.icon.lock().unwrap() = Some(icon);
+            *data.icon.lock().expect("lock poisoned") = Some(icon);
         }
         shared.dragging_out = true;
         drop(shared);
@@ -490,7 +494,7 @@ impl WlDnd {
                 let Ok(rendered) = crate::thumbs::render(&path, r, 96) else {
                     return;
                 };
-                let mut slot = data.icon.lock().unwrap();
+                let mut slot = data.icon.lock().expect("lock poisoned");
                 let Some(icon) = slot.as_mut() else { return }; // drag already over
                 if let Some((buffer, pool, fd)) = shm_buffer(&shm, &qh, &rendered.image) {
                     icon.surface.attach(Some(&buffer), 0, 0);
@@ -536,7 +540,7 @@ impl WlDnd {
     /// (smithay-clipboard is patched out), so text pastes come from our data device.
     pub fn read_clipboard_text(&self) -> Option<String> {
         let offer = {
-            let shared = self.shared.lock().unwrap();
+            let shared = self.shared.lock().expect("lock poisoned");
             if shared.own_selection.is_some() {
                 trace!("paste text: ours");
                 return Some(shared.own_text.clone());
@@ -546,7 +550,7 @@ impl WlDnd {
         };
         let mimes = offer
             .data::<OfferData>()
-            .map(|d| d.mimes.lock().unwrap().clone())
+            .map(|d| d.mimes.lock().expect("lock poisoned").clone())
             .unwrap_or_default();
         let mime = [
             "text/plain;charset=utf-8",
@@ -566,7 +570,7 @@ impl WlDnd {
     /// Reads files from the clipboard (blocks briefly while the owner sends them).
     pub fn read_clipboard(&self) -> ClipRead {
         let offer = {
-            let shared = self.shared.lock().unwrap();
+            let shared = self.shared.lock().expect("lock poisoned");
             if shared.own_selection.is_some() {
                 if shared.own_files {
                     return ClipRead::Ours;
@@ -585,7 +589,7 @@ impl WlDnd {
         };
         let mimes = offer
             .data::<OfferData>()
-            .map(|d| d.mimes.lock().unwrap().clone())
+            .map(|d| d.mimes.lock().expect("lock poisoned").clone())
             .unwrap_or_default();
         let pick = [
             GNOME_FILES,
@@ -647,17 +651,24 @@ fn source_data(paths: &[PathBuf], cut: bool, clipboard: Option<u64>) -> SourceDa
     }
 }
 
+/// Creates a pipe with the given `pipe2` flags, returning (read end, write end).
+fn pipe(flags: libc::c_int) -> std::io::Result<(OwnedFd, OwnedFd)> {
+    let mut fds = [0; 2];
+    // SAFETY: `fds` has room for the two descriptors `pipe2` writes.
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), flags) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `pipe2` succeeded, so both descriptors are open and exclusively ours.
+    Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
+}
+
 /// Asks the offer's owner for `mime` and reads it, giving up after a second.
 fn receive(conn: &Connection, offer: &WlDataOffer, mime: &str) -> Option<String> {
     receive_bytes(conn, offer, mime).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn receive_bytes(conn: &Connection, offer: &WlDataOffer, mime: &str) -> Option<Vec<u8>> {
-    let mut fds = [0; 2];
-    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
-        return None;
-    }
-    let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+    let (read, write) = pipe(libc::O_CLOEXEC).ok()?;
     offer.receive(mime.into(), write.as_fd());
     drop(write);
     conn.flush().ok()?;
@@ -674,6 +685,7 @@ fn receive_bytes(conn: &Connection, offer: &WlDataOffer, mime: &str) -> Option<V
             events: libc::POLLIN,
             revents: 0,
         };
+        // SAFETY: `pfd` is a valid `pollfd`.
         if left == 0 || unsafe { libc::poll(&mut pfd, 1, left) } <= 0 {
             return None;
         }
@@ -695,10 +707,12 @@ fn shm_buffer(
     let [w, h] = img.size;
     let stride = w * 4;
     let size = stride * h;
+    // SAFETY: the name is a NUL-terminated C string literal.
     let fd = unsafe { libc::memfd_create(c"kestrel-drag-icon".as_ptr(), libc::MFD_CLOEXEC) };
     if fd < 0 {
         return None;
     }
+    // SAFETY: `memfd_create` succeeded, so `fd` is open and exclusively ours.
     let fd = unsafe { OwnedFd::from_raw_fd(fd) };
     let mut file = std::fs::File::from(fd.try_clone().ok()?);
     let mut bytes = Vec::with_capacity(size);
@@ -861,7 +875,7 @@ impl Dispatch<WlPointer, ()> for State {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        let mut shared = state.shared.lock().unwrap();
+        let mut shared = state.shared.lock().expect("lock poisoned");
         match event {
             wl_pointer::Event::Enter { surface, .. } => {
                 shared.pointer_on_us = surface.id() == state.our_surface;
@@ -897,7 +911,7 @@ impl Dispatch<WlKeyboard, ()> for State {
             }
             _ => return, // the keymap fd is closed when dropped
         };
-        state.shared.lock().unwrap().input_serial = Some(serial);
+        state.shared.lock().expect("lock poisoned").input_serial = Some(serial);
     }
 }
 
@@ -926,7 +940,7 @@ impl Dispatch<WlDataSource, Arc<SourceData>> for State {
             wl_data_source::Event::Cancelled | wl_data_source::Event::DndFinished => {
                 trace!("source ended: {event:?}");
                 source.destroy();
-                let mut shared = state.shared.lock().unwrap();
+                let mut shared = state.shared.lock().expect("lock poisoned");
                 match data.clipboard {
                     // Another client took the clipboard.
                     Some(generation) if shared.own_selection == Some(generation) => {
@@ -934,7 +948,7 @@ impl Dispatch<WlDataSource, Arc<SourceData>> for State {
                     }
                     Some(_) => {}
                     None => {
-                        data.icon.lock().unwrap().take();
+                        data.icon.lock().expect("lock poisoned").take();
                         shared.dragging_out = false;
                     }
                 }
@@ -976,7 +990,7 @@ impl Dispatch<WlDataDevice, ()> for State {
                 let Some(offer) = id else { return };
                 let mimes = offer
                     .data::<OfferData>()
-                    .map(|d| d.mimes.lock().unwrap().clone())
+                    .map(|d| d.mimes.lock().expect("lock poisoned").clone())
                     .unwrap_or_default();
                 let mime = drop_mime(&mimes);
                 trace!("drop formats {mimes:?}, accepting {mime:?}");
@@ -1004,7 +1018,7 @@ impl Dispatch<WlDataDevice, ()> for State {
                 state.emit(DndEvent::Leave);
             }
             wl_data_device::Event::Selection { id } => {
-                let mut shared = state.shared.lock().unwrap();
+                let mut shared = state.shared.lock().expect("lock poisoned");
                 if let Some(old) = std::mem::replace(&mut shared.selection, id) {
                     old.destroy();
                 }
@@ -1015,26 +1029,23 @@ impl Dispatch<WlDataDevice, ()> for State {
                     return;
                 };
                 state.emit(DndEvent::Leave);
-                let mut fds = [0; 2];
-                if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+                let Ok((read, write)) = pipe(libc::O_CLOEXEC) else {
                     offer.destroy();
                     return;
-                }
-                let (read, write) =
-                    unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+                };
                 offer.receive(mime.into(), write.as_fd());
                 drop(write); // libwayland dup'd it when marshalling
                 let _ = conn.flush();
                 let (tx, ctx, conn, pos) =
                     (state.tx.clone(), state.ctx.clone(), conn.clone(), state.pos);
-                let own = state.shared.lock().unwrap().dragging_out;
+                let own = state.shared.lock().expect("lock poisoned").dragging_out;
                 std::thread::spawn(move || {
                     let mut bytes = Vec::new();
                     let result = std::fs::File::from(read).read_to_end(&mut bytes);
                     // Read optional naming metadata while the offer is still alive.
                     let mimes = offer
                         .data::<OfferData>()
-                        .map(|d| d.mimes.lock().unwrap().clone())
+                        .map(|d| d.mimes.lock().expect("lock poisoned").clone())
                         .unwrap_or_default();
                     let source_name =
                         if result.is_ok() && !bytes.is_empty() && image_name(mime).is_some() {
@@ -1099,7 +1110,7 @@ impl Dispatch<WlDataOffer, OfferData> for State {
         _: &QueueHandle<Self>,
     ) {
         if let wl_data_offer::Event::Offer { mime_type } = event {
-            data.mimes.lock().unwrap().push(mime_type);
+            data.mimes.lock().expect("lock poisoned").push(mime_type);
         }
     }
 }

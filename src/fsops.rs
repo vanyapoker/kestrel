@@ -104,9 +104,10 @@ pub fn dir_size(
         if ft.is_dir() {
             subdirs.push(de.path());
         } else if ft.is_file()
-            && let Ok(m) = de.metadata() {
-                total += m.len();
-            }
+            && let Ok(m) = de.metadata()
+        {
+            total += m.len();
+        }
     }
     let sub: Option<u64> = subdirs
         .par_iter()
@@ -125,7 +126,9 @@ pub fn dir_size(
 pub fn disk_space(path: &Path) -> Option<(u64, u64)> {
     use std::os::unix::ffi::OsStrExt;
     let c = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    // SAFETY: `statvfs` is a plain C struct for which all-zero bytes are a valid value.
     let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `c` is a NUL-terminated path and `st` is a valid, writable `statvfs`.
     if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
         return None;
     }

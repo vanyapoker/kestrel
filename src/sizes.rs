@@ -75,7 +75,10 @@ impl Sizes {
     /// Invalidate descendants as well as ancestors (rename, removal, refresh), and
     /// reject all later messages from overlapping jobs, including queued messages.
     pub fn invalidate(&mut self, path: &Path, sizes: &mut HashMap<PathBuf, u64>) {
-        self.cache.lock().unwrap().retain(|p, _| !overlaps(p, path));
+        self.cache
+            .lock()
+            .expect("lock poisoned")
+            .retain(|p, _| !overlaps(p, path));
         sizes.retain(|p, _| !overlaps(p, path));
         for job in self.jobs.values().filter(|j| overlaps(&j.path, path)) {
             job.cancel.store(true, Ordering::Relaxed);
@@ -107,7 +110,7 @@ impl Sizes {
         }
         let mut changed = false;
         {
-            let mut cache = self.cache.lock().unwrap();
+            let mut cache = self.cache.lock().expect("lock poisoned");
             // Bound UI work per frame as well as the worker-to-UI queue.
             for msg in self.rx.try_iter().take(1024) {
                 match msg {
@@ -198,8 +201,7 @@ impl Sizes {
                     let allowed = device.is_some()
                         && path.parent().and_then(fsops::device_of) == device
                         && std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir());
-                    if allowed {
-                        let device = device.unwrap();
+                    if let Some(device) = device.filter(|_| allowed) {
                         fsops::dir_size(
                             &path,
                             device,
@@ -207,12 +209,12 @@ impl Sizes {
                             &|p| {
                                 let cached = cache
                                     .lock()
-                                    .unwrap()
+                                    .expect("lock poisoned")
                                     .get(p)
                                     .filter(|v| v.device == device && v.at.elapsed() < TTL)
                                     .copied();
                                 if let Some(value) = cached.filter(|v| v.size.is_some()) {
-                                    let mut oldest = as_of.lock().unwrap();
+                                    let mut oldest = as_of.lock().expect("lock poisoned");
                                     *oldest = (*oldest).min(value.at);
                                     value.size
                                 } else {
@@ -223,7 +225,7 @@ impl Sizes {
                                 let value = Cached {
                                     size: Some(size),
                                     device,
-                                    at: *as_of.lock().unwrap(),
+                                    at: *as_of.lock().expect("lock poisoned"),
                                 };
                                 let _ = tx.send(Message::Directory {
                                     generation,
@@ -419,11 +421,17 @@ mod tests {
         // the child cache rather than traversing the child's files a second time.
         tree.file("parent/child/data", 29);
         let child_at = Instant::now() - TTL + Duration::from_secs(5);
-        d.service.cache.lock().unwrap().get_mut(&child).unwrap().at = child_at;
+        d.service
+            .cache
+            .lock()
+            .expect("lock poisoned")
+            .get_mut(&child)
+            .unwrap()
+            .at = child_at;
         d.finish(std::slice::from_ref(&parent));
         assert_eq!(d.sizes[&parent], 20);
         assert!(
-            d.service.cache.lock().unwrap()[&parent].at <= child_at,
+            d.service.cache.lock().expect("lock poisoned")[&parent].at <= child_at,
             "aggregating a cached child must not extend its freshness"
         );
         d.service.invalidate(&child, &mut d.sizes);
@@ -454,7 +462,13 @@ mod tests {
         d.service.invalidate(&path, &mut d.sizes);
         d.sync(std::slice::from_ref(&path));
         assert!(!d.sizes.contains_key(&path));
-        assert!(!d.service.cache.lock().unwrap().contains_key(&path));
+        assert!(
+            !d.service
+                .cache
+                .lock()
+                .expect("lock poisoned")
+                .contains_key(&path)
+        );
         assert_eq!(
             d.service.jobs.len(),
             1,
@@ -477,7 +491,7 @@ mod tests {
         let mut d = Driver::new(1);
         d.finish(std::slice::from_ref(&path));
         tree.file("folder/child/data", 29);
-        for value in d.service.cache.lock().unwrap().values_mut() {
+        for value in d.service.cache.lock().expect("lock poisoned").values_mut() {
             value.at = Instant::now() - TTL;
         }
         d.service.sweep_at = Instant::now();
@@ -537,11 +551,15 @@ mod tests {
         };
         for i in 0..=MAX_CACHED {
             let path = tree.0.join(format!("cached{i}"));
-            d.service.cache.lock().unwrap().insert(path.clone(), value);
+            d.service
+                .cache
+                .lock()
+                .expect("lock poisoned")
+                .insert(path.clone(), value);
             d.sizes.insert(path, 0);
         }
         d.sync(&[]);
-        let len = d.service.cache.lock().unwrap().len();
+        let len = d.service.cache.lock().expect("lock poisoned").len();
         assert!(len <= MAX_CACHED);
         assert_eq!(d.sizes.len(), len);
     }
@@ -559,7 +577,11 @@ mod tests {
             at: Instant::now(),
         };
         for path in &paths {
-            d.service.cache.lock().unwrap().insert(path.clone(), value);
+            d.service
+                .cache
+                .lock()
+                .expect("lock poisoned")
+                .insert(path.clone(), value);
         }
         d.sync(&paths);
         assert_eq!(d.sizes.len(), paths.len());
@@ -567,7 +589,7 @@ mod tests {
         assert_eq!(d.service.generation, 0);
         // Closing those rows restores the normal history bound.
         d.sync(&[]);
-        assert!(d.service.cache.lock().unwrap().len() <= MAX_CACHED);
+        assert!(d.service.cache.lock().expect("lock poisoned").len() <= MAX_CACHED);
     }
 
     #[test]
@@ -588,11 +610,14 @@ mod tests {
                         .unwrap()
                         .starts_with("folder-size-")
                 );
-                visited.lock().unwrap().insert(p.to_path_buf());
+                visited
+                    .lock()
+                    .expect("lock poisoned")
+                    .insert(p.to_path_buf());
             })
         });
         assert_eq!(size, Some(16));
-        assert_eq!(visited.into_inner().unwrap().len(), 17);
+        assert_eq!(visited.into_inner().expect("lock poisoned").len(), 17);
         let link = tree.0.join("link");
         std::os::unix::fs::symlink(&path, &link).unwrap();
         let mut excluded = vec![link.clone()];

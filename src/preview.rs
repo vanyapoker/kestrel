@@ -1088,6 +1088,7 @@ mod hang_tests {
     fn fifo_preview_fails_fast_instead_of_blocking() {
         let path = std::env::temp_dir().join(format!("kestrel-fifo-{}", std::process::id()));
         let c = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        // SAFETY: `c` is a NUL-terminated path.
         assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
         let started = Instant::now();
         assert!(matches!(load_text(&path), Payload::Error(_)));

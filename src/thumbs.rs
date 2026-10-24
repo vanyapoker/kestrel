@@ -340,12 +340,12 @@ impl Thumbs {
                 .spawn(move || {
                     loop {
                         let request = {
-                            let mut stack = queue.stack.lock().unwrap();
+                            let mut stack = queue.stack.lock().expect("lock poisoned");
                             loop {
                                 if let Some(job) = stack.pop() {
                                     break job;
                                 }
-                                stack = queue.ready.wait(stack).unwrap();
+                                stack = queue.ready.wait(stack).expect("lock poisoned");
                             }
                         };
                         let payload = match request.kind {
@@ -388,11 +388,15 @@ impl Thumbs {
             },
         );
         self.order.push_back(path.to_path_buf());
-        self.queue.stack.lock().unwrap().push(Request {
-            path: path.to_path_buf(),
-            id: self.next_request,
-            kind,
-        });
+        self.queue
+            .stack
+            .lock()
+            .expect("lock poisoned")
+            .push(Request {
+                path: path.to_path_buf(),
+                id: self.next_request,
+                kind,
+            });
         self.queue.ready.notify_one();
     }
 
@@ -416,7 +420,7 @@ impl Thumbs {
 
     /// Cancel queued and in-flight requests; late results cannot refill the cache.
     pub fn cancel_pending(&mut self) {
-        self.queue.stack.lock().unwrap().clear();
+        self.queue.stack.lock().expect("lock poisoned").clear();
         self.cache.retain(|_, c| !matches!(c.value, Thumb::Pending));
         self.order.retain(|p| self.cache.contains_key(p));
     }
@@ -424,7 +428,11 @@ impl Thumbs {
     pub fn invalidate(&mut self, path: &Path) {
         self.cache.remove(path);
         self.order.retain(|p| p != path);
-        self.queue.stack.lock().unwrap().retain(|r| r.path != path);
+        self.queue
+            .stack
+            .lock()
+            .expect("lock poisoned")
+            .retain(|r| r.path != path);
     }
 
     fn accept(&mut self, ctx: &egui::Context, msg: ResultMsg) {
@@ -464,7 +472,11 @@ impl Thumbs {
                 self.order.push_back(p);
             } else {
                 self.cache.remove(&p);
-                self.queue.stack.lock().unwrap().retain(|r| r.path != p);
+                self.queue
+                    .stack
+                    .lock()
+                    .expect("lock poisoned")
+                    .retain(|r| r.path != p);
             }
         }
         self.order.retain(|p| self.cache.contains_key(p));
@@ -568,12 +580,14 @@ mod tests {
         assert!(text_thumbnail(&dir.join("missing")).is_none());
         let fifo = dir.join("fifo");
         let cpath = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: `cpath` is a NUL-terminated path.
         assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) }, 0);
         assert!(text_thumbnail(&fifo).is_none());
         assert!(text_thumbnail(Path::new("/dev/null")).is_none());
         let locked = dir.join("locked.txt");
         fs::write(&locked, "not readable").unwrap();
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        // SAFETY: `geteuid` has no preconditions.
         if unsafe { libc::geteuid() } != 0 {
             assert!(text_thumbnail(&locked).is_none());
         }
@@ -614,21 +628,45 @@ mod tests {
         let path = Path::new("demo.rs");
         let mut cache = empty_cache();
         cache.get_text(path);
-        let old = cache.queue.stack.lock().unwrap().pop().unwrap();
+        let old = cache
+            .queue
+            .stack
+            .lock()
+            .expect("lock poisoned")
+            .pop()
+            .unwrap();
         cache.invalidate(path);
         cache.get_text(path);
-        let fresh = cache.queue.stack.lock().unwrap().pop().unwrap();
+        let fresh = cache
+            .queue
+            .stack
+            .lock()
+            .expect("lock poisoned")
+            .pop()
+            .unwrap();
         cache.accept(&ctx, result(fresh, "fresh"));
         cache.accept(&ctx, result(old, "stale"));
         assert_eq!(cache.get_text(path).unwrap().text, "fresh");
         cache.invalidate(path);
         cache.get_text(path);
-        let cancelled = cache.queue.stack.lock().unwrap().pop().unwrap();
+        let cancelled = cache
+            .queue
+            .stack
+            .lock()
+            .expect("lock poisoned")
+            .pop()
+            .unwrap();
         cache.cancel_pending();
         cache.accept(&ctx, result(cancelled, "cancelled"));
         assert!(!cache.cache.contains_key(path));
         cache.request(path, Kind::Text(crate::theme::generation().wrapping_sub(1)));
-        let old_theme = cache.queue.stack.lock().unwrap().pop().unwrap();
+        let old_theme = cache
+            .queue
+            .stack
+            .lock()
+            .expect("lock poisoned")
+            .pop()
+            .unwrap();
         cache.accept(&ctx, result(old_theme, "old theme"));
         assert!(matches!(cache.cache[path].value, Thumb::Pending));
         let id = cache.cache[path].request;
@@ -651,6 +689,9 @@ mod tests {
         assert_eq!(cache.cache.len(), CACHE_CAP);
         assert!(cache.cache.contains_key(visible));
         assert!(cache.cache.contains_key(Path::new("new.txt")));
-        assert_eq!(cache.queue.stack.lock().unwrap().len(), CACHE_CAP);
+        assert_eq!(
+            cache.queue.stack.lock().expect("lock poisoned").len(),
+            CACHE_CAP
+        );
     }
 }

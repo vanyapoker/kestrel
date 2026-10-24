@@ -37,18 +37,19 @@ impl App {
         }
         for (i, closed) in self.closed_tabs.iter().enumerate().rev() {
             if let Some(tab) = closed.active()
-                && seen.insert(tab.path.clone()) {
-                    let name = tab
-                        .path
-                        .file_name()
-                        .unwrap_or(tab.path.as_os_str())
-                        .to_string_lossy();
-                    items.push((
-                        name.into_owned(),
-                        format!("Closed tab · {}", tab.path.display()),
-                        Action::ReopenClosed(i),
-                    ));
-                }
+                && seen.insert(tab.path.clone())
+            {
+                let name = tab
+                    .path
+                    .file_name()
+                    .unwrap_or(tab.path.as_os_str())
+                    .to_string_lossy();
+                items.push((
+                    name.into_owned(),
+                    format!("Closed tab · {}", tab.path.display()),
+                    Action::ReopenClosed(i),
+                ));
+            }
         }
         for (name, path) in &self.places.bookmarks {
             if seen.insert(path.clone()) {

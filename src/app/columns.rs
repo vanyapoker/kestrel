@@ -133,7 +133,10 @@ impl App {
             tab.path = fallback;
             start_listing(tab, &self.list_tx, &self.ctx, false);
         } else {
-            let c = tab.columns.as_mut().unwrap();
+            let c = tab
+                .columns
+                .as_mut()
+                .expect("the listing was found in this tab's columns");
             for item in &c.items[index..] {
                 item.cancel.store(true, Ordering::Relaxed);
             }
@@ -194,7 +197,7 @@ impl App {
                 .cursor_entry()
                 .filter(|e| e.is_dir)
                 .map(|e| e.path.clone());
-            let cols = tab.columns.as_mut().unwrap();
+            let cols = tab.columns.as_mut().expect("columns were just ensured");
             // Only the active cursor reveals a child. Loading passive columns never cascades.
             if !tab.loading {
                 let expected = cols.items.get(cols.active + 1).map(|t| t.path.clone());
@@ -302,7 +305,11 @@ impl App {
                 asc,
             );
             t.select_after_load = Some(path);
-            let c = self.tab_mut().columns.as_mut().unwrap();
+            let c = self
+                .tab_mut()
+                .columns
+                .as_mut()
+                .expect("columns were checked at the top");
             c.items.insert(0, t);
             c.active += 1;
             self.activate_column(0);

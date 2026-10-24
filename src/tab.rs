@@ -241,9 +241,10 @@ impl Tab {
         };
         if self.marked.is_empty() {
             if let Some(cur) = self.cursor_entry().map(|e| e.path.clone())
-                && cur != path {
-                    self.marked.insert(cur);
-                }
+                && cur != path
+            {
+                self.marked.insert(cur);
+            }
             self.marked.insert(path);
         } else if !self.marked.remove(&path) {
             self.marked.insert(path);

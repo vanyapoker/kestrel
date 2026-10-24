@@ -472,10 +472,10 @@ impl App {
                         Sense::click_and_drag(),
                     );
                     if response.dragged_by(egui::PointerButton::Primary)
-                        && let Some(pos) = response.interact_pointer_pos() {
-                            self.split_ratio =
-                                ((pos.x - full.left()) / full.width()).clamp(0.15, 0.85);
-                        }
+                        && let Some(pos) = response.interact_pointer_pos()
+                    {
+                        self.split_ratio = ((pos.x - full.left()) / full.width()).clamp(0.15, 0.85);
+                    }
                     if response.double_clicked() {
                         self.split_ratio = 0.5;
                     }
@@ -961,13 +961,13 @@ impl App {
                                 if ui.input(|i| i.pointer.primary_released())
                                     && let Some(drag) =
                                         DragAndDrop::take_payload::<TabDrag>(ui.ctx())
-                                    {
-                                        actions.push(Action::MoveTab {
-                                            id: drag.id,
-                                            pane: p,
-                                            before,
-                                        });
-                                    }
+                                {
+                                    actions.push(Action::MoveTab {
+                                        id: drag.id,
+                                        pane: p,
+                                        before,
+                                    });
+                                }
                             }
                             if let Some(paths) = take_file_drop(&resp) {
                                 let copy = ui.input(|i| i.modifiers.ctrl);
@@ -992,13 +992,14 @@ impl App {
         });
         if background.dnd_hover_payload::<TabDrag>().is_some()
             && ui.input(|i| i.pointer.primary_released())
-            && let Some(drag) = DragAndDrop::take_payload::<TabDrag>(ui.ctx()) {
-                actions.push(Action::MoveTab {
-                    id: drag.id,
-                    pane: p,
-                    before: None,
-                });
-            }
+            && let Some(drag) = DragAndDrop::take_payload::<TabDrag>(ui.ctx())
+        {
+            actions.push(Action::MoveTab {
+                id: drag.id,
+                pane: p,
+                before: None,
+            });
+        }
     }
 
     fn toolbar(&mut self, ui: &mut Ui, p: usize, actions: &mut Vec<Action>) {
@@ -2626,14 +2627,15 @@ impl App {
             }
         }
         if !dropped.is_empty()
-            && let Some((dest, pane)) = self.drop_destination(pointer.unwrap_or_default()) {
-                actions.push(Action::FocusPane(pane));
-                actions.push(Action::Drop {
-                    paths: dropped,
-                    dest,
-                    copy: true,
-                });
-            }
+            && let Some((dest, pane)) = self.drop_destination(pointer.unwrap_or_default())
+        {
+            actions.push(Action::FocusPane(pane));
+            actions.push(Action::Drop {
+                paths: dropped,
+                dest,
+                copy: true,
+            });
+        }
     }
 
     /// Folder under `pos` (row, tile or sidebar entry), else the folder of the pane under it.
@@ -3447,9 +3449,10 @@ fn disk_usage(ctx: &egui::Context, path: &Path) -> Option<(u64, u64)> {
     const TTL: std::time::Duration = std::time::Duration::from_secs(5);
     let id = egui::Id::new(("disk_usage", path));
     if let Some((at, usage)) = ctx.data(|d| d.get_temp::<(Instant, Option<(u64, u64)>)>(id))
-        && at.elapsed() < TTL {
-            return usage;
-        }
+        && at.elapsed() < TTL
+    {
+        return usage;
+    }
     let usage = fsops::disk_space(path);
     ctx.data_mut(|d| d.insert_temp(id, (Instant::now(), usage)));
     usage
@@ -3613,7 +3616,10 @@ fn background_drop(ui: &mut Ui, tab: &Tab, rect: Rect, actions: &mut Vec<Action>
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "immediate-mode paint helper; a parameter struct would just mirror the call site"
+)]
 fn row_interactions(
     ui: &Ui,
     resp: &egui::Response,
@@ -3634,13 +3640,15 @@ fn row_interactions(
         DragAndDrop::set_payload(ui.ctx(), DragPaths(paths));
     }
     if let Some(paths) = take_file_drop(resp)
-        && e.is_dir && !paths.0.contains(&e.path) {
-            actions.push(Action::Drop {
-                paths: paths.0.clone(),
-                dest: e.path.clone(),
-                copy: ctrl,
-            });
-        }
+        && e.is_dir
+        && !paths.0.contains(&e.path)
+    {
+        actions.push(Action::Drop {
+            paths: paths.0.clone(),
+            dest: e.path.clone(),
+            copy: ctrl,
+        });
+    }
     if resp.double_clicked() {
         actions.push(Action::FocusPane(p));
         actions.push(Action::OpenEntry(vi));
@@ -3808,7 +3816,10 @@ fn open_with_menu(
     });
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "immediate-mode paint helper; a parameter struct would just mirror the call site"
+)]
 fn paint_row(
     painter: &Painter,
     rect: Rect,
@@ -3951,15 +3962,16 @@ fn paint_tile(
     };
     let mut drew = false;
     if let Some(r) = renderer
-        && let Some(tex) = thumbs.get(&e.path, r) {
-            let ts = tex.size_vec2();
-            let scale = (thumb_area.width() / ts.x)
-                .min(thumb_area.height() / ts.y)
-                .min(1.0);
-            let rect = Rect::from_center_size(thumb_area.center(), ts * scale);
-            painter.image(tex.id(), rect, UV, Color32::WHITE.gamma_multiply(alpha));
-            drew = true;
-        }
+        && let Some(tex) = thumbs.get(&e.path, r)
+    {
+        let ts = tex.size_vec2();
+        let scale = (thumb_area.width() / ts.x)
+            .min(thumb_area.height() / ts.y)
+            .min(1.0);
+        let rect = Rect::from_center_size(thumb_area.center(), ts * scale);
+        painter.image(tex.id(), rect, UV, Color32::WHITE.gamma_multiply(alpha));
+        drew = true;
+    }
     if renderer.is_none()
         && !e.is_dir
         && !matches!(

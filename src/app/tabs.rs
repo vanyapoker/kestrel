@@ -129,18 +129,19 @@ impl App {
         session.recent_dirs.clear(); // Navigation history remains global.
         let previous = self.workspaces.insert(name.to_string(), session);
         if let Some(path) = &self.workspace_file
-            && let Err(error) = crate::workspaces::save(path, &self.workspaces) {
-                match previous {
-                    Some(previous) => {
-                        self.workspaces.insert(name.to_string(), previous);
-                    }
-                    None => {
-                        self.workspaces.remove(name);
-                    }
+            && let Err(error) = crate::workspaces::save(path, &self.workspaces)
+        {
+            match previous {
+                Some(previous) => {
+                    self.workspaces.insert(name.to_string(), previous);
                 }
-                self.toast(format!("Could not save workspace: {error}"), true);
-                return;
+                None => {
+                    self.workspaces.remove(name);
+                }
             }
+            self.toast(format!("Could not save workspace: {error}"), true);
+            return;
+        }
         self.toast(format!("Saved workspace “{name}”"), false);
     }
 
@@ -165,9 +166,10 @@ impl App {
             return;
         };
         if let Some(path) = &self.workspace_file
-            && let Err(error) = crate::workspaces::save(path, &self.workspaces) {
-                self.workspaces.insert(name.to_string(), previous);
-                self.toast(format!("Could not delete workspace: {error}"), true);
-            }
+            && let Err(error) = crate::workspaces::save(path, &self.workspaces)
+        {
+            self.workspaces.insert(name.to_string(), previous);
+            self.toast(format!("Could not delete workspace: {error}"), true);
+        }
     }
 }

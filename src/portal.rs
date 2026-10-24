@@ -27,7 +27,12 @@ struct RequestObj {
 #[zbus::interface(name = "org.freedesktop.impl.portal.Request")]
 impl RequestObj {
     fn close(&self) {
-        if let Some(pid) = running().lock().unwrap().remove(&self.handle) {
+        if let Some(pid) = running()
+            .lock()
+            .expect("lock poisoned")
+            .remove(&self.handle)
+        {
+            // SAFETY: `kill` has no memory-safety preconditions.
             unsafe { libc::kill(pid as i32, libc::SIGTERM) };
         }
     }
@@ -120,7 +125,7 @@ async fn serve(conn: &zbus::Connection, handle: ObjectPath<'_>, req: Request) ->
         let _ = tx.send_blocking(run_picker(&req, &key));
     });
     let paths = rx.recv().await.unwrap_or_default();
-    running().lock().unwrap().remove(&handle);
+    running().lock().expect("lock poisoned").remove(&handle);
     let _ = conn
         .object_server()
         .remove::<RequestObj, _>(handle.as_str())
@@ -152,7 +157,10 @@ fn run_picker(req: &Request, key: &str) -> Vec<PathBuf> {
         eprintln!("kestrel: could not start the picker");
         return Vec::new();
     };
-    running().lock().unwrap().insert(key.to_owned(), child.id());
+    running()
+        .lock()
+        .expect("lock poisoned")
+        .insert(key.to_owned(), child.id());
     let Ok(out) = child.wait_with_output() else {
         return Vec::new();
     };
