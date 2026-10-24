@@ -17,8 +17,8 @@ mod theme;
 mod thumbs;
 mod util;
 mod watch;
-mod workspaces;
 mod wl_dnd;
+mod workspaces;
 
 use eframe::egui;
 use std::path::PathBuf;
@@ -30,7 +30,9 @@ fn main() -> eframe::Result {
             return Ok(());
         }
         Some("--help" | "-h") => {
-            println!("Usage: kestrel [FOLDER]\n\nUpdates: https://github.com/vanyapoker/kestrel/releases/latest\nSource installations can also run `kestrel-update`.");
+            println!(
+                "Usage: kestrel [FOLDER]\n\nUpdates: https://github.com/vanyapoker/kestrel/releases/latest\nSource installations can also run `kestrel-update`."
+            );
             return Ok(());
         }
         Some("--portal") => {
@@ -52,7 +54,11 @@ fn main() -> eframe::Result {
         .and_then(|p| p.canonicalize().ok())
         .filter(|p| p.is_dir());
     // A picker is a throwaway window: it neither restores nor overwrites the session.
-    let session = if picker.is_some() { None } else { session::load() };
+    let session = if picker.is_some() {
+        None
+    } else {
+        session::load()
+    };
     let (title, app_id, size) = match &picker {
         Some(p) => (p.heading(), "kestrel-picker", [980.0, 640.0]),
         None => ("Kestrel".to_string(), "kestrel", [1280.0, 800.0]),
@@ -67,7 +73,10 @@ fn main() -> eframe::Result {
         // With vsync, Mesa blocks in eglSwapBuffers until the compositor's frame
         // callback, which never comes while the window sits on a hidden workspace,
         // so the app froze there. Frames are paced by `pre_present_notify` instead.
-        glow_options: eframe::egui_glow::GlowConfiguration { vsync: false, ..Default::default() },
+        glow_options: eframe::egui_glow::GlowConfiguration {
+            vsync: false,
+            ..Default::default()
+        },
         ..Default::default()
     };
     eframe::run_native(

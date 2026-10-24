@@ -20,34 +20,66 @@ impl App {
         for (pi, pane) in self.panes.iter().enumerate() {
             for (ti, tab) in pane.tabs.iter().enumerate() {
                 if seen.insert(tab.path.clone()) {
-                    let name = self.places.bookmarks.iter().find(|(_, path)| path == &tab.path)
-                        .map(|(name, _)| name.clone()).unwrap_or_else(|| tab.title());
-                    items.push((name, format!("Open tab · {}", tab.path.display()), Action::SwitchTab(pi, ti)));
+                    let name = self
+                        .places
+                        .bookmarks
+                        .iter()
+                        .find(|(_, path)| path == &tab.path)
+                        .map(|(name, _)| name.clone())
+                        .unwrap_or_else(|| tab.title());
+                    items.push((
+                        name,
+                        format!("Open tab · {}", tab.path.display()),
+                        Action::SwitchTab(pi, ti),
+                    ));
                 }
             }
         }
         for (i, closed) in self.closed_tabs.iter().enumerate().rev() {
-            if let Some(tab) = closed.active() {
-                if seen.insert(tab.path.clone()) {
-                    let name = tab.path.file_name().unwrap_or(tab.path.as_os_str()).to_string_lossy();
-                    items.push((name.into_owned(), format!("Closed tab · {}", tab.path.display()), Action::ReopenClosed(i)));
+            if let Some(tab) = closed.active()
+                && seen.insert(tab.path.clone()) {
+                    let name = tab
+                        .path
+                        .file_name()
+                        .unwrap_or(tab.path.as_os_str())
+                        .to_string_lossy();
+                    items.push((
+                        name.into_owned(),
+                        format!("Closed tab · {}", tab.path.display()),
+                        Action::ReopenClosed(i),
+                    ));
                 }
-            }
         }
         for (name, path) in &self.places.bookmarks {
             if seen.insert(path.clone()) {
-                items.push((name.clone(), format!("Bookmark · {}", path.display()), Action::Navigate(path.clone())));
+                items.push((
+                    name.clone(),
+                    format!("Bookmark · {}", path.display()),
+                    Action::Navigate(path.clone()),
+                ));
             }
         }
         for path in &self.recent_dirs {
             if seen.insert(path.clone()) {
-                let name = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy().into_owned();
-                items.push((name, format!("Recent · {}", path.display()), Action::Navigate(path.clone())));
+                let name = path
+                    .file_name()
+                    .unwrap_or(path.as_os_str())
+                    .to_string_lossy()
+                    .into_owned();
+                items.push((
+                    name,
+                    format!("Recent · {}", path.display()),
+                    Action::Navigate(path.clone()),
+                ));
             }
         }
         for (name, path) in &self.places.places {
             if seen.insert(path.clone()) {
-                items.push((name.clone(), format!("Place · {}", path.display()), Action::Navigate(path.clone())));
+                items.push((
+                    name.clone(),
+                    format!("Place · {}", path.display()),
+                    Action::Navigate(path.clone()),
+                ));
             }
         }
         items

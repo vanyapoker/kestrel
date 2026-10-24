@@ -44,22 +44,41 @@ fn with_db<T>(f: impl FnOnce(&Db) -> T) -> T {
 }
 
 fn data_dirs() -> Vec<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    let user = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".local/share"));
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let user = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".local/share"));
     let system = std::env::var("XDG_DATA_DIRS").unwrap_or_default();
     let system: Vec<PathBuf> = if system.is_empty() {
         vec!["/usr/local/share".into(), "/usr/share".into()]
     } else {
-        system.split(':').filter(|s| !s.is_empty()).map(PathBuf::from).collect()
+        system
+            .split(':')
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .collect()
     };
     std::iter::once(user).chain(system).collect()
 }
 
 fn config_dirs() -> Vec<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    let user = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".config"));
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let user = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".config"));
     let system = std::env::var("XDG_CONFIG_DIRS").unwrap_or_else(|_| "/etc/xdg".into());
-    std::iter::once(user).chain(system.split(':').filter(|s| !s.is_empty()).map(PathBuf::from)).collect()
+    std::iter::once(user)
+        .chain(
+            system
+                .split(':')
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from),
+        )
+        .collect()
 }
 
 impl Db {
@@ -80,13 +99,17 @@ impl Db {
                 for line in s.lines().filter(|l| !l.starts_with('#')) {
                     let mut it = line.split(':');
                     if let (Some(w), Some(m), Some(g)) = (it.next(), it.next(), it.next()) {
-                        db.globs.push((w.parse().unwrap_or(50), g.to_lowercase(), m.to_string()));
+                        db.globs
+                            .push((w.parse().unwrap_or(50), g.to_lowercase(), m.to_string()));
                     }
                 }
             }
             if let Ok(s) = std::fs::read_to_string(mime.join("subclasses")) {
                 for (child, parent) in s.lines().filter_map(|l| l.split_once(' ')) {
-                    db.parents.entry(child.to_string()).or_default().push(parent.to_string());
+                    db.parents
+                        .entry(child.to_string())
+                        .or_default()
+                        .push(parent.to_string());
                 }
             }
             if let Ok(s) = std::fs::read_to_string(mime.join("aliases")) {
@@ -96,7 +119,8 @@ impl Db {
             }
         }
         // Longer (more specific) patterns win ties, so `*.tar.gz` beats `*.gz`.
-        db.globs.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.len().cmp(&a.1.len())));
+        db.globs
+            .sort_by(|a, b| b.0.cmp(&a.0).then(b.1.len().cmp(&a.1.len())));
 
         // Earlier dirs (the user's) take precedence for the same id.
         let mut seen = HashSet::new();
@@ -111,14 +135,18 @@ impl Db {
             .map(|d| d.join("mimeapps.list"))
             .chain(dirs.iter().map(|d| d.join("applications/mimeapps.list")));
         for list in lists {
-            let Ok(s) = std::fs::read_to_string(list) else { continue };
+            let Ok(s) = std::fs::read_to_string(list) else {
+                continue;
+            };
             let mut section = "";
             for line in s.lines().map(str::trim) {
                 if line.starts_with('[') {
                     section = line;
                     continue;
                 }
-                let Some((mime, ids)) = line.split_once('=') else { continue };
+                let Some((mime, ids)) = line.split_once('=') else {
+                    continue;
+                };
                 let target = match section {
                     "[Default Applications]" => &mut db.defaults,
                     "[Added Associations]" => &mut db.added,
@@ -136,7 +164,10 @@ impl Db {
     }
 
     fn canonical(&self, mime: &str) -> String {
-        self.aliases.get(mime).cloned().unwrap_or_else(|| mime.to_string())
+        self.aliases
+            .get(mime)
+            .cloned()
+            .unwrap_or_else(|| mime.to_string())
     }
 
     /// `mime` followed by its ancestors, nearest first.
@@ -164,22 +195,28 @@ impl Db {
         if path.is_dir() {
             return "inode/directory".into();
         }
-        let name = path.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
         for (_, glob, mime) in &self.globs {
             if glob_match(glob, &name) {
                 return mime.clone();
             }
         }
-        if looks_like_text(path) { "text/plain".into() } else { "application/octet-stream".into() }
+        if looks_like_text(path) {
+            "text/plain".into()
+        } else {
+            "application/octet-stream".into()
+        }
     }
 }
 
 fn glob_match(glob: &str, name: &str) -> bool {
-    if let Some(suffix) = glob.strip_prefix('*') {
-        if !suffix.contains(['*', '?', '[']) {
+    if let Some(suffix) = glob.strip_prefix('*')
+        && !suffix.contains(['*', '?', '[']) {
             return name.ends_with(suffix);
         }
-    }
     if !glob.contains(['*', '?', '[']) {
         return glob == name;
     }
@@ -189,13 +226,19 @@ fn glob_match(glob: &str, name: &str) -> bool {
 fn looks_like_text(path: &Path) -> bool {
     use std::io::Read;
     let mut buf = [0u8; 4096];
-    let Ok(n) = std::fs::File::open(path).and_then(|mut f| f.read(&mut buf)) else { return false };
+    let Ok(n) = std::fs::File::open(path).and_then(|mut f| f.read(&mut buf)) else {
+        return false;
+    };
     // A cut-off multibyte character at the end still counts as text.
-    n > 0 && !buf[..n].contains(&0) && std::str::from_utf8(&buf[..n]).map_or_else(|e| e.valid_up_to() + 4 > n, |_| true)
+    n > 0
+        && !buf[..n].contains(&0)
+        && std::str::from_utf8(&buf[..n]).map_or_else(|e| e.valid_up_to() + 4 > n, |_| true)
 }
 
 fn scan_apps(dir: &Path, prefix: &str, seen: &mut HashSet<String>, out: &mut Vec<DesktopApp>) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
     for de in rd.flatten() {
         let path = de.path();
         let name = de.file_name().to_string_lossy().into_owned();
@@ -229,18 +272,33 @@ fn parse_desktop(id: &str, path: &Path) -> Option<DesktopApp> {
         if !in_entry {
             continue;
         }
-        let Some((k, v)) = line.split_once('=') else { continue };
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
         match k.trim() {
             "Name" => name = Some(v.trim().to_string()),
             "Exec" => exec = Some(v.trim().to_string()),
-            "MimeType" => mimes = v.split(';').map(str::trim).filter(|m| !m.is_empty()).map(String::from).collect(),
+            "MimeType" => {
+                mimes = v
+                    .split(';')
+                    .map(str::trim)
+                    .filter(|m| !m.is_empty())
+                    .map(String::from)
+                    .collect()
+            }
             "Terminal" => terminal = v.trim() == "true",
             "Type" if v.trim() != "Application" => return None,
             "Hidden" if v.trim() == "true" => return None,
             _ => {}
         }
     }
-    Some(DesktopApp { id: id.to_string(), name: name?, exec: exec?, terminal, mimes })
+    Some(DesktopApp {
+        id: id.to_string(),
+        name: name?,
+        exec: exec?,
+        terminal,
+        mimes,
+    })
 }
 
 pub struct Choices {
@@ -261,18 +319,31 @@ pub fn choices(path: &Path) -> Choices {
             .flat_map(|m| db.defaults.get(m).into_iter().flatten())
             .find(|id| by_id(id).is_some())
             .cloned();
-        let mut apps: Vec<DesktopApp> = default.iter().filter_map(|id| by_id(id).cloned()).collect();
+        let mut apps: Vec<DesktopApp> =
+            default.iter().filter_map(|id| by_id(id).cloned()).collect();
         // Exact type first, then apps for broader parent types.
         for m in &lineage {
-            let added = db.added.get(m).into_iter().flatten().filter_map(|id| by_id(id));
-            let declared = db.apps.iter().filter(|a| a.mimes.iter().any(|am| db.canonical(am) == *m));
+            let added = db
+                .added
+                .get(m)
+                .into_iter()
+                .flatten()
+                .filter_map(|id| by_id(id));
+            let declared = db
+                .apps
+                .iter()
+                .filter(|a| a.mimes.iter().any(|am| db.canonical(am) == *m));
             for a in added.chain(declared) {
                 if !apps.iter().any(|x| x.id == a.id) {
                     apps.push(a.clone());
                 }
             }
         }
-        Choices { mime, apps, default }
+        Choices {
+            mime,
+            apps,
+            default,
+        }
     })
 }
 
@@ -283,7 +354,11 @@ pub fn set_default(app_id: &str, mime: &str) -> Result<(), String> {
         .output()
         .map_err(|e| format!("xdg-mime: {e}"))?;
     *DB.lock().unwrap() = None; // pick the change up on the next menu
-    if out.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_string()) }
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
 }
 
 /// Splits an Exec value into arguments (desktop entry spec quoting).
@@ -337,7 +412,11 @@ fn command_line(app: &DesktopApp, paths: &[PathBuf]) -> Vec<String> {
             "%f" | "%u" => {
                 // Single-file apps get the first file; `launch` starts one per extra file.
                 if let Some(p) = paths.first() {
-                    out.push(if arg == "%f" { p.to_string_lossy().into_owned() } else { file_uri(p) });
+                    out.push(if arg == "%f" {
+                        p.to_string_lossy().into_owned()
+                    } else {
+                        file_uri(p)
+                    });
                 }
                 used = true;
             }
@@ -376,13 +455,19 @@ fn command_line(app: &DesktopApp, paths: &[PathBuf]) -> Vec<String> {
 /// Opens `paths` with `app`. Apps that take one file at a time get one launch per file.
 pub fn launch(app: &DesktopApp, paths: &[PathBuf]) -> Result<(), String> {
     let single = split_exec(&app.exec).iter().any(|a| a == "%f" || a == "%u");
-    let groups: Vec<Vec<PathBuf>> = if single { paths.iter().map(|p| vec![p.clone()]).collect() } else { vec![paths.to_vec()] };
+    let groups: Vec<Vec<PathBuf>> = if single {
+        paths.iter().map(|p| vec![p.clone()]).collect()
+    } else {
+        vec![paths.to_vec()]
+    };
     for group in groups {
         let mut argv = command_line(app, &group);
         if app.terminal {
             argv.insert(0, "xdg-terminal-exec".into());
         }
-        let Some((prog, args)) = argv.split_first() else { return Err(format!("{} has no command", app.name)) };
+        let Some((prog, args)) = argv.split_first() else {
+            return Err(format!("{} has no command", app.name));
+        };
         use std::os::unix::process::CommandExt;
         let mut cmd = std::process::Command::new(prog);
         cmd.args(args)
@@ -393,7 +478,8 @@ pub fn launch(app: &DesktopApp, paths: &[PathBuf]) -> Result<(), String> {
         if let Some(dir) = group.first().and_then(|p| p.parent()) {
             cmd.current_dir(dir);
         }
-        cmd.spawn().map_err(|e| format!("Couldn't start {}: {e}", app.name))?;
+        cmd.spawn()
+            .map_err(|e| format!("Couldn't start {}: {e}", app.name))?;
     }
     Ok(())
 }
@@ -403,16 +489,34 @@ mod tests {
     use super::*;
 
     fn app(exec: &str) -> DesktopApp {
-        DesktopApp { id: "t.desktop".into(), name: "T".into(), exec: exec.into(), terminal: false, mimes: vec![] }
+        DesktopApp {
+            id: "t.desktop".into(),
+            name: "T".into(),
+            exec: exec.into(),
+            terminal: false,
+            mimes: vec![],
+        }
     }
 
     #[test]
     fn exec_field_codes() {
         let files = [PathBuf::from("/a b/c.txt"), PathBuf::from("/d.txt")];
-        assert_eq!(command_line(&app("ed %F"), &files), ["ed", "/a b/c.txt", "/d.txt"]);
-        assert_eq!(command_line(&app("ed --new %f"), &files[..1]), ["ed", "--new", "/a b/c.txt"]);
-        assert_eq!(command_line(&app("web %U"), &files[..1]), ["web", "file:///a%20b/c.txt"]);
-        assert_eq!(command_line(&app("\"/opt/my app/run\" %i -x"), &files[..1]), ["/opt/my app/run", "-x", "/a b/c.txt"]);
+        assert_eq!(
+            command_line(&app("ed %F"), &files),
+            ["ed", "/a b/c.txt", "/d.txt"]
+        );
+        assert_eq!(
+            command_line(&app("ed --new %f"), &files[..1]),
+            ["ed", "--new", "/a b/c.txt"]
+        );
+        assert_eq!(
+            command_line(&app("web %U"), &files[..1]),
+            ["web", "file:///a%20b/c.txt"]
+        );
+        assert_eq!(
+            command_line(&app("\"/opt/my app/run\" %i -x"), &files[..1]),
+            ["/opt/my app/run", "-x", "/a b/c.txt"]
+        );
         assert_eq!(command_line(&app("pct 100%%"), &[]), ["pct", "100%"]);
     }
 

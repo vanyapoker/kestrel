@@ -27,7 +27,15 @@ impl Device {
 }
 
 /// Filesystems that are never mounted as a folder.
-const NOT_MOUNTABLE: &[&str] = &["swap", "crypto_LUKS", "LVM2_member", "linux_raid_member", "zfs_member", "bcache", "BitLocker"];
+const NOT_MOUNTABLE: &[&str] = &[
+    "swap",
+    "crypto_LUKS",
+    "LVM2_member",
+    "linux_raid_member",
+    "zfs_member",
+    "bcache",
+    "BitLocker",
+];
 
 /// EFI system, Microsoft reserved, Windows recovery and BIOS boot partitions.
 const SYSTEM_PARTS: &[&str] = &[
@@ -40,12 +48,19 @@ const SYSTEM_PARTS: &[&str] = &[
 ];
 
 fn in_media_dir(mnt: &str) -> bool {
-    ["/mnt", "/media", "/run/media"].iter().any(|d| mnt.starts_with(d))
+    ["/mnt", "/media", "/run/media"]
+        .iter()
+        .any(|d| mnt.starts_with(d))
 }
 
 pub fn scan() -> Vec<Device> {
     let out = Command::new("lsblk")
-        .args(["-P", "-b", "-o", "PATH,PKNAME,TYPE,FSTYPE,LABEL,MOUNTPOINT,HOTPLUG,PARTTYPE,SIZE"])
+        .args([
+            "-P",
+            "-b",
+            "-o",
+            "PATH,PKNAME,TYPE,FSTYPE,LABEL,MOUNTPOINT,HOTPLUG,PARTTYPE,SIZE",
+        ])
         .output();
     match out {
         Ok(o) if o.status.success() => parse_lsblk(&String::from_utf8_lossy(&o.stdout)),
@@ -55,23 +70,53 @@ pub fn scan() -> Vec<Device> {
 
 fn parse_lsblk(text: &str) -> Vec<Device> {
     let rows: Vec<Vec<(String, String)>> = text.lines().map(parse_pairs).collect();
-    let get = |row: &Vec<(String, String)>, k: &str| row.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone()).unwrap_or_default();
+    let get = |row: &Vec<(String, String)>, k: &str| {
+        row.iter()
+            .find(|(key, _)| key == k)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    };
     let mut devices = Vec::new();
     for row in &rows {
-        let (path, kind, fstype, mount) = (get(row, "PATH"), get(row, "TYPE"), get(row, "FSTYPE"), get(row, "MOUNTPOINT"));
+        let (path, kind, fstype, mount) = (
+            get(row, "PATH"),
+            get(row, "TYPE"),
+            get(row, "FSTYPE"),
+            get(row, "MOUNTPOINT"),
+        );
         let pkname = get(row, "PKNAME");
-        let disk = if kind == "disk" { path.clone() } else { format!("/dev/{pkname}") };
+        let disk = if kind == "disk" {
+            path.clone()
+        } else {
+            format!("/dev/{pkname}")
+        };
         let removable = get(row, "HOTPLUG") == "1";
         if !mount.is_empty() {
             // Mounted elsewhere (/, /boot, /home…) is the system, not a drive.
             if !in_media_dir(&mount) {
                 continue;
             }
-            let name = Path::new(&mount).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(mount.clone());
-            devices.push(Device { name, dev: path.into(), disk: disk.into(), fstype, mount: Some(mount.into()), removable });
+            let name = Path::new(&mount)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or(mount.clone());
+            devices.push(Device {
+                name,
+                dev: path.into(),
+                disk: disk.into(),
+                fstype,
+                mount: Some(mount.into()),
+                removable,
+            });
             continue;
         }
-        let has_children = rows.iter().any(|r| get(r, "PKNAME") == Path::new(&path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+        let has_children = rows.iter().any(|r| {
+            get(r, "PKNAME")
+                == Path::new(&path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+        });
         let mountable = matches!(kind.as_str(), "part" | "disk")
             && !(kind == "disk" && has_children)
             && !fstype.is_empty()
@@ -87,7 +132,14 @@ fn parse_lsblk(text: &str) -> Vec<Device> {
         } else {
             label
         };
-        devices.push(Device { name, dev: path.into(), disk: disk.into(), fstype, mount: None, removable });
+        devices.push(Device {
+            name,
+            dev: path.into(),
+            disk: disk.into(),
+            fstype,
+            mount: None,
+            removable,
+        });
     }
     devices
 }
@@ -111,13 +163,12 @@ fn unescape(s: &str) -> String {
     let b = s.as_bytes();
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'\\' && i + 3 < b.len() && b[i + 1] == b'x' {
-            if let Ok(v) = u8::from_str_radix(&s[i + 2..i + 4], 16) {
+        if b[i] == b'\\' && i + 3 < b.len() && b[i + 1] == b'x'
+            && let Ok(v) = u8::from_str_radix(&s[i + 2..i + 4], 16) {
                 bytes.push(v);
                 i += 4;
                 continue;
             }
-        }
         bytes.push(b[i]);
         i += 1;
     }
@@ -131,7 +182,11 @@ pub fn watch(ctx: egui::Context) -> Receiver<Vec<Device>> {
         let signature = || {
             let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
             let mut blocks: Vec<String> = std::fs::read_dir("/sys/class/block")
-                .map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+                .map(|d| {
+                    d.flatten()
+                        .map(|e| e.file_name().to_string_lossy().into_owned())
+                        .collect()
+                })
                 .unwrap_or_default();
             blocks.sort();
             (mounts, blocks)
@@ -176,7 +231,13 @@ pub struct DevResult {
 }
 
 /// Runs the operation off the UI thread; polkit may ask for a password.
-pub fn run(op: DevOp, device: &Device, siblings: Vec<PathBuf>, tx: Sender<DevResult>, ctx: egui::Context) {
+pub fn run(
+    op: DevOp,
+    device: &Device,
+    siblings: Vec<PathBuf>,
+    tx: Sender<DevResult>,
+    ctx: egui::Context,
+) {
     let device = device.clone();
     std::thread::spawn(move || {
         let dev = device.dev.to_string_lossy().into_owned();
@@ -198,13 +259,22 @@ pub fn run(op: DevOp, device: &Device, siblings: Vec<PathBuf>, tx: Sender<DevRes
                 .and_then(|_| udisks(&["power-off", "-b", &device.disk.to_string_lossy()]))
                 .map(|_| None),
         };
-        let _ = tx.send(DevResult { op, dev: device.dev, name: device.name, result, read_only });
+        let _ = tx.send(DevResult {
+            op,
+            dev: device.dev,
+            name: device.name,
+            result,
+            read_only,
+        });
         ctx.request_repaint();
     });
 }
 
 fn udisks(args: &[&str]) -> Result<String, String> {
-    let out = Command::new("udisksctl").args(args).output().map_err(|e| format!("udisksctl: {e}"))?;
+    let out = Command::new("udisksctl")
+        .args(args)
+        .output()
+        .map_err(|e| format!("udisksctl: {e}"))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
@@ -220,7 +290,11 @@ fn mounted_at(out: &str) -> Option<PathBuf> {
 
 /// udisks errors come wrapped in D-Bus names; keep the readable part.
 fn clean_error(err: &str) -> String {
-    let line = err.lines().find(|l| !l.trim().is_empty()).unwrap_or("failed").trim();
+    let line = err
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("failed")
+        .trim();
     if line.contains("target is busy") {
         return "it is in use (close files and terminals open on it)".into();
     }
@@ -252,8 +326,19 @@ PATH="/dev/sde1" PKNAME="sde" TYPE="part" FSTYPE="exfat" LABEL="" MOUNTPOINT="" 
     #[test]
     fn lists_drives_mounted_and_not() {
         let d = parse_lsblk(LSBLK);
-        let names: Vec<(&str, bool)> = d.iter().map(|d| (d.name.as_str(), d.mount.is_some())).collect();
-        assert_eq!(names, [("SSD2", true), ("ssd t5 Portable", false), ("OMARCHY", true), ("29.8 GB Volume", false)]);
+        let names: Vec<(&str, bool)> = d
+            .iter()
+            .map(|d| (d.name.as_str(), d.mount.is_some()))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("SSD2", true),
+                ("ssd t5 Portable", false),
+                ("OMARCHY", true),
+                ("29.8 GB Volume", false)
+            ]
+        );
         let t5 = &d[1];
         assert_eq!(t5.dev, PathBuf::from("/dev/sdc1"));
         assert_eq!(t5.disk, PathBuf::from("/dev/sdc"));
@@ -262,11 +347,21 @@ PATH="/dev/sde1" PKNAME="sde" TYPE="part" FSTYPE="exfat" LABEL="" MOUNTPOINT="" 
 
     #[test]
     fn reads_udisks_output() {
-        assert_eq!(mounted_at("Mounted /dev/sdc1 at /run/media/vp/ssd t5 Portable\n"), Some(PathBuf::from("/run/media/vp/ssd t5 Portable")));
         assert_eq!(
-            clean_error("Error mounting /dev/sdc1: GDBus.Error:org.freedesktop.UDisks2.Error.Failed: Error mounting /dev/sdc1 at /run/media/vp/x: wrong fs type"),
+            mounted_at("Mounted /dev/sdc1 at /run/media/vp/ssd t5 Portable\n"),
+            Some(PathBuf::from("/run/media/vp/ssd t5 Portable"))
+        );
+        assert_eq!(
+            clean_error(
+                "Error mounting /dev/sdc1: GDBus.Error:org.freedesktop.UDisks2.Error.Failed: Error mounting /dev/sdc1 at /run/media/vp/x: wrong fs type"
+            ),
             "Error mounting /dev/sdc1 at /run/media/vp/x: wrong fs type"
         );
-        assert_eq!(clean_error("Error unmounting /dev/sdc1: GDBus.Error:org.freedesktop.UDisks2.Error.DeviceBusy: target is busy"), "it is in use (close files and terminals open on it)");
+        assert_eq!(
+            clean_error(
+                "Error unmounting /dev/sdc1: GDBus.Error:org.freedesktop.UDisks2.Error.DeviceBusy: target is busy"
+            ),
+            "it is in use (close files and terminals open on it)"
+        );
     }
 }

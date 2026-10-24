@@ -97,7 +97,11 @@ fn parse_mode(s: &str) -> Option<ViewMode> {
         "details" => Some(ViewMode::Details),
         "columns" => Some(ViewMode::Columns),
         "list" => Some(ViewMode::List),
-        _ => s.strip_prefix("icons")?.parse().ok().map(|i: usize| ViewMode::Icons(i.min(crate::tab::ICON_SIZES.len() - 1))),
+        _ => s
+            .strip_prefix("icons")?
+            .parse()
+            .ok()
+            .map(|i: usize| ViewMode::Icons(i.min(crate::tab::ICON_SIZES.len() - 1))),
     }
 }
 
@@ -105,7 +109,12 @@ impl Session {
     pub fn to_text(&self) -> String {
         let flag = |b: bool| if b { "1" } else { "0" };
         let mut out = String::new();
-        out += &format!("hidden {}\npreview {}\nsidebar {}\n", flag(self.show_hidden), flag(self.show_preview), flag(self.show_sidebar));
+        out += &format!(
+            "hidden {}\npreview {}\nsidebar {}\n",
+            flag(self.show_hidden),
+            flag(self.show_preview),
+            flag(self.show_sidebar)
+        );
         for c in &self.collapsed {
             out += &format!("collapsed {c}\n");
         }
@@ -130,7 +139,11 @@ impl Session {
                 let path = t.path.to_string_lossy();
                 if !path.contains('\n') {
                     let order = if t.ascending { "asc" } else { "desc" };
-                    out += &format!("tab {} {order} {} {path}\n", sort_name(t.sort), mode_name(t.mode));
+                    out += &format!(
+                        "tab {} {order} {} {path}\n",
+                        sort_name(t.sort),
+                        mode_name(t.mode)
+                    );
                 }
             }
         }
@@ -153,9 +166,10 @@ pub fn parse(text: &str) -> Session {
             "preview_width" => s.preview_width = rest.parse().ok(),
             "active_pane" => s.active_pane = rest.parse().unwrap_or(0),
             "split_ratio" => {
-                if let Ok(ratio) = rest.parse::<f32>() {
-                    if ratio.is_finite() { s.split_ratio = ratio.clamp(0.15, 0.85); }
-                }
+                if let Ok(ratio) = rest.parse::<f32>()
+                    && ratio.is_finite() {
+                        s.split_ratio = ratio.clamp(0.15, 0.85);
+                    }
             }
             "recent" if s.recent_dirs.len() < 64 && Path::new(rest).is_absolute() => {
                 let path = PathBuf::from(rest);
@@ -163,18 +177,32 @@ pub fn parse(text: &str) -> Session {
                     s.recent_dirs.push(path);
                 }
             }
-            "pane" => s.panes.push(PaneState { tabs: Vec::new(), active: rest.parse().unwrap_or(0) }),
+            "pane" => s.panes.push(PaneState {
+                tabs: Vec::new(),
+                active: rest.parse().unwrap_or(0),
+            }),
             "tab" => {
                 let mut it = rest.splitn(4, ' ');
-                let (Some(sort), Some(order), Some(mode), Some(path)) = (it.next(), it.next(), it.next(), it.next()) else { continue };
+                let (Some(sort), Some(order), Some(mode), Some(path)) =
+                    (it.next(), it.next(), it.next(), it.next())
+                else {
+                    continue;
+                };
                 let sort = match sort {
                     "size" => SortKey::Size,
                     "modified" => SortKey::Modified,
                     "type" => SortKey::Kind,
                     _ => SortKey::Name,
                 };
-                let Some(mode) = parse_mode(mode) else { continue };
-                let tab = TabState { path: PathBuf::from(path), sort, ascending: order != "desc", mode };
+                let Some(mode) = parse_mode(mode) else {
+                    continue;
+                };
+                let tab = TabState {
+                    path: PathBuf::from(path),
+                    sort,
+                    ascending: order != "desc",
+                    mode,
+                };
                 if let Some(pane) = s.panes.last_mut() {
                     pane.tabs.push(tab);
                 }
@@ -201,12 +229,30 @@ mod tests {
             panes: vec![
                 PaneState {
                     tabs: vec![
-                        TabState { path: "/home/a b".into(), sort: SortKey::Size, ascending: false, mode: ViewMode::Icons(3) },
-                        TabState { path: "/tmp".into(), sort: SortKey::Name, ascending: true, mode: ViewMode::Details },
+                        TabState {
+                            path: "/home/a b".into(),
+                            sort: SortKey::Size,
+                            ascending: false,
+                            mode: ViewMode::Icons(3),
+                        },
+                        TabState {
+                            path: "/tmp".into(),
+                            sort: SortKey::Name,
+                            ascending: true,
+                            mode: ViewMode::Details,
+                        },
                     ],
                     active: 1,
                 },
-                PaneState { tabs: vec![TabState { path: "/".into(), sort: SortKey::Kind, ascending: true, mode: ViewMode::List }], active: 0 },
+                PaneState {
+                    tabs: vec![TabState {
+                        path: "/".into(),
+                        sort: SortKey::Kind,
+                        ascending: true,
+                        mode: ViewMode::List,
+                    }],
+                    active: 0,
+                },
             ],
             active_pane: 1,
             show_hidden: true,

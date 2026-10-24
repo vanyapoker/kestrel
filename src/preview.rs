@@ -1,13 +1,13 @@
 use crate::theme;
 use crate::thumbs::{self, Renderer};
-use eframe::egui::{self, text::LayoutJob, Color32, ColorImage, FontId, TextFormat};
+use eframe::egui::{self, Color32, ColorImage, FontId, TextFormat, text::LayoutJob};
 use std::io::Read;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Theme, ThemeSet};
 use syntect::parsing::SyntaxSet;
@@ -24,11 +24,25 @@ const LOAD_TIMEOUT: Duration = Duration::from_secs(20);
 pub type Info = Vec<(String, String)>;
 
 pub enum Content {
-    Image { tex: egui::TextureHandle, info: Info },
-    Text { job: LayoutJob, links: Vec<TextLink>, lines: usize, truncated: bool, plain: bool, layout: Box<CodeLayout> },
+    Image {
+        tex: egui::TextureHandle,
+        info: Info,
+    },
+    Text {
+        job: LayoutJob,
+        links: Vec<TextLink>,
+        lines: usize,
+        truncated: bool,
+        plain: bool,
+        layout: Box<CodeLayout>,
+    },
     Table(Table),
-    Dir { entries: Vec<crate::fsops::Entry> },
-    Binary { info: Info },
+    Dir {
+        entries: Vec<crate::fsops::Entry>,
+    },
+    Binary {
+        info: Info,
+    },
     Error(String),
 }
 
@@ -119,17 +133,25 @@ pub fn text_links(text: &str) -> Vec<TextLink> {
     while let Some((start, c)) = scan.next() {
         let char_start = chars;
         chars += 1;
-        if c != 'h' || !(text[start..].starts_with("https://") || text[start..].starts_with("http://")) {
+        if c != 'h'
+            || !(text[start..].starts_with("https://") || text[start..].starts_with("http://"))
+        {
             continue;
         }
         let mut end = start + 1;
         let mut count = 1;
         let mut balance = [0isize; 3];
         while let Some(&(at, ch)) = scan.peek() {
-            if ch.is_whitespace() || matches!(ch, '<' | '>' | '"' | '\'' | '`') { break; }
+            if ch.is_whitespace() || matches!(ch, '<' | '>' | '"' | '\'' | '`') {
+                break;
+            }
             match ch {
-                '(' => balance[0] += 1, '[' => balance[1] += 1, '{' => balance[2] += 1,
-                ')' => balance[0] -= 1, ']' => balance[1] -= 1, '}' => balance[2] -= 1,
+                '(' => balance[0] += 1,
+                '[' => balance[1] += 1,
+                '{' => balance[2] += 1,
+                ')' => balance[0] -= 1,
+                ']' => balance[1] -= 1,
+                '}' => balance[2] -= 1,
                 _ => {}
             }
             scan.next();
@@ -141,17 +163,29 @@ pub fn text_links(text: &str) -> Vec<TextLink> {
         // Each removed ASCII character is visited once, including punctuation
         // after an unmatched closing delimiter (e.g. Markdown's ").").
         while let Some(last) = url.as_bytes().last().copied() {
-            let close = match last { b')' => Some(0), b']' => Some(1), b'}' => Some(2), _ => None };
+            let close = match last {
+                b')' => Some(0),
+                b']' => Some(1),
+                b'}' => Some(2),
+                _ => None,
+            };
             if matches!(last, b'.' | b',' | b';' | b':' | b'!' | b'?') {
-                url = &url[..url.len() - 1]; count -= 1;
+                url = &url[..url.len() - 1];
+                count -= 1;
             } else if let Some(i) = close.filter(|&i| balance[i] < 0) {
                 balance[i] += 1;
-                url = &url[..url.len() - 1]; count -= 1;
-            } else { break; }
+                url = &url[..url.len() - 1];
+                count -= 1;
+            } else {
+                break;
+            }
         }
         let scheme_len = if url.starts_with("https://") { 8 } else { 7 };
         if url.len() > scheme_len && !url[scheme_len..].starts_with(['/', ')', ']', '}']) {
-            links.push(TextLink { url: url.to_owned(), chars: char_start..char_start + count });
+            links.push(TextLink {
+                url: url.to_owned(),
+                chars: char_start..char_start + count,
+            });
         }
     }
     links
@@ -163,21 +197,25 @@ mod tests {
 
     #[test]
     fn json_formatting_preserves_tokens_and_rejects_invalid_input() {
-        let raw = r#"{"z":123456789012345678901234567890,"z":1e+400,"a":[{},[],"Привет\\\"",true,null]}"#;
+        let raw =
+            r#"{"z":123456789012345678901234567890,"z":1e+400,"a":[{},[],"Привет\\\"",true,null]}"#;
         let formatted = pretty_json(raw).unwrap();
-        assert_eq!(formatted, concat!(
-            "{\n",
-            "  \"z\": 123456789012345678901234567890,\n",
-            "  \"z\": 1e+400,\n",
-            "  \"a\": [\n",
-            "    {},\n",
-            "    [],\n",
-            "    \"Привет\\\\\\\"\",\n",
-            "    true,\n",
-            "    null\n",
-            "  ]\n",
-            "}",
-        ));
+        assert_eq!(
+            formatted,
+            concat!(
+                "{\n",
+                "  \"z\": 123456789012345678901234567890,\n",
+                "  \"z\": 1e+400,\n",
+                "  \"a\": [\n",
+                "    {},\n",
+                "    [],\n",
+                "    \"Привет\\\\\\\"\",\n",
+                "    true,\n",
+                "    null\n",
+                "  ]\n",
+                "}",
+            )
+        );
         assert_eq!(pretty_json(&formatted).unwrap(), formatted);
         for raw in ["", "{", "[1,]", "{} {}", "{\"x\": NaN}"] {
             assert!(pretty_json(raw).is_none(), "accepted {raw:?}");
@@ -191,7 +229,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("kestrel-json-preview-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         for (name, raw, expected) in [
-            ("data.json", "{\"b\":1,\"a\":[2,3]}", "{\n  \"b\": 1,\n  \"a\": [\n    2,\n    3\n  ]\n}"),
+            (
+                "data.json",
+                "{\"b\":1,\"a\":[2,3]}",
+                "{\n  \"b\": 1,\n  \"a\": [\n    2,\n    3\n  ]\n}",
+            ),
             ("data.JSON", "{\"a\":true}", "{\n  \"a\": true\n}"),
             ("invalid.json", "{\"a\":", "{\"a\":"),
             ("raw.txt", "{\"a\":true}", "{\"a\":true}"),
@@ -199,23 +241,32 @@ mod tests {
             let path = dir.join(name);
             std::fs::write(&path, raw).unwrap();
             let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
-            let Payload::Text(job, _, _, truncated, _) = load_text(&path) else { panic!("no text preview for {name}") };
+            let Payload::Text(job, _, _, truncated, _) = load_text(&path) else {
+                panic!("no text preview for {name}")
+            };
             assert_eq!(job.text, expected);
             assert!(!truncated);
             assert_eq!(std::fs::read(&path).unwrap(), raw.as_bytes());
-            assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), modified);
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().modified().unwrap(),
+                modified
+            );
         }
         // A bounded read ending in valid JSON must still not format a partial file.
         let path = dir.join("large.json");
         let raw = format!("{{\"a\":1}}{}trailing", " ".repeat(MAX_TEXT_BYTES));
         std::fs::write(&path, &raw).unwrap();
-        let Payload::Text(job, _, _, truncated, _) = load_text(&path) else { panic!("no text preview") };
+        let Payload::Text(job, _, _, truncated, _) = load_text(&path) else {
+            panic!("no text preview")
+        };
         assert!(truncated);
         assert_eq!(job.text, &raw[..MAX_TEXT_BYTES]);
         let path = dir.join("long.txt");
         let raw = "слово ".repeat(500);
         std::fs::write(&path, &raw).unwrap();
-        let Payload::Text(job, _, _, truncated, _) = load_text(&path) else { panic!("no text preview") };
+        let Payload::Text(job, _, _, truncated, _) = load_text(&path) else {
+            panic!("no text preview")
+        };
         assert_eq!(job.text, raw, "long lines must wrap without losing content");
         assert!(!truncated);
         std::fs::remove_dir_all(dir).unwrap();
@@ -225,10 +276,16 @@ mod tests {
     fn web_links_handle_unicode_and_surrounding_punctuation() {
         let text = "   1  Привет [site](https://example.com/a_(b)).\n   2  <http://example.org/?a=1&b=2>, file:///tmp/a https://";
         let links = text_links(text);
-        assert_eq!(links.iter().map(|l| l.url.as_str()).collect::<Vec<_>>(),
-            vec!["https://example.com/a_(b)", "http://example.org/?a=1&b=2"]);
+        assert_eq!(
+            links.iter().map(|l| l.url.as_str()).collect::<Vec<_>>(),
+            vec!["https://example.com/a_(b)", "http://example.org/?a=1&b=2"]
+        );
         for link in links {
-            let selected: String = text.chars().skip(link.chars.start).take(link.chars.len()).collect();
+            let selected: String = text
+                .chars()
+                .skip(link.chars.start)
+                .take(link.chars.len())
+                .collect();
             assert_eq!(selected, link.url);
         }
     }
@@ -237,19 +294,49 @@ mod tests {
     fn code_link_policy_uses_extension_filename_and_shebang() {
         let ss = syntax_set();
         let source = "// https://example.com/source\nconst url = \"https://example.com/string\";";
-        for name in ["file.js", "file.JS", "file.rs", "data.json", "Makefile", "Dockerfile", "CMakeLists.txt", "file.ts"] {
+        for name in [
+            "file.js",
+            "file.JS",
+            "file.rs",
+            "data.json",
+            "Makefile",
+            "Dockerfile",
+            "CMakeLists.txt",
+            "file.ts",
+        ] {
             assert!(detect_syntax(ss, Path::new(name), source).1, "{name}");
         }
-        assert!(detect_syntax(ss, Path::new("script"), "#!/usr/bin/env python3\nprint('https://example.com')").1);
-        for name in ["README.md", "notes.TXT", "data.csv", "data.tsv", "notes.rst"] {
+        assert!(
+            detect_syntax(
+                ss,
+                Path::new("script"),
+                "#!/usr/bin/env python3\nprint('https://example.com')"
+            )
+            .1
+        );
+        for name in [
+            "README.md",
+            "notes.TXT",
+            "data.csv",
+            "data.tsv",
+            "notes.rst",
+        ] {
             assert!(!detect_syntax(ss, Path::new(name), source).1, "{name}");
         }
         let dir = std::env::temp_dir().join(format!("kestrel-link-policy-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        for (name, expected) in [("code.js", 0), ("code.RS", 0), ("data.json", 0), ("README.md", 2), ("notes.txt", 2)] {
+        for (name, expected) in [
+            ("code.js", 0),
+            ("code.RS", 0),
+            ("data.json", 0),
+            ("README.md", 2),
+            ("notes.txt", 2),
+        ] {
             let path = dir.join(name);
             std::fs::write(&path, source).unwrap();
-            let Payload::Text(_, links, _, _, _) = load_text(&path) else { panic!("expected text") };
+            let Payload::Text(_, links, _, _, _) = load_text(&path) else {
+                panic!("expected text")
+            };
             assert_eq!(links.len(), expected, "{name}");
         }
         std::fs::remove_dir_all(dir).unwrap();
@@ -259,32 +346,64 @@ mod tests {
     fn bounded_highlighting_preserves_text_and_stops_obsolete_work() {
         let font = FontId::monospace(12.5);
         let text = format!("const value = \"{}\";\nnext line\n", "я".repeat(20_001));
-        let (job, lines, plain, code) = highlight_bounded(Path::new("large.js"), &text, 3000, font.clone(), &|| false);
+        let (job, lines, plain, code) =
+            highlight_bounded(Path::new("large.js"), &text, 3000, font.clone(), &|| false);
         assert!(plain && code);
         assert_eq!(job.text, text);
         assert_eq!(lines, 2);
         assert_eq!(job.sections.len(), 1);
         let checked = std::cell::Cell::new(0);
         let source = "/* comment\ncontinued comment */\nconst value = 42;\n".repeat(1000);
-        let (job, lines, _, _) = highlight_bounded(Path::new("source.js"), &source, 3000, font, &|| {
-            checked.set(checked.get() + 1);
-            checked.get() > 3
-        });
+        let (job, lines, _, _) =
+            highlight_bounded(Path::new("source.js"), &source, 3000, font, &|| {
+                checked.set(checked.get() + 1);
+                checked.get() > 3
+            });
         assert_eq!(lines, 3);
-        assert_eq!(job.text, "/* comment\ncontinued comment */\nconst value = 42;\n");
-        let comment = job.sections.iter().find(|s| s.byte_range.contains(&egui::text::ByteIndex(0))).unwrap().format.color;
-        let continued = job.sections.iter().find(|s| s.byte_range.contains(&egui::text::ByteIndex(12))).unwrap().format.color;
+        assert_eq!(
+            job.text,
+            "/* comment\ncontinued comment */\nconst value = 42;\n"
+        );
+        let comment = job
+            .sections
+            .iter()
+            .find(|s| s.byte_range.contains(&egui::text::ByteIndex(0)))
+            .unwrap()
+            .format
+            .color;
+        let continued = job
+            .sections
+            .iter()
+            .find(|s| s.byte_range.contains(&egui::text::ByteIndex(12)))
+            .unwrap()
+            .format
+            .color;
         assert_eq!(comment, continued, "multiline parser state was lost");
     }
 
     #[test]
     fn web_links_scan_mixed_schemes_and_long_delimiters() {
-        let text = format!("я https://example.com/a_(b)). http://example.org/x{} https://end.test/path", ")".repeat(20_000));
+        let text = format!(
+            "я https://example.com/a_(b)). http://example.org/x{} https://end.test/path",
+            ")".repeat(20_000)
+        );
         let links = text_links(&text);
-        assert_eq!(links.iter().map(|l| l.url.as_str()).collect::<Vec<_>>(),
-            ["https://example.com/a_(b)", "http://example.org/x", "https://end.test/path"]);
+        assert_eq!(
+            links.iter().map(|l| l.url.as_str()).collect::<Vec<_>>(),
+            [
+                "https://example.com/a_(b)",
+                "http://example.org/x",
+                "https://end.test/path"
+            ]
+        );
         for link in links {
-            assert_eq!(text.chars().skip(link.chars.start).take(link.chars.len()).collect::<String>(), link.url);
+            assert_eq!(
+                text.chars()
+                    .skip(link.chars.start)
+                    .take(link.chars.len())
+                    .collect::<String>(),
+                link.url
+            );
         }
     }
 
@@ -293,11 +412,14 @@ mod tests {
         let text = "name,note\r\n\"Smith, J\",\"said \"\"hi\"\"\nthen left\"\nДоe,\n";
         let (rows, complete) = parse_table(text, sniff_delimiter(text));
         assert!(complete);
-        assert_eq!(rows, vec![
-            vec!["name", "note"],
-            vec!["Smith, J", "said \"hi\" then left"],
-            vec!["Доe", ""],
-        ]);
+        assert_eq!(
+            rows,
+            vec![
+                vec!["name", "note"],
+                vec!["Smith, J", "said \"hi\" then left"],
+                vec!["Доe", ""],
+            ]
+        );
         assert_eq!(sniff_delimiter("a;b;\"c,d,e\"\n"), ';');
         assert_eq!(sniff_delimiter("a\tb\n"), '\t');
     }
@@ -335,24 +457,41 @@ impl Preview {
                         req = newer;
                     }
                     let cancelled = || worker_generation.load(Ordering::Relaxed) != req.id;
-                    if cancelled() { continue; }
+                    if cancelled() {
+                        continue;
+                    }
                     // Loads run on their own thread so a stuck read or tool can never
                     // block later previews; an abandoned load just finishes unseen.
                     let (done_tx, done_rx) = channel();
-                    let (path, is_dir, id, generation) = (req.path.clone(), req.is_dir, req.id, worker_generation.clone());
-                    let spawned = std::thread::Builder::new().name("preview-load".into()).spawn(move || {
-                        let for_tools = generation.clone();
-                        thumbs::set_cancel(Box::new(move || for_tools.load(Ordering::Relaxed) != id));
-                        let cancelled = move || generation.load(Ordering::Relaxed) != id;
-                        let _ = done_tx.send(load_cancellable(&path, is_dir, &cancelled));
-                    });
+                    let (path, is_dir, id, generation) = (
+                        req.path.clone(),
+                        req.is_dir,
+                        req.id,
+                        worker_generation.clone(),
+                    );
+                    let spawned = std::thread::Builder::new()
+                        .name("preview-load".into())
+                        .spawn(move || {
+                            let for_tools = generation.clone();
+                            thumbs::set_cancel(Box::new(move || {
+                                for_tools.load(Ordering::Relaxed) != id
+                            }));
+                            let cancelled = move || generation.load(Ordering::Relaxed) != id;
+                            let _ = done_tx.send(load_cancellable(&path, is_dir, &cancelled));
+                        });
                     let started = Instant::now();
                     let payload = loop {
-                        if spawned.is_err() { break Some(Payload::Error("Could not start preview".into())); }
-                        if cancelled() { break None; }
+                        if spawned.is_err() {
+                            break Some(Payload::Error("Could not start preview".into()));
+                        }
+                        if cancelled() {
+                            break None;
+                        }
                         match done_rx.recv_timeout(Duration::from_millis(50)) {
                             Ok(payload) => break Some(payload),
-                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) if started.elapsed() > LOAD_TIMEOUT => {
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                                if started.elapsed() > LOAD_TIMEOUT =>
+                            {
                                 break Some(Payload::Error("Preview timed out".into()));
                             }
                             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
@@ -362,15 +501,31 @@ impl Preview {
                         }
                     };
                     let Some(payload) = payload else { continue };
-                    if cancelled() { continue; }
-                    if res_tx.send(Response { id: req.id, payload }).is_err() {
+                    if cancelled() {
+                        continue;
+                    }
+                    if res_tx
+                        .send(Response {
+                            id: req.id,
+                            payload,
+                        })
+                        .is_err()
+                    {
                         break;
                     }
                     ctx.request_repaint();
                 }
             })
             .expect("spawn preview thread");
-        Self { req_tx, res_rx, next_id: 0, generation, path: None, reloading: None, state: State::Loading }
+        Self {
+            req_tx,
+            res_rx,
+            next_id: 0,
+            generation,
+            path: None,
+            reloading: None,
+            state: State::Loading,
+        }
     }
 
     pub fn request(&mut self, path: Option<(&Path, bool)>) {
@@ -389,13 +544,19 @@ impl Preview {
         if self.reloading.take().as_deref() != Some(path) {
             self.state = State::Loading;
         }
-        let _ = self.req_tx.send(Request { id: self.next_id, path: path.to_path_buf(), is_dir });
+        let _ = self.req_tx.send(Request {
+            id: self.next_id,
+            path: path.to_path_buf(),
+            is_dir,
+        });
     }
 
     /// Forces a reload of the current path (e.g. after refresh).
     pub fn invalidate(&mut self) {
         self.next_id = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
-        if let Some(path) = self.path.take() { self.reloading = Some(path); }
+        if let Some(path) = self.path.take() {
+            self.reloading = Some(path);
+        }
     }
 
     pub fn poll(&mut self, ctx: &egui::Context) {
@@ -408,7 +569,14 @@ impl Preview {
                     tex: ctx.load_texture("preview", img, egui::TextureOptions::LINEAR),
                     info,
                 },
-                Payload::Text(job, links, lines, truncated, plain) => Content::Text { job, links, lines, truncated, plain, layout: Box::default() },
+                Payload::Text(job, links, lines, truncated, plain) => Content::Text {
+                    job,
+                    links,
+                    lines,
+                    truncated,
+                    plain,
+                    layout: Box::default(),
+                },
                 Payload::Table(table) => Content::Table(table),
                 Payload::Dir(entries) => Content::Dir { entries },
                 Payload::Binary(info) => Content::Binary { info },
@@ -422,8 +590,11 @@ fn load_cancellable(path: &Path, is_dir: bool, cancelled: &dyn Fn() -> bool) -> 
     if is_dir {
         return match crate::fsops::list_dir(path) {
             Ok(mut entries) => {
-                entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir)
-                    .then_with(|| crate::util::natural_cmp(&a.name, &b.name)));
+                entries.sort_by(|a, b| {
+                    b.is_dir
+                        .cmp(&a.is_dir)
+                        .then_with(|| crate::util::natural_cmp(&a.name, &b.name))
+                });
                 Payload::Dir(entries)
             }
             Err(error) => Payload::Error(error),
@@ -455,7 +626,10 @@ fn load_cancellable(path: &Path, is_dir: bool, cancelled: &dyn Fn() -> bool) -> 
             Err(_) => Payload::Binary(info),
         };
     }
-    if matches!(crate::util::category(&ext, false), crate::util::Category::Audio) {
+    if matches!(
+        crate::util::category(&ext, false),
+        crate::util::Category::Audio
+    ) {
         return Payload::Binary(media_rows(path));
     }
     if matches!(ext.as_str(), "csv" | "tsv")
@@ -469,7 +643,10 @@ fn load_cancellable(path: &Path, is_dir: bool, cancelled: &dyn Fn() -> bool) -> 
 /// Opens only regular files, without blocking on FIFOs, devices or dead mounts' open path.
 fn open_regular(path: &Path) -> Result<std::fs::File, String> {
     use std::os::unix::fs::OpenOptionsExt;
-    let file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(path)
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
         .map_err(|e| e.to_string())?;
     if !file.metadata().map_err(|e| e.to_string())?.is_file() {
         return Err("Not a regular file".into());
@@ -494,7 +671,11 @@ fn media_rows(path: &Path) -> Info {
         };
         info.push(("Duration".into(), text));
     }
-    let codecs: Vec<String> = raw.iter().filter(|(k, _)| k == "codec_name").map(|(_, v)| v.clone()).collect();
+    let codecs: Vec<String> = raw
+        .iter()
+        .filter(|(k, _)| k == "codec_name")
+        .map(|(_, v)| v.clone())
+        .collect();
     if !codecs.is_empty() {
         info.push(("Codecs".into(), codecs.join(", ")));
     }
@@ -531,10 +712,15 @@ fn pretty_json(text: &str) -> Option<String> {
             }
         } else {
             match c {
-                '"' => { quoted = true; out.push(c); }
+                '"' => {
+                    quoted = true;
+                    out.push(c);
+                }
                 '{' | '[' => {
                     out.push(c);
-                    while chars.peek().is_some_and(|c| c.is_ascii_whitespace()) { chars.next(); }
+                    while chars.peek().is_some_and(|c| c.is_ascii_whitespace()) {
+                        chars.next();
+                    }
                     let close = if c == '{' { '}' } else { ']' };
                     if chars.peek() == Some(&close) {
                         out.push(chars.next().unwrap());
@@ -560,13 +746,17 @@ fn pretty_json(text: &str) -> Option<String> {
             }
         }
         // Deeply nested input can expand considerably when indented.
-        if out.len() > MAX_TEXT_BYTES * 4 { return None; }
+        if out.len() > MAX_TEXT_BYTES * 4 {
+            return None;
+        }
     }
     Some(out)
 }
 
 #[cfg(test)]
-fn load_text(path: &Path) -> Payload { load_text_cancellable(path, &|| false) }
+fn load_text(path: &Path) -> Payload {
+    load_text_cancellable(path, &|| false)
+}
 
 fn load_text_cancellable(path: &Path, cancelled: &dyn Fn() -> bool) -> Payload {
     let mut buf = Vec::new();
@@ -584,22 +774,41 @@ fn load_text_cancellable(path: &Path, cancelled: &dyn Fn() -> bool) -> Payload {
     }
     let mut truncated = file_len as usize > buf.len();
     let raw = String::from_utf8_lossy(&buf);
-    let formatted = if !truncated && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("json")) {
+    let formatted = if !truncated
+        && path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+    {
         pretty_json(&raw)
     } else {
         None
     };
     let text = formatted.as_deref().unwrap_or(&raw).replace('\t', "    ");
 
-    let (job, lines, plain, code) = highlight_bounded(path, &text, MAX_TEXT_LINES, FontId::monospace(12.5), cancelled);
+    let (job, lines, plain, code) = highlight_bounded(
+        path,
+        &text,
+        MAX_TEXT_LINES,
+        FontId::monospace(12.5),
+        cancelled,
+    );
     truncated |= text.lines().count() > MAX_TEXT_LINES;
-    let links = if code || cancelled() { Vec::new() } else { text_links(&job.text) };
+    let links = if code || cancelled() {
+        Vec::new()
+    } else {
+        text_links(&job.text)
+    };
     Payload::Text(job, links, lines, truncated, plain)
 }
 
 /// Shared bounded, theme-aware syntax layout for previews and document thumbnails.
 /// Does not read the file: callers control the sample and line budget.
-pub(crate) fn highlight_text(path: &Path, text: &str, max_lines: usize, font: FontId) -> (LayoutJob, usize) {
+pub(crate) fn highlight_text(
+    path: &Path,
+    text: &str,
+    max_lines: usize,
+    font: FontId,
+) -> (LayoutJob, usize) {
     let (job, lines, _, _) = highlight_bounded(path, text, max_lines, font, &|| false);
     (job, lines)
 }
@@ -611,22 +820,49 @@ fn syntax_set() -> &'static SyntaxSet {
 
 /// Detection is shared by highlighting and link policy; explicit prose extensions
 /// stay prose even if their first line resembles source code.
-fn detect_syntax<'a>(ss: &'a SyntaxSet, path: &Path, text: &str) -> (&'a syntect::parsing::SyntaxReference, bool) {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+fn detect_syntax<'a>(
+    ss: &'a SyntaxSet,
+    path: &Path,
+    text: &str,
+) -> (&'a syntect::parsing::SyntaxReference, bool) {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    let syntax = ss.find_syntax_by_extension(&ext)
+    let syntax = ss
+        .find_syntax_by_extension(&ext)
         .or_else(|| ss.find_syntax_by_extension(name))
-        .or_else(|| text.lines().next().and_then(|l| ss.find_syntax_by_first_line(l)))
+        .or_else(|| {
+            text.lines()
+                .next()
+                .and_then(|l| ss.find_syntax_by_first_line(l))
+        })
         .unwrap_or_else(|| ss.find_syntax_plain_text());
-    let prose = !name.eq_ignore_ascii_case("CMakeLists.txt") && matches!(ext.as_str(), "md" | "markdown" | "txt" | "log" | "csv" | "tsv" | "rst" | "org");
-    let code = !prose && (crate::util::is_code_ext(&ext)
-        || !std::ptr::eq(syntax, ss.find_syntax_plain_text())
-        || matches!(name.to_ascii_lowercase().as_str(), "makefile" | "gnumakefile" | "dockerfile" | "cmakelists.txt")
-        || text.starts_with("#!"));
+    let prose = !name.eq_ignore_ascii_case("CMakeLists.txt")
+        && matches!(
+            ext.as_str(),
+            "md" | "markdown" | "txt" | "log" | "csv" | "tsv" | "rst" | "org"
+        );
+    let code = !prose
+        && (crate::util::is_code_ext(&ext)
+            || !std::ptr::eq(syntax, ss.find_syntax_plain_text())
+            || matches!(
+                name.to_ascii_lowercase().as_str(),
+                "makefile" | "gnumakefile" | "dockerfile" | "cmakelists.txt"
+            )
+            || text.starts_with("#!"));
     (syntax, code)
 }
 
-fn highlight_bounded(path: &Path, text: &str, max_lines: usize, font: FontId, cancelled: &dyn Fn() -> bool) -> (LayoutJob, usize, bool, bool) {
+fn highlight_bounded(
+    path: &Path,
+    text: &str,
+    max_lines: usize,
+    font: FontId,
+    cancelled: &dyn Fn() -> bool,
+) -> (LayoutJob, usize, bool, bool) {
     let ss = syntax_set();
     let (syntax, code) = detect_syntax(ss, path, text);
     let theme = syntax_theme();
@@ -637,28 +873,47 @@ fn highlight_bounded(path: &Path, text: &str, max_lines: usize, font: FontId, ca
     let mut plain = false;
     let started = Instant::now();
     for line in LinesWithEndings::from(text).take(max_lines) {
-        if cancelled() { break; }
+        if cancelled() {
+            break;
+        }
         lines += 1;
         end += line.len();
-        if !plain && (line.chars().count() > 20_000 || started.elapsed() > Duration::from_millis(100)) {
+        if !plain
+            && (line.chars().count() > 20_000 || started.elapsed() > Duration::from_millis(100))
+        {
             plain = true;
         }
-        if plain { continue; }
+        if plain {
+            continue;
+        }
         match hl.highlight_line(line, ss) {
             Ok(ranges) => {
                 for (style, piece) in ranges {
                     let c = style.foreground;
-                    job.append(piece, 0.0, TextFormat {
-                        font_id: font.clone(), color: Color32::from_rgb(c.r, c.g, c.b), ..Default::default()
-                    });
+                    job.append(
+                        piece,
+                        0.0,
+                        TextFormat {
+                            font_id: font.clone(),
+                            color: Color32::from_rgb(c.r, c.g, c.b),
+                            ..Default::default()
+                        },
+                    );
                 }
-                if job.sections.len() > 32_768 || started.elapsed() > Duration::from_millis(100) { plain = true; }
+                if job.sections.len() > 32_768 || started.elapsed() > Duration::from_millis(100) {
+                    plain = true;
+                }
             }
             Err(_) => plain = true,
         }
     }
     if plain {
-        job = LayoutJob::simple(text[..end].to_owned(), font, theme::pal().text, f32::INFINITY);
+        job = LayoutJob::simple(
+            text[..end].to_owned(),
+            font,
+            theme::pal().text,
+            f32::INFINITY,
+        );
     }
     (job, lines, plain, code)
 }
@@ -667,7 +922,11 @@ fn highlight_bounded(path: &Path, text: &str, max_lines: usize, font: FontId, ca
 fn load_table(path: &Path, tsv: bool) -> Option<Payload> {
     let file_len = std::fs::metadata(path).ok()?.len();
     let mut buf = Vec::new();
-    open_regular(path).ok()?.take(MAX_TEXT_BYTES as u64).read_to_end(&mut buf).ok()?;
+    open_regular(path)
+        .ok()?
+        .take(MAX_TEXT_BYTES as u64)
+        .read_to_end(&mut buf)
+        .ok()?;
     if buf[..buf.len().min(8192)].contains(&0) {
         return None;
     }
@@ -684,7 +943,11 @@ fn load_table(path: &Path, tsv: bool) -> Option<Payload> {
         }
     }
     let truncated = !complete || file_len as usize > buf.len();
-    Some(Payload::Table(Table { rows, widths, truncated }))
+    Some(Payload::Table(Table {
+        rows,
+        widths,
+        truncated,
+    }))
 }
 
 /// Picks the separator that occurs most on the first line (`,` `;` tab or `|`).
@@ -699,7 +962,10 @@ fn sniff_delimiter(text: &str) -> char {
             n.1 += 1;
         }
     }
-    counts.iter().fold((',', 0), |best, &n| if n.1 > best.1 { n } else { best }).0
+    counts
+        .iter()
+        .fold((',', 0), |best, &n| if n.1 > best.1 { n } else { best })
+        .0
 }
 
 /// RFC 4180-style parsing: quoted fields may hold separators, `""` and newlines.
@@ -759,21 +1025,41 @@ fn syntax_theme() -> Arc<Theme> {
         return t.clone();
     }
     let p = theme::pal();
-    let c = |c: Color32| syntect::highlighting::Color { r: c.r(), g: c.g(), b: c.b(), a: 255 };
+    let c = |c: Color32| syntect::highlighting::Color {
+        r: c.r(),
+        g: c.g(),
+        b: c.b(),
+        a: 255,
+    };
     let [comment, keyword, string, number, function, ty] = p.syntax;
     let rules: [(&str, Color32); 10] = [
         ("comment, punctuation.definition.comment", comment),
         ("keyword, storage, keyword.operator.word", keyword),
         ("string, markup.raw", string),
-        ("constant.numeric, constant.language, constant.character", number),
-        ("entity.name.function, support.function, meta.function-call", function),
-        ("entity.name.type, entity.name.class, support.type, support.class, storage.type", ty),
+        (
+            "constant.numeric, constant.language, constant.character",
+            number,
+        ),
+        (
+            "entity.name.function, support.function, meta.function-call",
+            function,
+        ),
+        (
+            "entity.name.type, entity.name.class, support.type, support.class, storage.type",
+            ty,
+        ),
         ("entity.name.tag, markup.heading", keyword),
         ("entity.other.attribute-name, variable.parameter", number),
-        ("constant.other, variable.other.constant, support.constant", number),
+        (
+            "constant.other, variable.other.constant, support.constant",
+            number,
+        ),
         ("markup.bold, markup.italic", p.text),
     ];
-    let mut t = ThemeSet::load_defaults().themes.remove("base16-ocean.dark").expect("bundled theme");
+    let mut t = ThemeSet::load_defaults()
+        .themes
+        .remove("base16-ocean.dark")
+        .expect("bundled theme");
     t.settings.foreground = Some(c(p.text));
     t.settings.background = Some(c(p.panel));
     t.scopes = rules
@@ -781,7 +1067,11 @@ fn syntax_theme() -> Arc<Theme> {
         .filter_map(|(sel, color)| {
             Some(syntect::highlighting::ThemeItem {
                 scope: sel.parse().ok()?,
-                style: syntect::highlighting::StyleModifier { foreground: Some(c(*color)), background: None, font_style: None },
+                style: syntect::highlighting::StyleModifier {
+                    foreground: Some(c(*color)),
+                    background: None,
+                    font_style: None,
+                },
             })
         })
         .collect();

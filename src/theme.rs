@@ -1,8 +1,8 @@
+use crate::util::Category;
 use eframe::egui::{
     self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Stroke, TextStyle,
     Visuals, vec2,
 };
-use crate::util::Category;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
@@ -85,7 +85,9 @@ impl Palette {
         let mut map = std::collections::HashMap::new();
         let mut dark = true;
         for line in toml.lines() {
-            let Some((k, v)) = line.split_once('=') else { continue };
+            let Some((k, v)) = line.split_once('=') else {
+                continue;
+            };
             let (k, v) = (k.trim(), v.trim().trim_matches('"').trim_matches('\''));
             if k == "mode" {
                 dark = v != "light";
@@ -110,7 +112,11 @@ impl Palette {
             select: mix(bg, accent, if dark { 0.30 } else { 0.22 }),
             select_dim: mix(bg, accent, 0.12),
             accent,
-            accent_strong: mix(accent, if dark { Color32::BLACK } else { Color32::WHITE }, 0.2),
+            accent_strong: mix(
+                accent,
+                if dark { Color32::BLACK } else { Color32::WHITE },
+                0.2,
+            ),
             danger: red,
             text: fg,
             dim: mix(fg, bg, 0.3),
@@ -186,7 +192,9 @@ fn omarchy_dir() -> PathBuf {
 
 fn load_palette() -> Palette {
     // KESTREL_OMARCHY_THEME=<theme folder> previews a theme without switching the desktop.
-    let dir = std::env::var_os("KESTREL_OMARCHY_THEME").map(PathBuf::from).unwrap_or_else(|| omarchy_dir().join("theme"));
+    let dir = std::env::var_os("KESTREL_OMARCHY_THEME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| omarchy_dir().join("theme"));
     std::fs::read_to_string(dir.join("colors.toml"))
         .ok()
         .and_then(|s| Palette::from_omarchy(&s))
@@ -217,11 +225,16 @@ pub fn watch(ctx: egui::Context) -> Option<(notify::RecommendedWatcher, Receiver
     })
     .ok()?;
     if let Some(dir) = std::env::var_os("KESTREL_OMARCHY_THEME") {
-        w.watch(Path::new(&dir), notify::RecursiveMode::NonRecursive).ok()?;
+        w.watch(Path::new(&dir), notify::RecursiveMode::NonRecursive)
+            .ok()?;
     } else {
         // `omarchy theme set` swaps the whole theme folder, so watch its parent.
-        w.watch(&omarchy_dir(), notify::RecursiveMode::NonRecursive).ok()?;
-        let _ = w.watch(&omarchy_dir().join("theme"), notify::RecursiveMode::NonRecursive);
+        w.watch(&omarchy_dir(), notify::RecursiveMode::NonRecursive)
+            .ok()?;
+        let _ = w.watch(
+            &omarchy_dir().join("theme"),
+            notify::RecursiveMode::NonRecursive,
+        );
     }
     Some((w, rx))
 }
@@ -245,8 +258,14 @@ pub fn apply(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
     let mut add = |name: &str, family: FontFamily, paths: &[&str]| {
         if let Some(bytes) = paths.iter().find_map(|p| std::fs::read(p).ok()) {
-            fonts.font_data.insert(name.into(), Arc::new(FontData::from_owned(bytes)));
-            fonts.families.entry(family).or_default().insert(0, name.into());
+            fonts
+                .font_data
+                .insert(name.into(), Arc::new(FontData::from_owned(bytes)));
+            fonts
+                .families
+                .entry(family)
+                .or_default()
+                .insert(0, name.into());
         }
     };
     add("ui", FontFamily::Proportional, UI_FONTS);
@@ -258,9 +277,17 @@ pub fn apply(ctx: &egui::Context) {
 
 fn apply_visuals(ctx: &egui::Context) {
     let p = pal();
-    let theme = if p.dark { egui::Theme::Dark } else { egui::Theme::Light };
+    let theme = if p.dark {
+        egui::Theme::Dark
+    } else {
+        egui::Theme::Light
+    };
     ctx.set_theme(theme);
-    let mut v = if p.dark { Visuals::dark() } else { Visuals::light() };
+    let mut v = if p.dark {
+        Visuals::dark()
+    } else {
+        Visuals::light()
+    };
     v.override_text_color = Some(p.text);
     v.panel_fill = p.panel;
     v.window_fill = p.panel;
@@ -337,13 +364,23 @@ mod tests {
 
     #[test]
     fn parses_stock_omarchy_themes() {
-        let Ok(dirs) = std::fs::read_dir("/usr/share/omarchy/themes") else { return };
+        let Ok(dirs) = std::fs::read_dir("/usr/share/omarchy/themes") else {
+            return;
+        };
         for d in dirs.flatten() {
-            let Ok(text) = std::fs::read_to_string(d.path().join("colors.toml")) else { continue };
-            let p = Palette::from_omarchy(&text).unwrap_or_else(|| panic!("{:?} did not parse", d.path()));
+            let Ok(text) = std::fs::read_to_string(d.path().join("colors.toml")) else {
+                continue;
+            };
+            let p = Palette::from_omarchy(&text)
+                .unwrap_or_else(|| panic!("{:?} did not parse", d.path()));
             // Text must stand out from the background in either mode.
-            let lum = |c: Color32| 0.2126 * c.r() as f32 + 0.7152 * c.g() as f32 + 0.0722 * c.b() as f32;
-            assert!((lum(p.text) - lum(p.bg)).abs() > 60.0, "{:?}: low contrast", d.path());
+            let lum =
+                |c: Color32| 0.2126 * c.r() as f32 + 0.7152 * c.g() as f32 + 0.0722 * c.b() as f32;
+            assert!(
+                (lum(p.text) - lum(p.bg)).abs() > 60.0,
+                "{:?}: low contrast",
+                d.path()
+            );
             assert_eq!(p.dark, !text.contains("mode = \"light\""), "{:?}", d.path());
         }
     }

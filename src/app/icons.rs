@@ -3,9 +3,10 @@
 use crate::fsops::{self, Special};
 use crate::theme::*;
 use crate::util::Category;
-use eframe::egui::{Color32, CornerRadius, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2, epaint::PathShape, vec2};
+use eframe::egui::{
+    Color32, CornerRadius, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2, epaint::PathShape, vec2,
+};
 use std::path::Path;
-
 
 pub fn draw_icon_scaled(p: &Painter, c: Pos2, cat: Category, s: f32) {
     if cat == Category::Folder {
@@ -17,8 +18,20 @@ pub fn draw_icon_scaled(p: &Painter, c: Pos2, cat: Category, s: f32) {
     let radius = CornerRadius::same((2.0 * s).min(255.0) as u8);
     p.rect_filled(r, radius, color.gamma_multiply(0.22));
     p.rect_stroke(r, radius, Stroke::new(s.sqrt(), color), StrokeKind::Inside);
-    let band = Rect::from_min_size(Pos2::new(r.left(), r.bottom() - 4.0 * s), vec2(r.width(), 4.0 * s));
-    p.rect_filled(band, CornerRadius { nw: 0, ne: 0, sw: radius.sw, se: radius.se }, color);
+    let band = Rect::from_min_size(
+        Pos2::new(r.left(), r.bottom() - 4.0 * s),
+        vec2(r.width(), 4.0 * s),
+    );
+    p.rect_filled(
+        band,
+        CornerRadius {
+            nw: 0,
+            ne: 0,
+            sw: radius.sw,
+            se: radius.se,
+        },
+        color,
+    );
 }
 
 pub fn draw_folder(p: &Painter, c: Pos2, s: f32) {
@@ -36,7 +49,14 @@ pub fn draw_path_folder(p: &Painter, c: Pos2, s: f32, path: &Path) {
         Some(kind) if s < 1.5 => draw_emblem(p, c, kind, s, pal().folder, 1.4),
         Some(kind) => {
             draw_folder(p, c, s);
-            draw_emblem(p, c + vec2(0.0, 1.5) * s, kind, s * 0.42, pal().emblem, (1.6 * s.sqrt()).min(3.5));
+            draw_emblem(
+                p,
+                c + vec2(0.0, 1.5) * s,
+                kind,
+                s * 0.42,
+                pal().emblem,
+                (1.6 * s.sqrt()).min(3.5),
+            );
         }
         None => draw_folder(p, c, s),
     }
@@ -66,7 +86,12 @@ pub fn draw_emblem(p: &Painter, c: Pos2, kind: Special, s: f32, color: Color32, 
     let line = |pts: &[(f32, f32)]| p.line(pts.iter().map(|&(x, y)| pt(x, y)).collect(), stroke);
     let rect = |x0: f32, y0: f32, x1: f32, y1: f32, r: f32| {
         let rc = CornerRadius::same((r * s).round().min(255.0) as u8);
-        p.rect_stroke(Rect::from_min_max(pt(x0, y0), pt(x1, y1)), rc, stroke, StrokeKind::Middle);
+        p.rect_stroke(
+            Rect::from_min_max(pt(x0, y0), pt(x1, y1)),
+            rc,
+            stroke,
+            StrokeKind::Middle,
+        );
     };
     match kind {
         Special::Home => {
@@ -80,7 +105,16 @@ pub fn draw_emblem(p: &Painter, c: Pos2, kind: Special, s: f32, color: Color32, 
             line(&[(-3.0, 5.5), (3.0, 5.5)]);
         }
         Special::Documents => {
-            line(&[(1.5, -6.0), (-4.5, -6.0), (-4.5, 6.0), (4.5, 6.0), (4.5, -3.0), (1.5, -6.0), (1.5, -3.0), (4.5, -3.0)]);
+            line(&[
+                (1.5, -6.0),
+                (-4.5, -6.0),
+                (-4.5, 6.0),
+                (4.5, 6.0),
+                (4.5, -3.0),
+                (1.5, -6.0),
+                (1.5, -3.0),
+                (4.5, -3.0),
+            ]);
             for y in [0.0, 3.0] {
                 line(&[(-2.0, y), (2.0, y)]);
             }
@@ -92,7 +126,13 @@ pub fn draw_emblem(p: &Painter, c: Pos2, kind: Special, s: f32, color: Color32, 
         }
         Special::Pictures => {
             rect(-6.0, -5.0, 6.0, 5.0, 1.5);
-            line(&[(-6.0, 3.5), (-2.0, -0.5), (1.0, 2.5), (3.0, 0.5), (6.0, 3.5)]);
+            line(&[
+                (-6.0, 3.5),
+                (-2.0, -0.5),
+                (1.0, 2.5),
+                (3.0, 0.5),
+                (6.0, 3.5),
+            ]);
             p.circle_filled(pt(2.5, -2.2), 1.3 * s, color);
         }
         Special::Music => {
@@ -102,7 +142,11 @@ pub fn draw_emblem(p: &Painter, c: Pos2, kind: Special, s: f32, color: Color32, 
         }
         Special::Videos => {
             rect(-6.0, -4.5, 6.0, 4.5, 1.5);
-            p.add(PathShape::convex_polygon(vec![pt(-1.5, -2.5), pt(2.8, 0.0), pt(-1.5, 2.5)], color, Stroke::NONE));
+            p.add(PathShape::convex_polygon(
+                vec![pt(-1.5, -2.5), pt(2.8, 0.0), pt(-1.5, 2.5)],
+                color,
+                Stroke::NONE,
+            ));
         }
         Special::Projects => {
             line(&[(-2.5, -4.0), (-6.0, 0.0), (-2.5, 4.0)]);
@@ -120,7 +164,12 @@ pub fn draw_emblem(p: &Painter, c: Pos2, kind: Special, s: f32, color: Color32, 
             p.add(egui_ellipse(pt(0.0, 0.0), vec2(2.6, 6.0) * s, stroke));
         }
         Special::Templates => {
-            for (x0, y0, x1, y1) in [(-6.0, -6.0, -1.0, -1.0), (1.0, -6.0, 6.0, -1.0), (-6.0, 1.0, -1.0, 6.0), (1.0, 1.0, 6.0, 6.0)] {
+            for (x0, y0, x1, y1) in [
+                (-6.0, -6.0, -1.0, -1.0),
+                (1.0, -6.0, 6.0, -1.0),
+                (-6.0, 1.0, -1.0, 6.0),
+                (1.0, 1.0, 6.0, 6.0),
+            ] {
                 rect(x0, y0, x1, y1, 1.0);
             }
         }
@@ -130,7 +179,14 @@ pub fn draw_emblem(p: &Painter, c: Pos2, kind: Special, s: f32, color: Color32, 
             line(&[(-4.0, 0.0), (0.5, 0.0)]);
         }
         Special::Bookmark => {
-            line(&[(-4.0, -6.0), (4.0, -6.0), (4.0, 6.0), (0.0, 2.5), (-4.0, 6.0), (-4.0, -6.0)]);
+            line(&[
+                (-4.0, -6.0),
+                (4.0, -6.0),
+                (4.0, 6.0),
+                (0.0, 2.5),
+                (-4.0, 6.0),
+                (-4.0, -6.0),
+            ]);
         }
     }
 }

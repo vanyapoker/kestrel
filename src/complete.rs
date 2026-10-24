@@ -18,7 +18,9 @@ impl Completer {
     /// Completions for `text`, each a full replacement ending in `/`.
     /// Prefix matches come first, then names that merely contain the typed part.
     pub fn candidates(&mut self, text: &str, show_hidden: bool) -> Vec<String> {
-        let Some(slash) = text.rfind('/') else { return Vec::new() };
+        let Some(slash) = text.rfind('/') else {
+            return Vec::new();
+        };
         let (head, typed) = text.split_at(slash + 1);
         let dir = expand_tilde(head);
         if self.dir.as_deref() != Some(dir.as_path()) {
@@ -44,7 +46,11 @@ impl Completer {
         if prefix.len() == 1 && inner.is_empty() && *prefix[0] == typed {
             return Vec::new();
         }
-        prefix.into_iter().chain(inner).map(|n| format!("{head}{n}/")).collect()
+        prefix
+            .into_iter()
+            .chain(inner)
+            .map(|n| format!("{head}{n}/"))
+            .collect()
     }
 }
 
@@ -66,7 +72,9 @@ pub fn common_prefix(cands: &[String]) -> Option<String> {
 }
 
 fn subfolders(dir: &Path) -> Vec<String> {
-    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
     let mut names: Vec<String> = rd
         .take(SCAN_CAP)
         .flatten()
@@ -104,10 +112,20 @@ mod tests {
         let mut c = Completer::default();
 
         let got = c.candidates(&format!("{base}do"), false);
-        assert_eq!(got, [format!("{base}Documents/"), format!("{base}Downloads/"), format!("{base}my docs/")]);
+        assert_eq!(
+            got,
+            [
+                format!("{base}Documents/"),
+                format!("{base}Downloads/"),
+                format!("{base}my docs/")
+            ]
+        );
         assert_eq!(common_prefix(&got[..2]).unwrap(), format!("{base}Do"));
         assert_eq!(c.candidates(&base, false).len(), 4); // hidden and files left out
-        assert_eq!(c.candidates(&format!("{base}.c"), false), [format!("{base}.config/")]);
+        assert_eq!(
+            c.candidates(&format!("{base}.c"), false),
+            [format!("{base}.config/")]
+        );
         assert!(c.candidates(&format!("{base}music"), false).is_empty());
         assert!(c.candidates("no-slash", false).is_empty());
         std::fs::remove_dir_all(d).unwrap();

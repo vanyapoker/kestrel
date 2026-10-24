@@ -31,7 +31,12 @@ pub fn parse_args(args: &[String]) -> Option<Request> {
         "save" => Kind::Save,
         _ => return None,
     };
-    let value = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
+    let value = |flag: &str| {
+        args.iter()
+            .position(|a| a == flag)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
     Some(Request {
         kind,
         multiple: args.iter().any(|a| a == "--multiple"),
@@ -43,12 +48,15 @@ pub fn parse_args(args: &[String]) -> Option<Request> {
 
 impl Request {
     pub fn to_args(&self) -> Vec<String> {
-        let mut args = vec!["--pick".to_string(), match self.kind {
-            Kind::Open => "open",
-            Kind::Folder => "folder",
-            Kind::Save => "save",
-        }
-        .to_string()];
+        let mut args = vec![
+            "--pick".to_string(),
+            match self.kind {
+                Kind::Open => "open",
+                Kind::Folder => "folder",
+                Kind::Save => "save",
+            }
+            .to_string(),
+        ];
         if self.multiple {
             args.push("--multiple".into());
         }
@@ -59,7 +67,13 @@ impl Request {
             }
         };
         opt("--title", self.title.clone());
-        opt("--dir", self.dir.as_ref().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default());
+        opt(
+            "--dir",
+            self.dir
+                .as_ref()
+                .map(|d| d.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        );
         opt("--name", self.name.clone());
         args
     }
@@ -92,7 +106,9 @@ pub fn uri(path: &std::path::Path) -> String {
     let mut out = String::from("file://");
     for &b in path.as_os_str().as_bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             _ => out.push_str(&format!("%{b:02X}")),
         }
     }
@@ -113,12 +129,18 @@ mod tests {
             name: "a b.txt".into(),
         };
         let back = parse_args(&req.to_args()).unwrap();
-        assert_eq!((back.kind, back.multiple, back.title, back.dir, back.name), (req.kind, true, req.title, req.dir, req.name));
+        assert_eq!(
+            (back.kind, back.multiple, back.title, back.dir, back.name),
+            (req.kind, true, req.title, req.dir, req.name)
+        );
         assert!(parse_args(&["kestrel".into()]).is_none());
     }
 
     #[test]
     fn uris_are_encoded() {
-        assert_eq!(uri(std::path::Path::new("/tmp/a b/é#.txt")), "file:///tmp/a%20b/%C3%A9%23.txt");
+        assert_eq!(
+            uri(std::path::Path::new("/tmp/a b/é#.txt")),
+            "file:///tmp/a%20b/%C3%A9%23.txt"
+        );
     }
 }

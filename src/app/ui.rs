@@ -10,8 +10,9 @@ use crate::theme::*;
 use crate::thumbs::{self, Thumbs};
 use crate::util;
 use eframe::egui::{
-    self, Align, Align2, CentralPanel, Color32, CornerRadius, DragAndDrop, FontId, Frame, Key, Layout, Margin,
-    Modifiers, Painter, Panel, Pos2, Rect, RichText, ScrollArea, Sense, Stroke, Ui, UiBuilder, vec2,
+    self, Align, Align2, CentralPanel, Color32, CornerRadius, DragAndDrop, FontId, Frame, Key,
+    Layout, Margin, Modifiers, Painter, Panel, Pos2, Rect, RichText, ScrollArea, Sense, Stroke, Ui,
+    UiBuilder, vec2,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -25,7 +26,12 @@ pub(super) fn preview_code(ui: &mut Ui, job: &egui::text::LayoutJob, links: &[Te
     preview_code_cached(ui, job, links, &mut crate::preview::CodeLayout::default());
 }
 
-pub(super) fn preview_code_cached(ui: &mut Ui, job: &egui::text::LayoutJob, links: &[TextLink], cache: &mut crate::preview::CodeLayout) {
+pub(super) fn preview_code_cached(
+    ui: &mut Ui,
+    job: &egui::text::LayoutJob,
+    links: &[TextLink],
+    cache: &mut crate::preview::CodeLayout,
+) {
     if job.text.len() > 32 * 1024 {
         super::preview_text::show(ui, job, links, cache);
         return;
@@ -41,38 +47,70 @@ pub(super) fn preview_code_cached(ui: &mut Ui, job: &egui::text::LayoutJob, link
         cache.rows.clear();
         let (mut line, mut chars, mut starts_line) = (1, 0, true);
         for row in &galley.rows {
-            cache.rows.push(crate::preview::CodeRow { line, chars, starts_line });
+            cache.rows.push(crate::preview::CodeRow {
+                line,
+                chars,
+                starts_line,
+            });
             chars += row.char_count_excluding_newline().0 + usize::from(row.ends_with_newline);
             starts_line = row.ends_with_newline;
-            if starts_line { line += 1; }
+            if starts_line {
+                line += 1;
+            }
         }
         cache.galley = Some(galley);
         cache.width = width;
         cache.pixels_per_point = pixels;
         #[cfg(test)]
-        { cache.builds += 1; }
+        {
+            cache.builds += 1;
+        }
     }
     let galley = cache.galley.as_ref().unwrap().clone();
     ui.scope(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         ui.horizontal_top(|ui| {
-            let (rect, _) = ui.allocate_exact_size(vec2(glyph * 6.0, galley.size().y), Sense::hover());
+            let (rect, _) =
+                ui.allocate_exact_size(vec2(glyph * 6.0, galley.size().y), Sense::hover());
             let top = ui.clip_rect().top() - rect.top();
             let bottom = ui.clip_rect().bottom() - rect.top();
             let first = galley.rows.partition_point(|r| r.pos.y + r.size.y < top);
-            for (index, row) in galley.rows.iter().enumerate().skip(first).take_while(|(_, r)| r.pos.y <= bottom) {
+            for (index, row) in galley
+                .rows
+                .iter()
+                .enumerate()
+                .skip(first)
+                .take_while(|(_, r)| r.pos.y <= bottom)
+            {
                 if cache.rows[index].starts_line {
                     ui.painter().text(
-                        egui::pos2(rect.right() - glyph * 2.0, rect.top() + row.pos.y + row.size.y / 2.0),
-                        Align2::RIGHT_CENTER, cache.rows[index].line.to_string(), font.clone(), pal().faint,
+                        egui::pos2(
+                            rect.right() - glyph * 2.0,
+                            rect.top() + row.pos.y + row.size.y / 2.0,
+                        ),
+                        Align2::RIGHT_CENTER,
+                        cache.rows[index].line.to_string(),
+                        font.clone(),
+                        pal().faint,
                     );
                 }
             }
             // Allocate only the current width, even while an older, wider galley
             // is being displayed. Otherwise its minimum size fights the divider.
-            let sense = if ui.input(|i| i.has_touch_screen()) { Sense::click() } else { Sense::click_and_drag() } - Sense::FOCUSABLE;
+            let sense = if ui.input(|i| i.has_touch_screen()) {
+                Sense::click()
+            } else {
+                Sense::click_and_drag()
+            } - Sense::FOCUSABLE;
             let (text_rect, response) = ui.allocate_exact_size(vec2(width, galley.size().y), sense);
-            paint_preview_text(ui, text_rect.min, &galley, &response, links, Some(&cache.rows));
+            paint_preview_text(
+                ui,
+                text_rect.min,
+                &galley,
+                &response,
+                links,
+                Some(&cache.rows),
+            );
         });
     });
 }
@@ -86,37 +124,81 @@ pub(super) fn preview_text(ui: &mut Ui, job: &egui::text::LayoutJob, links: &[Te
     paint_preview_text(ui, pos, &galley, &response, links, None);
 }
 
-pub(super) fn paint_preview_text(ui: &Ui, pos: Pos2, galley: &Arc<egui::Galley>, response: &egui::Response, links: &[TextLink], rows: Option<&[crate::preview::CodeRow]>) {
+pub(super) fn paint_preview_text(
+    ui: &Ui,
+    pos: Pos2,
+    galley: &Arc<egui::Galley>,
+    response: &egui::Response,
+    links: &[TextLink],
+    rows: Option<&[crate::preview::CodeRow]>,
+) {
     egui::text_selection::LabelSelectionState::label_text_selection(
-        ui, response, pos, galley.clone(), pal().text, Stroke::NONE,
+        ui,
+        response,
+        pos,
+        galley.clone(),
+        pal().text,
+        Stroke::NONE,
     );
     paint_preview_links(ui, pos, galley, response, links, rows);
 }
 
-pub(super) fn paint_preview_links(ui: &Ui, pos: Pos2, galley: &Arc<egui::Galley>, response: &egui::Response, links: &[TextLink], rows: Option<&[crate::preview::CodeRow]>) {
-    if links.is_empty() { return; }
+pub(super) fn paint_preview_links(
+    ui: &Ui,
+    pos: Pos2,
+    galley: &Arc<egui::Galley>,
+    response: &egui::Response,
+    links: &[TextLink],
+    rows: Option<&[crate::preview::CodeRow]>,
+) {
+    if links.is_empty() {
+        return;
+    }
     let top = ui.clip_rect().top() - pos.y;
     let bottom = ui.clip_rect().bottom() - pos.y;
     let first = galley.rows.partition_point(|r| r.pos.y + r.size.y < top);
-    if first == galley.rows.len() { return; }
-    let mut row_start = rows.and_then(|r| r.get(first)).map(|r| r.chars).unwrap_or_else(||
-        galley.rows[..first].iter().map(|r| r.char_count_excluding_newline().0 + usize::from(r.ends_with_newline)).sum());
-    for row in galley.rows.iter().skip(first).take_while(|r| r.pos.y <= bottom) {
+    if first == galley.rows.len() {
+        return;
+    }
+    let mut row_start = rows
+        .and_then(|r| r.get(first))
+        .map(|r| r.chars)
+        .unwrap_or_else(|| {
+            galley.rows[..first]
+                .iter()
+                .map(|r| r.char_count_excluding_newline().0 + usize::from(r.ends_with_newline))
+                .sum()
+        });
+    for row in galley
+        .rows
+        .iter()
+        .skip(first)
+        .take_while(|r| r.pos.y <= bottom)
+    {
         let row_end = row_start + row.char_count_excluding_newline().0;
         if ui.is_rect_visible(row.rect().translate(pos.to_vec2())) {
             let first = links.partition_point(|link| link.chars.end <= row_start);
-            for link in links.iter().skip(first).take_while(|link| link.chars.start < row_end) {
+            for link in links
+                .iter()
+                .skip(first)
+                .take_while(|link| link.chars.start < row_end)
+            {
                 let start = link.chars.start.max(row_start) - row_start;
                 let end = link.chars.end.min(row_end) - row_start;
                 let rect = Rect::from_min_max(
                     pos + row.pos.to_vec2() + vec2(row.x_offset(egui::text::CharIndex(start)), 0.0),
-                    pos + row.pos.to_vec2() + vec2(row.x_offset(egui::text::CharIndex(end)), row.size.y),
+                    pos + row.pos.to_vec2()
+                        + vec2(row.x_offset(egui::text::CharIndex(end)), row.size.y),
                 );
                 ui.painter().line_segment(
-                    [rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, pal().accent),
+                    [rect.left_bottom(), rect.right_bottom()],
+                    Stroke::new(1.0, pal().accent),
                 );
                 if response.hovered() && ui.rect_contains_pointer(rect) {
-                    response.clone().on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(&link.url);
+                    response
+                        .clone()
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(&link.url);
                     if response.clicked() {
                         ui.ctx().open_url(egui::OpenUrl::new_tab(&link.url));
                     }
@@ -145,98 +227,150 @@ pub(super) fn preview_table(ui: &mut Ui, table: &Table) {
     let p = pal();
     // Solid bars: floating ones are invisible until hovered, hiding that wide tables scroll sideways.
     ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
-    ScrollArea::both().auto_shrink([false; 2]).id_salt("preview_table").show_viewport(ui, |ui, viewport| {
-        let (rect, response) = ui.allocate_exact_size(total, Sense::hover());
-        let clip = ui.clip_rect();
-        let painter = ui.painter_at(clip);
-        // Rows scroll under the sticky header, which must not pass clicks through.
-        let body_clip = clip.with_min_y(clip.top() + row_h);
-        let hover = response.hover_pos();
-        let hover_row = hover
-            .filter(|h| clip.contains(*h) && h.y > clip.top() + row_h)
-            .map(|h| ((h.y - rect.top()) / row_h) as usize);
-        // Columns whose first rows are all numbers are right-aligned.
-        let numeric: Vec<bool> = (0..xs.len() - 1)
-            .map(|c| {
-                let mut cells = table.rows.iter().skip(1).take(50).filter_map(|r| r.get(c)).filter(|t| !t.is_empty()).peekable();
-                cells.peek().is_some() && cells.all(|t| t.trim().replace(',', "").parse::<f64>().is_ok())
-            })
-            .collect();
-        let (mut tooltip, mut on_link) = (None, false);
-        let mut draw_row = |row_index: usize, y: f32, color: Color32, clip: Rect| {
-            for (col, text) in table.rows[row_index].iter().enumerate().take(xs.len() - 1) {
-                let r = Rect::from_min_max(egui::pos2(rect.left() + xs[col], y), egui::pos2(rect.left() + xs[col + 1], y + row_h));
-                let text_clip = r.shrink2(vec2(PAD, 0.0)).intersect(clip);
-                if !text_clip.is_positive() {
-                    continue;
-                }
-                let galley = painter.layout_no_wrap(text.clone(), font.clone(), color);
-                let x = if numeric[col] && galley.size().x <= r.width() - 2.0 * PAD {
-                    r.right() - PAD - galley.size().x
-                } else {
-                    r.left() + PAD
-                };
-                let pos = egui::pos2(x, r.center().y - galley.size().y / 2.0);
-                let mut cell_ui = ui.new_child(UiBuilder::new().id_salt(("csv_cell", row_index, col)).max_rect(r));
-                cell_ui.set_clip_rect(text_clip);
-                let cell_response = cell_ui.interact(
-                    r.intersect(text_clip), cell_ui.id(), Sense::click_and_drag() - Sense::FOCUSABLE,
-                );
-                egui::text_selection::LabelSelectionState::label_text_selection(
-                    &cell_ui, &cell_response, pos, galley.clone(), color, Stroke::NONE,
-                );
-                if row_index > 0 && let Some(line) = galley.rows.first() {
-                    for link in &crate::preview::text_links(text) {
-                        let x = |c| pos.x + line.x_offset(egui::text::CharIndex(c));
-                        let link_rect = Rect::from_x_y_ranges(x(link.chars.start)..=x(link.chars.end), r.y_range())
+    ScrollArea::both()
+        .auto_shrink([false; 2])
+        .id_salt("preview_table")
+        .show_viewport(ui, |ui, viewport| {
+            let (rect, response) = ui.allocate_exact_size(total, Sense::hover());
+            let clip = ui.clip_rect();
+            let painter = ui.painter_at(clip);
+            // Rows scroll under the sticky header, which must not pass clicks through.
+            let body_clip = clip.with_min_y(clip.top() + row_h);
+            let hover = response.hover_pos();
+            let hover_row = hover
+                .filter(|h| clip.contains(*h) && h.y > clip.top() + row_h)
+                .map(|h| ((h.y - rect.top()) / row_h) as usize);
+            // Columns whose first rows are all numbers are right-aligned.
+            let numeric: Vec<bool> = (0..xs.len() - 1)
+                .map(|c| {
+                    let mut cells = table
+                        .rows
+                        .iter()
+                        .skip(1)
+                        .take(50)
+                        .filter_map(|r| r.get(c))
+                        .filter(|t| !t.is_empty())
+                        .peekable();
+                    cells.peek().is_some()
+                        && cells.all(|t| t.trim().replace(',', "").parse::<f64>().is_ok())
+                })
+                .collect();
+            let (mut tooltip, mut on_link) = (None, false);
+            let mut draw_row = |row_index: usize, y: f32, color: Color32, clip: Rect| {
+                for (col, text) in table.rows[row_index].iter().enumerate().take(xs.len() - 1) {
+                    let r = Rect::from_min_max(
+                        egui::pos2(rect.left() + xs[col], y),
+                        egui::pos2(rect.left() + xs[col + 1], y + row_h),
+                    );
+                    let text_clip = r.shrink2(vec2(PAD, 0.0)).intersect(clip);
+                    if !text_clip.is_positive() {
+                        continue;
+                    }
+                    let galley = painter.layout_no_wrap(text.clone(), font.clone(), color);
+                    let x = if numeric[col] && galley.size().x <= r.width() - 2.0 * PAD {
+                        r.right() - PAD - galley.size().x
+                    } else {
+                        r.left() + PAD
+                    };
+                    let pos = egui::pos2(x, r.center().y - galley.size().y / 2.0);
+                    let mut cell_ui = ui.new_child(
+                        UiBuilder::new()
+                            .id_salt(("csv_cell", row_index, col))
+                            .max_rect(r),
+                    );
+                    cell_ui.set_clip_rect(text_clip);
+                    let cell_response = cell_ui.interact(
+                        r.intersect(text_clip),
+                        cell_ui.id(),
+                        Sense::click_and_drag() - Sense::FOCUSABLE,
+                    );
+                    egui::text_selection::LabelSelectionState::label_text_selection(
+                        &cell_ui,
+                        &cell_response,
+                        pos,
+                        galley.clone(),
+                        color,
+                        Stroke::NONE,
+                    );
+                    if row_index > 0
+                        && let Some(line) = galley.rows.first()
+                    {
+                        for link in &crate::preview::text_links(text) {
+                            let x = |c| pos.x + line.x_offset(egui::text::CharIndex(c));
+                            let link_rect = Rect::from_x_y_ranges(
+                                x(link.chars.start)..=x(link.chars.end),
+                                r.y_range(),
+                            )
                             .intersect(text_clip);
-                        if !link_rect.is_positive() {
-                            continue;
-                        }
-                        let underline_y = pos.y + line.size.y;
-                        painter.hline(link_rect.x_range(), underline_y, Stroke::new(1.0, p.accent));
-                        if cell_response.hovered() && cell_ui.rect_contains_pointer(link_rect) {
-                            on_link = true;
-                            cell_response.clone().on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(&link.url);
-                            if cell_response.clicked() {
-                                ui.ctx().open_url(egui::OpenUrl::new_tab(&link.url));
+                            if !link_rect.is_positive() {
+                                continue;
+                            }
+                            let underline_y = pos.y + line.size.y;
+                            painter.hline(
+                                link_rect.x_range(),
+                                underline_y,
+                                Stroke::new(1.0, p.accent),
+                            );
+                            if cell_response.hovered() && cell_ui.rect_contains_pointer(link_rect) {
+                                on_link = true;
+                                cell_response
+                                    .clone()
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .on_hover_text(&link.url);
+                                if cell_response.clicked() {
+                                    ui.ctx().open_url(egui::OpenUrl::new_tab(&link.url));
+                                }
                             }
                         }
                     }
+                    if !on_link
+                        && text.chars().count() > MAX_COL_CHARS
+                        && hover.is_some_and(|h| text_clip.contains(h))
+                    {
+                        tooltip = Some(text.clone());
+                    }
                 }
-                if !on_link && text.chars().count() > MAX_COL_CHARS && hover.is_some_and(|h| text_clip.contains(h)) {
-                    tooltip = Some(text.clone());
+            };
+            let first = ((viewport.min.y / row_h) as usize).max(1);
+            let last = ((viewport.max.y / row_h).ceil() as usize + 1).min(body + 1);
+            for i in first..last {
+                let y = rect.top() + i as f32 * row_h;
+                let stripe = Rect::from_min_size(egui::pos2(rect.left(), y), vec2(total.x, row_h));
+                if hover_row == Some(i) {
+                    painter.rect_filled(stripe, 0.0, p.select_dim);
+                } else if i % 2 == 0 {
+                    painter.rect_filled(stripe, 0.0, p.panel);
                 }
+                painter.text(
+                    egui::pos2(rect.left() + gutter - PAD, y + row_h / 2.0),
+                    Align2::RIGHT_CENTER,
+                    i.to_string(),
+                    font.clone(),
+                    p.faint,
+                );
+                draw_row(i, y, p.text, body_clip);
             }
-        };
-        let first = ((viewport.min.y / row_h) as usize).max(1);
-        let last = ((viewport.max.y / row_h).ceil() as usize + 1).min(body + 1);
-        for i in first..last {
-            let y = rect.top() + i as f32 * row_h;
-            let stripe = Rect::from_min_size(egui::pos2(rect.left(), y), vec2(total.x, row_h));
-            if hover_row == Some(i) {
-                painter.rect_filled(stripe, 0.0, p.select_dim);
-            } else if i % 2 == 0 {
-                painter.rect_filled(stripe, 0.0, p.panel);
-            }
-            painter.text(
-                egui::pos2(rect.left() + gutter - PAD, y + row_h / 2.0), Align2::RIGHT_CENTER, i.to_string(), font.clone(), p.faint,
+            // Header sticks to the top of the viewport.
+            let y = clip.top();
+            let header = Rect::from_min_size(egui::pos2(rect.left(), y), vec2(total.x, row_h));
+            painter.rect_filled(header, 0.0, p.surface);
+            painter.hline(
+                header.x_range(),
+                header.bottom(),
+                Stroke::new(1.0, p.border),
             );
-            draw_row(i, y, p.text, body_clip);
-        }
-        // Header sticks to the top of the viewport.
-        let y = clip.top();
-        let header = Rect::from_min_size(egui::pos2(rect.left(), y), vec2(total.x, row_h));
-        painter.rect_filled(header, 0.0, p.surface);
-        painter.hline(header.x_range(), header.bottom(), Stroke::new(1.0, p.border));
-        for &x in &xs[1..xs.len() - 1] {
-            painter.vline(rect.left() + x, header.y_range(), Stroke::new(1.0, p.border));
-        }
-        draw_row(0, y, p.accent, clip);
-        if let Some(text) = tooltip {
-            response.on_hover_text(text);
-        }
-    });
+            for &x in &xs[1..xs.len() - 1] {
+                painter.vline(
+                    rect.left() + x,
+                    header.y_range(),
+                    Stroke::new(1.0, p.border),
+                );
+            }
+            draw_row(0, y, p.accent, clip);
+            if let Some(text) = tooltip {
+                response.on_hover_text(text);
+            }
+        });
 }
 
 impl App {
@@ -246,21 +380,32 @@ impl App {
         ui.ctx().data_mut(|d| {
             d.remove_temp::<PathBuf>(drop_target_id());
             d.remove_temp::<bool>(bookmark_hover_id());
-            let rects = d.get_temp::<Vec<(Rect, PathBuf)>>(folder_rects_id()).unwrap_or_default();
+            let rects = d
+                .get_temp::<Vec<(Rect, PathBuf)>>(folder_rects_id())
+                .unwrap_or_default();
             self.folder_rects = rects;
             d.remove_temp::<Vec<(Rect, PathBuf)>>(folder_rects_id());
         });
         self.dragging = DragAndDrop::payload::<DragPaths>(ui.ctx());
-        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("is_split"), self.panes.len() > 1));
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(egui::Id::new("is_split"), self.panes.len() > 1));
 
         Panel::bottom("status")
             .exact_size(26.0)
-            .frame(Frame::new().fill(pal().panel).inner_margin(Margin::symmetric(12, 2)))
+            .frame(
+                Frame::new()
+                    .fill(pal().panel)
+                    .inner_margin(Margin::symmetric(12, 2)),
+            )
             .show(ui, |ui| self.status_bar(ui));
         if self.picker.is_some() {
             Panel::bottom("picker")
                 .exact_size(44.0)
-                .frame(Frame::new().fill(pal().panel).inner_margin(Margin::symmetric(12, 6)))
+                .frame(
+                    Frame::new()
+                        .fill(pal().panel)
+                        .inner_margin(Margin::symmetric(12, 6)),
+                )
                 .show(ui, |ui| self.picker_bar(ui, &mut actions));
         }
         // Side panels yield to the file list in narrow windows.
@@ -272,7 +417,11 @@ impl App {
             .min_size(120.0_f32.min(width * 0.25))
             .max_size((width * 0.25).max(120.0))
             .drag_to_open(true)
-            .frame(Frame::new().fill(pal().panel).inner_margin(Margin::symmetric(8, 4)))
+            .frame(
+                Frame::new()
+                    .fill(pal().panel)
+                    .inner_margin(Margin::symmetric(8, 4)),
+            )
             .show_collapsible(ui, &mut show, |ui| self.sidebar(ui, &mut actions));
         self.show_sidebar = show;
         let mut show = self.show_preview;
@@ -281,53 +430,83 @@ impl App {
             .min_size(160.0_f32.min(width * 0.4))
             .max_size((width * 0.4).max(160.0))
             .drag_to_open(true)
-            .frame(Frame::new().fill(pal().panel).inner_margin(Margin::symmetric(12, 4)))
+            .frame(
+                Frame::new()
+                    .fill(pal().panel)
+                    .inner_margin(Margin::symmetric(12, 4)),
+            )
             .show_collapsible(ui, &mut show, |ui| self.preview_panel(ui));
         self.show_preview = show;
         // Remember widths only while shown; a folded panel reports its animation size.
-        let width_of = |id: &str| egui::containers::panel::PanelState::load(ui.ctx(), egui::Id::new(id)).map(|s| s.size().x);
-        if self.show_sidebar && let Some(w) = width_of("sidebar") {
+        let width_of = |id: &str| {
+            egui::containers::panel::PanelState::load(ui.ctx(), egui::Id::new(id))
+                .map(|s| s.size().x)
+        };
+        if self.show_sidebar
+            && let Some(w) = width_of("sidebar")
+        {
             self.sidebar_width = w;
         }
-        if self.show_preview && let Some(w) = width_of("preview") {
+        if self.show_preview
+            && let Some(w) = width_of("preview")
+        {
             self.preview_width = w;
         }
-        CentralPanel::default().frame(Frame::new().fill(pal().bg)).show(ui, |ui| {
-            let full = ui.max_rect();
-            self.pane_rects.clear();
-            if self.panes.len() == 1 {
-                self.pane_rects.push(full);
-                self.pane(ui, 0, &mut actions);
-            } else {
-                let mid = full.left() + full.width() * self.split_ratio;
-                let handle = Rect::from_center_size(Pos2::new(mid, full.center().y), vec2(8.0, full.height()));
-                let response = ui.interact(handle, ui.id().with("split_divider"), Sense::click_and_drag());
-                if response.dragged_by(egui::PointerButton::Primary) {
-                    if let Some(pos) = response.interact_pointer_pos() {
-                        self.split_ratio = ((pos.x - full.left()) / full.width()).clamp(0.15, 0.85);
+        CentralPanel::default()
+            .frame(Frame::new().fill(pal().bg))
+            .show(ui, |ui| {
+                let full = ui.max_rect();
+                self.pane_rects.clear();
+                if self.panes.len() == 1 {
+                    self.pane_rects.push(full);
+                    self.pane(ui, 0, &mut actions);
+                } else {
+                    let mid = full.left() + full.width() * self.split_ratio;
+                    let handle = Rect::from_center_size(
+                        Pos2::new(mid, full.center().y),
+                        vec2(8.0, full.height()),
+                    );
+                    let response = ui.interact(
+                        handle,
+                        ui.id().with("split_divider"),
+                        Sense::click_and_drag(),
+                    );
+                    if response.dragged_by(egui::PointerButton::Primary)
+                        && let Some(pos) = response.interact_pointer_pos() {
+                            self.split_ratio =
+                                ((pos.x - full.left()) / full.width()).clamp(0.15, 0.85);
+                        }
+                    if response.double_clicked() {
+                        self.split_ratio = 0.5;
                     }
+                    response
+                        .on_hover_cursor(egui::CursorIcon::ResizeHorizontal)
+                        .on_hover_text("Drag to resize panes · double-click for equal widths");
+                    let mid = full.left() + full.width() * self.split_ratio;
+                    let rects = [
+                        Rect::from_min_max(full.min, Pos2::new(mid - 4.0, full.max.y)),
+                        Rect::from_min_max(Pos2::new(mid + 4.0, full.min.y), full.max),
+                    ];
+                    ui.painter()
+                        .vline(mid, full.y_range(), Stroke::new(2.0, pal().border));
+                    for (p, r) in rects.into_iter().enumerate() {
+                        self.pane_rects.push(r);
+                        ui.scope_builder(UiBuilder::new().max_rect(r).id_salt(("pane", p)), |ui| {
+                            ui.set_clip_rect(r);
+                            self.pane(ui, p, &mut actions);
+                        });
+                    }
+                    // Mark which pane has focus.
+                    let active = rects[self.active_pane.min(1)];
+                    let accent = pal().accent;
+                    ui.painter().rect_stroke(
+                        active.shrink(1.0),
+                        0.0,
+                        Stroke::new(2.0, accent.gamma_multiply(0.7)),
+                        egui::StrokeKind::Inside,
+                    );
                 }
-                if response.double_clicked() { self.split_ratio = 0.5; }
-                response.on_hover_cursor(egui::CursorIcon::ResizeHorizontal).on_hover_text("Drag to resize panes · double-click for equal widths");
-                let mid = full.left() + full.width() * self.split_ratio;
-                let rects = [
-                    Rect::from_min_max(full.min, Pos2::new(mid - 4.0, full.max.y)),
-                    Rect::from_min_max(Pos2::new(mid + 4.0, full.min.y), full.max),
-                ];
-                ui.painter().vline(mid, full.y_range(), Stroke::new(2.0, pal().border));
-                for (p, r) in rects.into_iter().enumerate() {
-                    self.pane_rects.push(r);
-                    ui.scope_builder(UiBuilder::new().max_rect(r).id_salt(("pane", p)), |ui| {
-                        ui.set_clip_rect(r);
-                        self.pane(ui, p, &mut actions);
-                    });
-                }
-                // Mark which pane has focus.
-                let active = rects[self.active_pane.min(1)];
-                let accent = pal().accent;
-                ui.painter().rect_stroke(active.shrink(1.0), 0.0, Stroke::new(2.0, accent.gamma_multiply(0.7)), egui::StrokeKind::Inside);
-            }
-        });
+            });
 
         self.external_drops(ui.ctx(), &mut actions);
         self.maybe_drag_out(ui.ctx());
@@ -349,7 +528,8 @@ impl App {
         }
         let title = format!("{} — Kestrel", self.tab().path.display());
         if title != self.window_title {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.window_title = title;
         }
     }
@@ -357,7 +537,9 @@ impl App {
     /// The editable path field with a dropdown of matching folders.
     fn path_editor(&mut self, ui: &mut Ui, p: usize, actions: &mut Vec<Action>) {
         let id = egui::Id::new(("path_edit", p));
-        let Some((_, text)) = self.path_edit.as_mut() else { return };
+        let Some((_, text)) = self.path_edit.as_mut() else {
+            return;
+        };
         let cands = self.completer.candidates(text, self.show_hidden);
         let shown = cands.len().min(complete::SHOWN);
         if self.path_hl.is_some_and(|h| h >= shown) {
@@ -397,7 +579,8 @@ impl App {
             self.path_hl = None;
             if let Some(mut st) = egui::TextEdit::load_state(ui.ctx(), id) {
                 let end = egui::text::CCursor::new(text.chars().count());
-                st.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
+                st.cursor
+                    .set_char_range(Some(egui::text::CCursorRange::one(end)));
                 st.store(ui.ctx(), id);
             }
         }
@@ -424,7 +607,10 @@ impl App {
             let field = ui.min_rect().expand2(vec2(6.0, 2.0));
             let screen = ui.ctx().content_rect();
             let width = field.width().max(320.0_f32.min(screen.width() - 16.0));
-            let x = field.left().min(screen.right() - width - 8.0).max(screen.left() + 8.0);
+            let x = field
+                .left()
+                .min(screen.right() - width - 8.0)
+                .max(screen.left() + 8.0);
             egui::Area::new(id.with("popup"))
                 .order(egui::Order::Foreground)
                 .fixed_pos(Pos2::new(x, field.bottom() + 4.0))
@@ -438,12 +624,23 @@ impl App {
                             ui.set_width(width - 8.0);
                             ui.spacing_mut().item_spacing.y = 0.0;
                             for (n, c) in cands.iter().take(shown).enumerate() {
-                                let (rect, item) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
+                                let (rect, item) = ui.allocate_exact_size(
+                                    vec2(ui.available_width(), 26.0),
+                                    Sense::click(),
+                                );
                                 let lit = self.path_hl == Some(n);
                                 if lit || item.hovered() {
-                                    ui.painter().rect_filled(rect, CornerRadius::same(4), if lit { pal().select } else { pal().hover });
+                                    ui.painter().rect_filled(
+                                        rect,
+                                        CornerRadius::same(4),
+                                        if lit { pal().select } else { pal().hover },
+                                    );
                                 }
-                                draw_folder(ui.painter(), Pos2::new(rect.left() + 14.0, rect.center().y), 0.8);
+                                draw_folder(
+                                    ui.painter(),
+                                    Pos2::new(rect.left() + 14.0, rect.center().y),
+                                    0.8,
+                                );
                                 let name = c.trim_end_matches('/').rsplit('/').next().unwrap_or(c);
                                 ui.painter().with_clip_rect(rect).text(
                                     Pos2::new(rect.left() + 28.0, rect.center().y),
@@ -457,14 +654,23 @@ impl App {
                                 }
                             }
                             if cands.len() > shown {
-                                ui.label(RichText::new(format!("  {} more…", cands.len() - shown)).size(12.0).color(pal().faint));
+                                ui.label(
+                                    RichText::new(format!("  {} more…", cands.len() - shown))
+                                        .size(12.0)
+                                        .color(pal().faint),
+                                );
                             }
                         });
                 });
         }
 
         let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-        let target = picked.or_else(|| enter.then(|| self.path_hl.map_or_else(|| text.clone(), |h| cands[h].clone())));
+        let target = picked.or_else(|| {
+            enter.then(|| {
+                self.path_hl
+                    .map_or_else(|| text.clone(), |h| cands[h].clone())
+            })
+        });
         if let Some(t) = target {
             // Rebuilding from components drops trailing slashes and "./".
             let target: PathBuf = complete::expand_tilde(t.trim()).components().collect();
@@ -489,22 +695,37 @@ impl App {
         let rect = ui.max_rect();
         let pressed_here = ui.input(|i| {
             (i.pointer.primary_pressed() || i.pointer.secondary_pressed())
-                && i.pointer.interact_pos().is_some_and(|pos| rect.contains(pos))
+                && i.pointer
+                    .interact_pos()
+                    .is_some_and(|pos| rect.contains(pos))
         });
         if pressed_here && p != self.active_pane {
             actions.push(Action::FocusPane(p));
         }
         Panel::top(egui::Id::new(("tabs", p)))
             .exact_size(36.0)
-            .frame(Frame::new().fill(pal().bg).inner_margin(Margin { left: 8, right: 8, top: 4, bottom: 0 }))
+            .frame(Frame::new().fill(pal().bg).inner_margin(Margin {
+                left: 8,
+                right: 8,
+                top: 4,
+                bottom: 0,
+            }))
             .show_separator_line(false)
             .show(ui, |ui| self.tab_bar(ui, p, actions));
         Panel::top(egui::Id::new(("toolbar", p)))
             .exact_size(38.0)
-            .frame(Frame::new().fill(pal().panel).inner_margin(Margin::symmetric(8, 4)))
+            .frame(
+                Frame::new()
+                    .fill(pal().panel)
+                    .inner_margin(Margin::symmetric(8, 4)),
+            )
             .show(ui, |ui| self.toolbar(ui, p, actions));
         CentralPanel::default()
-            .frame(Frame::new().fill(pal().bg).inner_margin(Margin::symmetric(4, 0)))
+            .frame(
+                Frame::new()
+                    .fill(pal().bg)
+                    .inner_margin(Margin::symmetric(4, 0)),
+            )
             .show(ui, |ui| {
                 self.zoom_wheel(ui, p, actions);
                 let pane = &self.panes[p];
@@ -530,7 +751,12 @@ impl App {
                 .events
                 .iter()
                 .map(|e| match e {
-                    egui::Event::MouseWheel { unit, delta, modifiers, .. } if modifiers.ctrl || modifiers.command => match unit {
+                    egui::Event::MouseWheel {
+                        unit,
+                        delta,
+                        modifiers,
+                        ..
+                    } if modifiers.ctrl || modifiers.command => match unit {
                         egui::MouseWheelUnit::Point => delta.y / 60.0,
                         _ => delta.y.signum(),
                     },
@@ -554,7 +780,11 @@ impl App {
 
     fn tab_bar(&mut self, ui: &mut Ui, p: usize, actions: &mut Vec<Action>) {
         let pane_active = p == self.active_pane;
-        let background = ui.interact(ui.max_rect(), ui.id().with(("tab_strip", p)), Sense::hover());
+        let background = ui.interact(
+            ui.max_rect(),
+            ui.id().with(("tab_strip", p)),
+            Sense::hover(),
+        );
         let active_id = self.panes[p].tabs[self.panes[p].active].id;
         let reveal = ui.data_mut(|d| {
             let id = egui::Id::new(("visible_tab", p));
@@ -562,112 +792,224 @@ impl App {
             d.insert_temp(id, active_id);
             changed
         });
-        let natural: Vec<f32> = self.panes[p].tabs.iter().map(|tab| {
-            (ui.painter().layout_no_wrap(tab.title(), FontId::proportional(13.0), pal().text).size().x + 60.0).max(100.0)
-        }).collect();
+        let natural: Vec<f32> = self.panes[p]
+            .tabs
+            .iter()
+            .map(|tab| {
+                (ui.painter()
+                    .layout_no_wrap(tab.title(), FontId::proportional(13.0), pal().text)
+                    .size()
+                    .x
+                    + 60.0)
+                    .max(100.0)
+            })
+            .collect();
         // Reserve the new-tab button and spacing, then shrink only the tabs that
         // need it. Once every tab reaches 100px the strip scrolls instead.
         let budget = (ui.available_width() - 28.0 - natural.len() as f32 * 2.0).max(0.0);
         let widths = tab_widths(&natural, budget);
         ui.scope(|ui| {
             ui.style_mut().always_scroll_the_only_direction = true;
-            ScrollArea::horizontal().id_salt(("tab_scroll", p))
+            ScrollArea::horizontal()
+                .id_salt(("tab_scroll", p))
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                .auto_shrink([false, true]).show(ui, |ui| {
-                ui.horizontal_centered(|ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0;
-                    let pane = &self.panes[p];
-                    let top_round = CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 };
-                    for (i, tab) in pane.tabs.iter().enumerate() {
-                        let active = i == pane.active;
-                        let color = if active { pal().text } else { pal().dim };
-                        let w = widths[i];
-                        let mut job = egui::text::LayoutJob::simple(tab.title(), FontId::proportional(13.0), color, (w - 60.0).max(1.0));
-                        job.wrap.max_rows = 1;
-                        job.wrap.break_anywhere = true;
-                        let galley = ui.painter().layout_job(job);
-                        let (rect, resp) = ui.allocate_exact_size(vec2(w, ui.available_height()), Sense::click_and_drag());
-                        if active && reveal { resp.scroll_to_me(Some(Align::Center)); }
-                        if resp.drag_started_by(egui::PointerButton::Primary) {
-                            DragAndDrop::set_payload(ui.ctx(), TabDrag { id: tab.id });
-                        }
-                        let close_rect =
-                            Rect::from_center_size(Pos2::new(rect.right() - 15.0, rect.center().y), vec2(18.0, 18.0));
-                        let close = ui.interact(close_rect, ui.id().with(("tab_close", tab.id)), Sense::click());
-                        resp.clone().on_hover_text(tab.path.display().to_string());
-                        #[cfg(test)]
-                        self.tab_rects.insert(tab.id, (rect, close_rect));
-                        let painter = ui.painter();
-                        let drop_hover = resp.dnd_hover_payload::<DragPaths>().is_some();
-                        // The active tab flows into the toolbar below it.
-                        let body = if active { rect.expand2(vec2(0.0, 0.0)).with_max_y(rect.bottom() + 4.0) } else { rect };
-                        if active {
-                            painter.rect_filled(body, top_round, pal().panel);
-                            let line = Rect::from_min_size(rect.min + vec2(0.0, 0.0), vec2(rect.width(), 2.0));
-                            painter.rect_filled(line, CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 }, if pane_active { pal().accent } else { pal().faint });
-                        } else if resp.hovered() || drop_hover {
-                            painter.rect_filled(rect.shrink2(vec2(0.0, 3.0)).with_max_y(rect.bottom() - 3.0), CornerRadius::same(6), pal().hover);
-                        }
-                        if drop_hover {
-                            painter.rect_stroke(body, top_round, Stroke::new(1.5, pal().accent), egui::StrokeKind::Inside);
-                        }
-                        draw_folder(painter, Pos2::new(rect.left() + 16.0, rect.center().y + 1.0), 0.8);
-                        let text_rect = Rect::from_min_max(
-                            Pos2::new(rect.left() + 28.0, rect.top()),
-                            Pos2::new(close_rect.left() - 6.0, rect.bottom()),
-                        );
-                        painter
-                            .with_clip_rect(text_rect.intersect(painter.clip_rect()))
-                            .galley(Pos2::new(text_rect.left(), rect.center().y - galley.size().y / 2.0 + 1.0), galley, color);
-                        if resp.hovered() || close.hovered() || active {
-                            if close.hovered() {
-                                painter.circle_filled(close_rect.center(), 9.0, pal().select);
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.horizontal_centered(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        let pane = &self.panes[p];
+                        let top_round = CornerRadius {
+                            nw: 8,
+                            ne: 8,
+                            sw: 0,
+                            se: 0,
+                        };
+                        for (i, tab) in pane.tabs.iter().enumerate() {
+                            let active = i == pane.active;
+                            let color = if active { pal().text } else { pal().dim };
+                            let w = widths[i];
+                            let mut job = egui::text::LayoutJob::simple(
+                                tab.title(),
+                                FontId::proportional(13.0),
+                                color,
+                                (w - 60.0).max(1.0),
+                            );
+                            job.wrap.max_rows = 1;
+                            job.wrap.break_anywhere = true;
+                            let galley = ui.painter().layout_job(job);
+                            let (rect, resp) = ui.allocate_exact_size(
+                                vec2(w, ui.available_height()),
+                                Sense::click_and_drag(),
+                            );
+                            if active && reveal {
+                                resp.scroll_to_me(Some(Align::Center));
                             }
-                            let c = close_rect.center();
-                            let arm = 3.0;
-                            let stroke = Stroke::new(1.4, if close.hovered() { pal().text } else { pal().dim });
-                            painter.line_segment([c + vec2(-arm, -arm), c + vec2(arm, arm)], stroke);
-                            painter.line_segment([c + vec2(-arm, arm), c + vec2(arm, -arm)], stroke);
-                        }
-                        if resp.dnd_hover_payload::<TabDrag>().is_some() {
-                            let left = ui.input(|i| i.pointer.interact_pos()).is_some_and(|pos| pos.x < rect.center().x);
-                            let before = if left { Some(tab.id) } else { pane.tabs.get(i + 1).map(|t| t.id) };
-                            painter.vline(if left { rect.left() } else { rect.right() }, rect.y_range(), Stroke::new(3.0, pal().accent));
-                            if ui.input(|i| i.pointer.primary_released()) {
-                                if let Some(drag) = DragAndDrop::take_payload::<TabDrag>(ui.ctx()) {
-                                    actions.push(Action::MoveTab { id: drag.id, pane: p, before });
+                            if resp.drag_started_by(egui::PointerButton::Primary) {
+                                DragAndDrop::set_payload(ui.ctx(), TabDrag { id: tab.id });
+                            }
+                            let close_rect = Rect::from_center_size(
+                                Pos2::new(rect.right() - 15.0, rect.center().y),
+                                vec2(18.0, 18.0),
+                            );
+                            let close = ui.interact(
+                                close_rect,
+                                ui.id().with(("tab_close", tab.id)),
+                                Sense::click(),
+                            );
+                            resp.clone().on_hover_text(tab.path.display().to_string());
+                            #[cfg(test)]
+                            self.tab_rects.insert(tab.id, (rect, close_rect));
+                            let painter = ui.painter();
+                            let drop_hover = resp.dnd_hover_payload::<DragPaths>().is_some();
+                            // The active tab flows into the toolbar below it.
+                            let body = if active {
+                                rect.expand2(vec2(0.0, 0.0)).with_max_y(rect.bottom() + 4.0)
+                            } else {
+                                rect
+                            };
+                            if active {
+                                painter.rect_filled(body, top_round, pal().panel);
+                                let line = Rect::from_min_size(
+                                    rect.min + vec2(0.0, 0.0),
+                                    vec2(rect.width(), 2.0),
+                                );
+                                painter.rect_filled(
+                                    line,
+                                    CornerRadius {
+                                        nw: 8,
+                                        ne: 8,
+                                        sw: 0,
+                                        se: 0,
+                                    },
+                                    if pane_active {
+                                        pal().accent
+                                    } else {
+                                        pal().faint
+                                    },
+                                );
+                            } else if resp.hovered() || drop_hover {
+                                painter.rect_filled(
+                                    rect.shrink2(vec2(0.0, 3.0)).with_max_y(rect.bottom() - 3.0),
+                                    CornerRadius::same(6),
+                                    pal().hover,
+                                );
+                            }
+                            if drop_hover {
+                                painter.rect_stroke(
+                                    body,
+                                    top_round,
+                                    Stroke::new(1.5, pal().accent),
+                                    egui::StrokeKind::Inside,
+                                );
+                            }
+                            draw_folder(
+                                painter,
+                                Pos2::new(rect.left() + 16.0, rect.center().y + 1.0),
+                                0.8,
+                            );
+                            let text_rect = Rect::from_min_max(
+                                Pos2::new(rect.left() + 28.0, rect.top()),
+                                Pos2::new(close_rect.left() - 6.0, rect.bottom()),
+                            );
+                            painter
+                                .with_clip_rect(text_rect.intersect(painter.clip_rect()))
+                                .galley(
+                                    Pos2::new(
+                                        text_rect.left(),
+                                        rect.center().y - galley.size().y / 2.0 + 1.0,
+                                    ),
+                                    galley,
+                                    color,
+                                );
+                            if resp.hovered() || close.hovered() || active {
+                                if close.hovered() {
+                                    painter.circle_filled(close_rect.center(), 9.0, pal().select);
                                 }
+                                let c = close_rect.center();
+                                let arm = 3.0;
+                                let stroke = Stroke::new(
+                                    1.4,
+                                    if close.hovered() {
+                                        pal().text
+                                    } else {
+                                        pal().dim
+                                    },
+                                );
+                                painter.line_segment(
+                                    [c + vec2(-arm, -arm), c + vec2(arm, arm)],
+                                    stroke,
+                                );
+                                painter.line_segment(
+                                    [c + vec2(-arm, arm), c + vec2(arm, -arm)],
+                                    stroke,
+                                );
+                            }
+                            if resp.dnd_hover_payload::<TabDrag>().is_some() {
+                                let left = ui
+                                    .input(|i| i.pointer.interact_pos())
+                                    .is_some_and(|pos| pos.x < rect.center().x);
+                                let before = if left {
+                                    Some(tab.id)
+                                } else {
+                                    pane.tabs.get(i + 1).map(|t| t.id)
+                                };
+                                painter.vline(
+                                    if left { rect.left() } else { rect.right() },
+                                    rect.y_range(),
+                                    Stroke::new(3.0, pal().accent),
+                                );
+                                if ui.input(|i| i.pointer.primary_released())
+                                    && let Some(drag) =
+                                        DragAndDrop::take_payload::<TabDrag>(ui.ctx())
+                                    {
+                                        actions.push(Action::MoveTab {
+                                            id: drag.id,
+                                            pane: p,
+                                            before,
+                                        });
+                                    }
+                            }
+                            if let Some(paths) = take_file_drop(&resp) {
+                                let copy = ui.input(|i| i.modifiers.ctrl);
+                                actions.push(Action::Drop {
+                                    paths: paths.0.clone(),
+                                    dest: tab.path.clone(),
+                                    copy,
+                                });
+                            }
+                            if close.clicked() || resp.middle_clicked() {
+                                actions.push(Action::CloseTab(p, i));
+                            } else if resp.clicked() {
+                                actions.push(Action::SwitchTab(p, i));
                             }
                         }
-                        if let Some(paths) = take_file_drop(&resp) {
-                            let copy = ui.input(|i| i.modifiers.ctrl);
-                            actions.push(Action::Drop { paths: paths.0.clone(), dest: tab.path.clone(), copy });
+                        if glyph_button(ui, Glyph::Plus, true, false, "New tab (Ctrl+T)") {
+                            actions.push(Action::FocusPane(p));
+                            actions.push(Action::Cmd(Cmd::NewTab));
                         }
-                        if close.clicked() || resp.middle_clicked() {
-                            actions.push(Action::CloseTab(p, i));
-                        } else if resp.clicked() {
-                            actions.push(Action::SwitchTab(p, i));
-                        }
-                    }
-                    if glyph_button(ui, Glyph::Plus, true, false, "New tab (Ctrl+T)") {
-                        actions.push(Action::FocusPane(p));
-                        actions.push(Action::Cmd(Cmd::NewTab));
-                    }
+                    });
                 });
-            });
         });
-        if background.dnd_hover_payload::<TabDrag>().is_some() && ui.input(|i| i.pointer.primary_released()) {
-            if let Some(drag) = DragAndDrop::take_payload::<TabDrag>(ui.ctx()) {
-                actions.push(Action::MoveTab { id: drag.id, pane: p, before: None });
+        if background.dnd_hover_payload::<TabDrag>().is_some()
+            && ui.input(|i| i.pointer.primary_released())
+            && let Some(drag) = DragAndDrop::take_payload::<TabDrag>(ui.ctx()) {
+                actions.push(Action::MoveTab {
+                    id: drag.id,
+                    pane: p,
+                    before: None,
+                });
             }
-        }
     }
 
     fn toolbar(&mut self, ui: &mut Ui, p: usize, actions: &mut Vec<Action>) {
         let last_pane = p == self.panes.len() - 1;
         ui.horizontal_centered(|ui| {
             if p == 0 {
-                let tip = if self.show_sidebar { "Hide sidebar (Ctrl+B)" } else { "Show sidebar (Ctrl+B)" };
+                let tip = if self.show_sidebar {
+                    "Hide sidebar (Ctrl+B)"
+                } else {
+                    "Show sidebar (Ctrl+B)"
+                };
                 if glyph_button(ui, Glyph::Sidebar, true, self.show_sidebar, tip) {
                     actions.push(Action::Cmd(Cmd::ToggleSidebar));
                 }
@@ -678,13 +1020,31 @@ impl App {
                 actions.push(Action::FocusPane(p));
                 actions.push(Action::Cmd(cmd));
             };
-            if glyph_button(ui, Glyph::Back, !tab.back.is_empty(), false, "Back (Alt+Left)") {
+            if glyph_button(
+                ui,
+                Glyph::Back,
+                !tab.back.is_empty(),
+                false,
+                "Back (Alt+Left)",
+            ) {
                 nav(Cmd::Back);
             }
-            if glyph_button(ui, Glyph::Forward, !tab.fwd.is_empty(), false, "Forward (Alt+Right)") {
+            if glyph_button(
+                ui,
+                Glyph::Forward,
+                !tab.fwd.is_empty(),
+                false,
+                "Forward (Alt+Right)",
+            ) {
                 nav(Cmd::Forward);
             }
-            if glyph_button(ui, Glyph::Up, tab.path.parent().is_some(), false, "Up (Backspace)") {
+            if glyph_button(
+                ui,
+                Glyph::Up,
+                tab.path.parent().is_some(),
+                false,
+                "Up (Backspace)",
+            ) {
                 nav(Cmd::GoUp);
             }
             if glyph_button(ui, Glyph::Refresh, true, false, "Refresh (F5)") {
@@ -698,15 +1058,31 @@ impl App {
             let compact = ui.available_width() < if editing { 560.0 } else { 400.0 };
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if last_pane {
-                    let tip = if self.show_preview { "Hide preview (F3)" } else { "Show preview (F3)" };
+                    let tip = if self.show_preview {
+                        "Hide preview (F3)"
+                    } else {
+                        "Show preview (F3)"
+                    };
                     if glyph_button(ui, Glyph::Panel, true, self.show_preview, tip) {
                         actions.push(Action::Cmd(Cmd::TogglePreview));
                     }
                     if !compact {
-                        if glyph_button(ui, Glyph::Eye, true, self.show_hidden, "Show hidden files (Ctrl+H)") {
+                        if glyph_button(
+                            ui,
+                            Glyph::Eye,
+                            true,
+                            self.show_hidden,
+                            "Show hidden files (Ctrl+H)",
+                        ) {
                             actions.push(Action::Cmd(Cmd::ToggleHidden));
                         }
-                        if glyph_button(ui, Glyph::Split, true, self.panes.len() > 1, "Split view (F6)") {
+                        if glyph_button(
+                            ui,
+                            Glyph::Split,
+                            true,
+                            self.panes.len() > 1,
+                            "Split view (F6)",
+                        ) {
                             actions.push(Action::Cmd(Cmd::ToggleSplit));
                         }
                     }
@@ -715,47 +1091,96 @@ impl App {
                 let tab = &pane.tabs[pane.active];
                 if !compact {
                     ui.menu_button("View", |ui| {
-                        for (mode, label) in [(ViewMode::Details, "Details"), (ViewMode::List, "List"),
-                            (ViewMode::Icons(2), "Icons"), (ViewMode::Columns, "Miller columns")] {
-                            let selected = tab.mode == mode || (mode == ViewMode::Icons(2) && matches!(tab.mode, ViewMode::Icons(_)));
+                        for (mode, label) in [
+                            (ViewMode::Details, "Details"),
+                            (ViewMode::List, "List"),
+                            (ViewMode::Icons(2), "Icons"),
+                            (ViewMode::Columns, "Miller columns"),
+                        ] {
+                            let selected = tab.mode == mode
+                                || (mode == ViewMode::Icons(2)
+                                    && matches!(tab.mode, ViewMode::Icons(_)));
                             let shortcut = match mode {
                                 ViewMode::Columns => "Ctrl+Shift+M",
                                 ViewMode::Details if tab.mode.is_grid() => "Ctrl+G",
                                 ViewMode::Icons(_) if !tab.mode.is_grid() => "Ctrl+G",
                                 _ => "",
                             };
-                            if ui.add(egui::Button::new(label).selected(selected).shortcut_text(shortcut)).clicked() {
+                            if ui
+                                .add(
+                                    egui::Button::new(label)
+                                        .selected(selected)
+                                        .shortcut_text(shortcut),
+                                )
+                                .clicked()
+                            {
                                 actions.push(Action::FocusPane(p));
                                 actions.push(Action::SetView(mode));
                                 ui.close();
                             }
                         }
                         ui.separator();
-                        ui.label(RichText::new("Ctrl+G · Icons / Details").small().color(pal().dim));
-                        ui.label(RichText::new("Ctrl+scroll · Details → List → Icons").small().color(pal().dim));
+                        ui.label(
+                            RichText::new("Ctrl+G · Icons / Details")
+                                .small()
+                                .color(pal().dim),
+                        );
+                        ui.label(
+                            RichText::new("Ctrl+scroll · Details → List → Icons")
+                                .small()
+                                .color(pal().dim),
+                        );
                         if tab.mode == ViewMode::Columns {
-                            ui.label(RichText::new("Zoom is inactive in columns").small().color(pal().dim));
+                            ui.label(
+                                RichText::new("Zoom is inactive in columns")
+                                    .small()
+                                    .color(pal().dim),
+                            );
                         }
-                    }).response.on_hover_text("View mode · columns: Ctrl+Shift+M · icons/details: Ctrl+G");
+                    })
+                    .response
+                    .on_hover_text("View mode · columns: Ctrl+Shift+M · icons/details: Ctrl+G");
                 }
                 if (!compact || tab.search.is_some())
-                    && glyph_button(ui, Glyph::Search, true, tab.search.is_some(), "Search subfolders (Ctrl+F)")
+                    && glyph_button(
+                        ui,
+                        Glyph::Search,
+                        true,
+                        tab.search.is_some(),
+                        "Search subfolders (Ctrl+F)",
+                    )
                 {
                     actions.push(Action::FocusPane(p));
-                    actions.push(if tab.search.is_some() { Action::StopSearch } else { Action::Cmd(Cmd::Search) });
+                    actions.push(if tab.search.is_some() {
+                        Action::StopSearch
+                    } else {
+                        Action::Cmd(Cmd::Search)
+                    });
                 }
                 if !tab.filter.is_empty() {
                     let chip = Frame::new()
                         .fill(pal().select)
                         .corner_radius(CornerRadius::same(5))
                         .inner_margin(Margin::symmetric(8, 3))
-                        .show(ui, |ui| ui.label(RichText::new(format!("Filter: {}  ×", tab.filter)).color(pal().text)));
-                    if chip.response.interact(Sense::click()).on_hover_text("Clear filter (Esc)").clicked() {
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new(format!("Filter: {}  ×", tab.filter))
+                                    .color(pal().text),
+                            )
+                        });
+                    if chip
+                        .response
+                        .interact(Sense::click())
+                        .on_hover_text("Clear filter (Esc)")
+                        .clicked()
+                    {
                         actions.push(Action::FocusPane(p));
                         actions.push(Action::ClearFilter);
                     }
                 }
-                ui.with_layout(Layout::left_to_right(Align::Center), |ui| self.path_bar(ui, p, actions));
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    self.path_bar(ui, p, actions)
+                });
             });
         });
     }
@@ -764,7 +1189,14 @@ impl App {
         let frame = Frame::new()
             .fill(pal().bg)
             .corner_radius(CornerRadius::same(6))
-            .stroke(Stroke::new(1.0, if self.tab_in(p).search.is_some() { pal().accent } else { pal().border }))
+            .stroke(Stroke::new(
+                1.0,
+                if self.tab_in(p).search.is_some() {
+                    pal().accent
+                } else {
+                    pal().border
+                },
+            ))
             .inner_margin(Margin::symmetric(6, 2));
         frame.show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -886,91 +1318,230 @@ impl App {
         let pane = &mut self.panes[p];
         let tab = &mut pane.tabs[pane.active];
         let id = tab.id;
-        let Some(mut cols) = tab.columns.take() else { return };
+        let Some(mut cols) = tab.columns.take() else {
+            return;
+        };
         let height = (ui.available_height() - 12.0).max(60.0);
         let follow = cols.scroll_to_active;
         cols.scroll_to_active = false;
-        ScrollArea::horizontal().id_salt(("miller", id)).animated(false).auto_shrink([false; 2]).show(ui, |ui| {
-            ui.spacing_mut().item_spacing.x = 1.0;
-            ui.horizontal_top(|ui| {
-                for (index, stored) in cols.items.iter_mut().enumerate() {
-                    let active = index == cols.active;
-                    let directory = if active { &mut *tab } else { stored };
-                    let path = directory.path.clone();
-                    let mut local = Vec::new();
-                    let out = ui.allocate_ui_with_layout(vec2(280.0, height), Layout::top_down(Align::Min), |ui| {
-                        ui.set_min_size(vec2(280.0, height));
-                        ui.set_max_width(280.0);
-                        let full = ui.max_rect().intersect(ui.clip_rect());
-                        let (header, response) = ui.allocate_exact_size(vec2(280.0, 28.0), Sense::click());
-                        ui.painter().rect_filled(header, 0.0, if active && pane_active { pal().select_dim } else { pal().panel });
-                        let name = path.file_name().map(|s| s.to_string_lossy()).unwrap_or_else(|| "/".into());
-                        ui.painter().with_clip_rect(header.shrink(6.0)).text(
-                            header.left_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, name,
-                            FontId::proportional(BODY), if active && pane_active { pal().accent } else { pal().dim });
-                        response.on_hover_text(path.display().to_string());
-                        let pointer = ui.input(|i| i.pointer.interact_pos());
-                        if pointer.is_some_and(|pos| full.contains(pos)) && ui.input(|i| i.pointer.primary_pressed() || i.pointer.secondary_pressed())
-                            && pointer.and_then(|pos| ui.ctx().layer_id_at(pos)) == Some(ui.layer_id()) {
-                            local.push(Action::FocusPane(p));
-                        }
-                        // Virtualized row geometry and keyboard scrolling use the same stride.
-                        ui.spacing_mut().item_spacing.y = 0.0;
-                        let query = directory.query();
-                        let modifiers = ui.input(|i| (i.modifiers.ctrl, i.modifiers.shift));
-                        let mut over_item = false;
-                        // Column positions can change when ancestors are prepended. The
-                        // directory owns its offset, independently of the UI child order.
-                        directory.force_offset.get_or_insert(directory.scroll_offset);
-                        let scroll = scroll_area(directory, ("column", directory.listing_id), ROW_H, 1);
-                        let out = scroll.show_rows(ui, ROW_H, directory.view.len(), |ui, range| {
-                            ui.spacing_mut().item_spacing.y = 0.0;
-                            for vi in range {
-                                let e = &directory.entries[directory.view[vi]];
-                                let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click_and_drag());
-                                over_item |= pointer.is_some_and(|pos| rect.contains(pos));
-                                let selected = directory.is_selected(vi);
-                                let drop = e.is_dir && drop_hover(&resp, &e.path);
-                                if selected || resp.hovered() || drop {
-                                    ui.painter().rect_filled(rect.shrink(2.0), 4.0,
-                                        if selected { if active && pane_active { pal().select } else { pal().select_dim } } else { pal().hover });
+        ScrollArea::horizontal()
+            .id_salt(("miller", id))
+            .animated(false)
+            .auto_shrink([false; 2])
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.x = 1.0;
+                ui.horizontal_top(|ui| {
+                    for (index, stored) in cols.items.iter_mut().enumerate() {
+                        let active = index == cols.active;
+                        let directory = if active { &mut *tab } else { stored };
+                        let path = directory.path.clone();
+                        let mut local = Vec::new();
+                        let out = ui.allocate_ui_with_layout(
+                            vec2(280.0, height),
+                            Layout::top_down(Align::Min),
+                            |ui| {
+                                ui.set_min_size(vec2(280.0, height));
+                                ui.set_max_width(280.0);
+                                let full = ui.max_rect().intersect(ui.clip_rect());
+                                let (header, response) =
+                                    ui.allocate_exact_size(vec2(280.0, 28.0), Sense::click());
+                                ui.painter().rect_filled(
+                                    header,
+                                    0.0,
+                                    if active && pane_active {
+                                        pal().select_dim
+                                    } else {
+                                        pal().panel
+                                    },
+                                );
+                                let name = path
+                                    .file_name()
+                                    .map(|s| s.to_string_lossy())
+                                    .unwrap_or_else(|| "/".into());
+                                ui.painter().with_clip_rect(header.shrink(6.0)).text(
+                                    header.left_center() + vec2(8.0, 0.0),
+                                    Align2::LEFT_CENTER,
+                                    name,
+                                    FontId::proportional(BODY),
+                                    if active && pane_active {
+                                        pal().accent
+                                    } else {
+                                        pal().dim
+                                    },
+                                );
+                                response.on_hover_text(path.display().to_string());
+                                let pointer = ui.input(|i| i.pointer.interact_pos());
+                                if pointer.is_some_and(|pos| full.contains(pos))
+                                    && ui.input(|i| {
+                                        i.pointer.primary_pressed() || i.pointer.secondary_pressed()
+                                    })
+                                    && pointer.and_then(|pos| ui.ctx().layer_id_at(pos))
+                                        == Some(ui.layer_id())
+                                {
+                                    local.push(Action::FocusPane(p));
                                 }
-                                if e.is_dir { record_folder(ui.ctx(), rect.intersect(ui.clip_rect()), &e.path); }
-                                let faded = cut.is_some_and(|paths| paths.contains(&e.path));
-                                draw_entry_icon(ui.painter(), rect.left_center() + vec2(15.0, 0.0), 1.0, &e.path, util::category(&e.ext, e.is_dir));
-                                let painter = ui.painter().with_clip_rect(rect.shrink2(vec2(30.0, 0.0)));
-                                paint_name(&painter, rect.left_center() + vec2(30.0, 0.0), &e.name, &query,
-                                    FontId::proportional(BODY), if faded || e.hidden { pal().dim } else { pal().text });
-                                if e.is_dir { chevron(ui.painter(), rect.right_center() - vec2(10.0, 0.0), false, pal().faint); }
-                                #[cfg(test)]
-                                self.row_rects.insert(e.path.clone(), rect.intersect(ui.clip_rect()));
-                                row_interactions(ui, &resp, directory, vi, e, modifiers, &mut local, p, bookmarks);
-                            }
-                        });
-                        directory.scroll_offset = out.state.offset.y;
-                        directory.viewport_h = out.inner_rect.height();
-                        drag_autoscroll(ui, directory, out.inner_rect);
-                        let (inner, offset) = (out.inner_rect, out.state.offset.y);
-                        rubber_band(ui, p, directory, inner, over_item, modifiers.0, |vi|
-                            Rect::from_min_size(inner.min + vec2(0.0, vi as f32 * ROW_H - offset), vec2(inner.width(), ROW_H)));
-                        if directory.view.is_empty() {
-                            // Paint inside the viewport so errors and loading do not grow the column.
-                            let message = directory.error.as_deref().unwrap_or(if directory.loading { "Loading…" }
-                                else if directory.filter.is_empty() { "This folder is empty" } else { "No matches" });
-                            ui.painter().with_clip_rect(inner).text(inner.left_top() + vec2(8.0, 16.0), Align2::LEFT_TOP,
-                                message, FontId::proportional(12.0), pal().dim);
+                                // Virtualized row geometry and keyboard scrolling use the same stride.
+                                ui.spacing_mut().item_spacing.y = 0.0;
+                                let query = directory.query();
+                                let modifiers = ui.input(|i| (i.modifiers.ctrl, i.modifiers.shift));
+                                let mut over_item = false;
+                                // Column positions can change when ancestors are prepended. The
+                                // directory owns its offset, independently of the UI child order.
+                                directory
+                                    .force_offset
+                                    .get_or_insert(directory.scroll_offset);
+                                let scroll = scroll_area(
+                                    directory,
+                                    ("column", directory.listing_id),
+                                    ROW_H,
+                                    1,
+                                );
+                                let out = scroll.show_rows(
+                                    ui,
+                                    ROW_H,
+                                    directory.view.len(),
+                                    |ui, range| {
+                                        ui.spacing_mut().item_spacing.y = 0.0;
+                                        for vi in range {
+                                            let e = &directory.entries[directory.view[vi]];
+                                            let (rect, resp) = ui.allocate_exact_size(
+                                                vec2(ui.available_width(), ROW_H),
+                                                Sense::click_and_drag(),
+                                            );
+                                            over_item |=
+                                                pointer.is_some_and(|pos| rect.contains(pos));
+                                            let selected = directory.is_selected(vi);
+                                            let drop = e.is_dir && drop_hover(&resp, &e.path);
+                                            if selected || resp.hovered() || drop {
+                                                ui.painter().rect_filled(
+                                                    rect.shrink(2.0),
+                                                    4.0,
+                                                    if selected {
+                                                        if active && pane_active {
+                                                            pal().select
+                                                        } else {
+                                                            pal().select_dim
+                                                        }
+                                                    } else {
+                                                        pal().hover
+                                                    },
+                                                );
+                                            }
+                                            if e.is_dir {
+                                                record_folder(
+                                                    ui.ctx(),
+                                                    rect.intersect(ui.clip_rect()),
+                                                    &e.path,
+                                                );
+                                            }
+                                            let faded =
+                                                cut.is_some_and(|paths| paths.contains(&e.path));
+                                            draw_entry_icon(
+                                                ui.painter(),
+                                                rect.left_center() + vec2(15.0, 0.0),
+                                                1.0,
+                                                &e.path,
+                                                util::category(&e.ext, e.is_dir),
+                                            );
+                                            let painter = ui
+                                                .painter()
+                                                .with_clip_rect(rect.shrink2(vec2(30.0, 0.0)));
+                                            paint_name(
+                                                &painter,
+                                                rect.left_center() + vec2(30.0, 0.0),
+                                                &e.name,
+                                                &query,
+                                                FontId::proportional(BODY),
+                                                if faded || e.hidden {
+                                                    pal().dim
+                                                } else {
+                                                    pal().text
+                                                },
+                                            );
+                                            if e.is_dir {
+                                                chevron(
+                                                    ui.painter(),
+                                                    rect.right_center() - vec2(10.0, 0.0),
+                                                    false,
+                                                    pal().faint,
+                                                );
+                                            }
+                                            #[cfg(test)]
+                                            self.row_rects.insert(
+                                                e.path.clone(),
+                                                rect.intersect(ui.clip_rect()),
+                                            );
+                                            row_interactions(
+                                                ui, &resp, directory, vi, e, modifiers, &mut local,
+                                                p, bookmarks,
+                                            );
+                                        }
+                                    },
+                                );
+                                directory.scroll_offset = out.state.offset.y;
+                                directory.viewport_h = out.inner_rect.height();
+                                drag_autoscroll(ui, directory, out.inner_rect);
+                                let (inner, offset) = (out.inner_rect, out.state.offset.y);
+                                rubber_band(
+                                    ui,
+                                    p,
+                                    directory,
+                                    inner,
+                                    over_item,
+                                    modifiers.0,
+                                    |vi| {
+                                        Rect::from_min_size(
+                                            inner.min + vec2(0.0, vi as f32 * ROW_H - offset),
+                                            vec2(inner.width(), ROW_H),
+                                        )
+                                    },
+                                );
+                                if directory.view.is_empty() {
+                                    // Paint inside the viewport so errors and loading do not grow the column.
+                                    let message = directory.error.as_deref().unwrap_or(
+                                        if directory.loading {
+                                            "Loading…"
+                                        } else if directory.filter.is_empty() {
+                                            "This folder is empty"
+                                        } else {
+                                            "No matches"
+                                        },
+                                    );
+                                    ui.painter().with_clip_rect(inner).text(
+                                        inner.left_top() + vec2(8.0, 16.0),
+                                        Align2::LEFT_TOP,
+                                        message,
+                                        FontId::proportional(12.0),
+                                        pal().dim,
+                                    );
+                                }
+                                background_drop(
+                                    ui,
+                                    directory,
+                                    inner.intersect(ui.clip_rect()),
+                                    &mut local,
+                                );
+                                record_folder(ui.ctx(), full, &path);
+                                ui.painter().vline(
+                                    full.right(),
+                                    full.y_range(),
+                                    Stroke::new(1.0, pal().border),
+                                );
+                            },
+                        );
+                        if follow && active {
+                            ui.scroll_to_rect(out.response.rect, None);
                         }
-                        background_drop(ui, directory, inner.intersect(ui.clip_rect()), &mut local);
-                        record_folder(ui.ctx(), full, &path);
-                        ui.painter().vline(full.right(), full.y_range(), Stroke::new(1.0, pal().border));
-                    });
-                    if follow && active { ui.scroll_to_rect(out.response.rect, None); }
-                    for action in local {
-                        actions.push(Action::ColumnAction { tab_id: id, directory: path.clone(), action: Box::new(action) });
+                        for action in local {
+                            actions.push(Action::InColumn {
+                                tab_id: id,
+                                directory: path.clone(),
+                                action: Box::new(action),
+                            });
+                        }
                     }
-                }
+                });
             });
-        });
         tab.columns = Some(cols);
     }
 
@@ -993,10 +1564,24 @@ impl App {
         // Header.
         let (hrect, _) = ui.allocate_exact_size(vec2(full.width(), 28.0), Sense::hover());
         let header = [
-            Some((SortKey::Name, "Name", (cols.name.0 - 22.0, cols.name.1), Align2::LEFT_CENTER)),
-            cols.size.map(|c| (SortKey::Size, "Size", c, Align2::RIGHT_CENTER)),
-            cols.date.map(|c| (SortKey::Modified, "Modified", c, Align2::LEFT_CENTER)),
-            cols.kind.map(|c| (SortKey::Kind, if in_search { "Folder" } else { "Type" }, c, Align2::LEFT_CENTER)),
+            Some((
+                SortKey::Name,
+                "Name",
+                (cols.name.0 - 22.0, cols.name.1),
+                Align2::LEFT_CENTER,
+            )),
+            cols.size
+                .map(|c| (SortKey::Size, "Size", c, Align2::RIGHT_CENTER)),
+            cols.date
+                .map(|c| (SortKey::Modified, "Modified", c, Align2::LEFT_CENTER)),
+            cols.kind.map(|c| {
+                (
+                    SortKey::Kind,
+                    if in_search { "Folder" } else { "Type" },
+                    c,
+                    Align2::LEFT_CENTER,
+                )
+            }),
         ];
         for (key, label, (x0, x1), align) in header.into_iter().flatten() {
             let r = Rect::from_x_y_ranges(x0..=x1, hrect.y_range());
@@ -1004,10 +1589,20 @@ impl App {
             let active = tab.sort == key;
             let right = align == Align2::RIGHT_CENTER;
             let pos = Pos2::new(if right { x1 } else { x0 }, r.center().y);
-            let color = if active || resp.hovered() { pal().text } else { pal().dim };
-            let text_rect = ui.painter().text(pos, align, label, FontId::proportional(12.0), color);
+            let color = if active || resp.hovered() {
+                pal().text
+            } else {
+                pal().dim
+            };
+            let text_rect = ui
+                .painter()
+                .text(pos, align, label, FontId::proportional(12.0), color);
             if active {
-                let ax = if right { text_rect.left() - 8.0 } else { text_rect.right() + 8.0 };
+                let ax = if right {
+                    text_rect.left() - 8.0
+                } else {
+                    text_rect.right() + 8.0
+                };
                 sort_arrow(ui.painter(), Pos2::new(ax, r.center().y), tab.ascending);
             }
             if resp.clicked() {
@@ -1015,7 +1610,11 @@ impl App {
                 actions.push(Action::Sort(key));
             }
         }
-        ui.painter().hline(full.x_range(), hrect.bottom(), Stroke::new(1.0, pal().border));
+        ui.painter().hline(
+            full.x_range(),
+            hrect.bottom(),
+            Stroke::new(1.0, pal().border),
+        );
 
         if tab.view.is_empty() {
             empty_state(ui, tab);
@@ -1031,7 +1630,8 @@ impl App {
             ui.spacing_mut().item_spacing.y = 0.0;
             for vi in range {
                 let e = &tab.entries[tab.view[vi]];
-                let (rect, resp) = ui.allocate_exact_size(vec2(full.width(), ROW_H), Sense::click_and_drag());
+                let (rect, resp) =
+                    ui.allocate_exact_size(vec2(full.width(), ROW_H), Sense::click_and_drag());
                 over_item |= pointer.is_some_and(|pos| rect.contains(pos));
                 let selected = tab.is_selected(vi);
                 let painter = ui.painter();
@@ -1041,17 +1641,36 @@ impl App {
                     record_folder(ui.ctx(), row, &e.path);
                 }
                 if selected {
-                    painter.rect_filled(row, CornerRadius::same(5), if pane_active { pal().select } else { pal().select_dim });
+                    painter.rect_filled(
+                        row,
+                        CornerRadius::same(5),
+                        if pane_active {
+                            pal().select
+                        } else {
+                            pal().select_dim
+                        },
+                    );
                 } else if resp.hovered() || drop_target {
                     painter.rect_filled(row, CornerRadius::same(5), pal().hover);
                 }
                 if drop_target {
-                    painter.rect_stroke(row, CornerRadius::same(5), Stroke::new(1.5, pal().accent), egui::StrokeKind::Inside);
+                    painter.rect_stroke(
+                        row,
+                        CornerRadius::same(5),
+                        Stroke::new(1.5, pal().accent),
+                        egui::StrokeKind::Inside,
+                    );
                 }
                 if tab.cursor == Some(vi) && !tab.marked.is_empty() && pane_active {
-                    painter.rect_stroke(row, CornerRadius::same(5), Stroke::new(1.0, pal().accent), egui::StrokeKind::Inside);
+                    painter.rect_stroke(
+                        row,
+                        CornerRadius::same(5),
+                        Stroke::new(1.0, pal().accent),
+                        egui::StrokeKind::Inside,
+                    );
                 }
-                let faded = cut.is_some_and(|c| c.contains(&e.path)) || dragging.is_some_and(|d| d.0.contains(&e.path));
+                let faded = cut.is_some_and(|c| c.contains(&e.path))
+                    || dragging.is_some_and(|d| d.0.contains(&e.path));
                 paint_row(painter, rect, &cols, e, sizes, sizing, faded, &query);
                 #[cfg(test)]
                 row_rects.insert(e.path.clone(), rect);
@@ -1064,7 +1683,10 @@ impl App {
         drag_autoscroll(ui, tab, out.inner_rect);
         let (inner, offset) = (out.inner_rect, out.state.offset.y);
         rubber_band(ui, p, tab, inner, over_item, ctrl_shift.0, |vi| {
-            Rect::from_min_size(inner.min + vec2(0.0, vi as f32 * ROW_H - offset), vec2(inner.width(), ROW_H))
+            Rect::from_min_size(
+                inner.min + vec2(0.0, vi as f32 * ROW_H - offset),
+                vec2(inner.width(), ROW_H),
+            )
         });
         background_drop(ui, tab, out.inner_rect, actions);
     }
@@ -1114,9 +1736,14 @@ impl App {
                         let vi = r * cols + c;
                         let Some(&ei) = tab.view.get(vi) else { break };
                         let e = &tab.entries[ei];
-                        let (rect, resp) = ui.allocate_exact_size(vec2(cell.x + gap, cell.y), Sense::click_and_drag());
+                        let (rect, resp) = ui.allocate_exact_size(
+                            vec2(cell.x + gap, cell.y),
+                            Sense::click_and_drag(),
+                        );
                         let tile = match mode {
-                            ViewMode::Icons(_) => Rect::from_center_size(rect.center(), cell - vec2(8.0, 8.0)),
+                            ViewMode::Icons(_) => {
+                                Rect::from_center_size(rect.center(), cell - vec2(8.0, 8.0))
+                            }
                             _ => rect.shrink2(vec2(4.0, 1.0)),
                         };
                         over_item |= pointer.is_some_and(|pos| tile.contains(pos));
@@ -1128,20 +1755,40 @@ impl App {
                         let painter = ui.painter();
                         let corner = CornerRadius::same(radius);
                         if selected {
-                            painter.rect_filled(tile, corner, if pane_active { pal().select } else { pal().select_dim });
+                            painter.rect_filled(
+                                tile,
+                                corner,
+                                if pane_active {
+                                    pal().select
+                                } else {
+                                    pal().select_dim
+                                },
+                            );
                         } else if resp.hovered() || drop_target {
                             painter.rect_filled(tile, corner, pal().hover);
                         }
                         if drop_target {
-                            painter.rect_stroke(tile, corner, Stroke::new(1.5, pal().accent), egui::StrokeKind::Inside);
+                            painter.rect_stroke(
+                                tile,
+                                corner,
+                                Stroke::new(1.5, pal().accent),
+                                egui::StrokeKind::Inside,
+                            );
                         }
                         if tab.cursor == Some(vi) && !tab.marked.is_empty() && pane_active {
-                            painter.rect_stroke(tile, corner, Stroke::new(1.0, pal().accent), egui::StrokeKind::Inside);
+                            painter.rect_stroke(
+                                tile,
+                                corner,
+                                Stroke::new(1.0, pal().accent),
+                                egui::StrokeKind::Inside,
+                            );
                         }
                         let faded = cut.is_some_and(|c| c.contains(&e.path))
                             || dragging.is_some_and(|d| d.0.contains(&e.path));
                         match mode {
-                            ViewMode::Icons(_) => paint_tile(painter, thumbs, tile, e, faded, &query),
+                            ViewMode::Icons(_) => {
+                                paint_tile(painter, thumbs, tile, e, faded, &query)
+                            }
                             _ => paint_cell(painter, tile, e, faded, &query),
                         }
                         #[cfg(test)]
@@ -1157,7 +1804,11 @@ impl App {
         let (inner, offset) = (out.inner_rect, out.state.offset.y);
         let step = cell.x + gap;
         rubber_band(ui, p, tab, inner, over_item, ctrl_shift.0, |vi| {
-            let min = inner.min + vec2(4.0 + (vi % cols) as f32 * step, (vi / cols) as f32 * cell.y - offset);
+            let min = inner.min
+                + vec2(
+                    4.0 + (vi % cols) as f32 * step,
+                    (vi / cols) as f32 * cell.y - offset,
+                );
             Rect::from_min_size(min, cell).shrink2(vec2(4.0, 1.0))
         });
         background_drop(ui, tab, out.inner_rect, actions);
@@ -1172,206 +1823,305 @@ impl App {
             .as_ref()
             .map(|d| d.0.iter().filter(|p| p.is_dir()).cloned().collect())
             .unwrap_or_default();
-        ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
-            let cur = self.tab().path.clone();
-            let device_items: Vec<(String, PathBuf)> = self.devices.iter().map(|d| (d.name.clone(), d.path().to_path_buf())).collect();
-            let sections: [(&'static str, &Vec<(String, PathBuf)>); 3] = [
-                ("PLACES", &self.places.places),
-                ("BOOKMARKS", &self.places.bookmarks),
-                ("DEVICES", &device_items),
-            ];
-            for (title, items) in sections {
-                let bookmarks = title == "BOOKMARKS";
-                let can_drop = bookmarks && !dragged_dirs.is_empty();
-                if items.is_empty() && !can_drop {
-                    continue;
-                }
-                ui.add_space(8.0);
-                let collapsed = self.collapsed.contains(title);
-                let (hrect, header) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::click());
-                let hot = header.hovered();
-                let color = if hot { pal().dim } else { pal().faint };
-                ui.painter().text(
-                    Pos2::new(hrect.left() + 2.0, hrect.center().y),
-                    Align2::LEFT_CENTER,
-                    title,
-                    FontId::proportional(10.5),
-                    color,
-                );
-                if hot || collapsed {
-                    chevron(ui.painter(), Pos2::new(hrect.right() - 8.0, hrect.center().y), !collapsed, color);
-                }
-                if header.clicked() {
-                    actions.push(Action::ToggleSection(title));
-                }
-                if can_drop && bookmark_zone(ui, &header, &dragged_dirs, actions) {
-                    ui.painter().rect_stroke(hrect, CornerRadius::same(5), Stroke::new(1.5, pal().accent), egui::StrokeKind::Inside);
-                }
-                ui.add_space(2.0);
-                if collapsed {
-                    continue;
-                }
-                for (name, path) in items {
-                    let device = if title == "DEVICES" { self.devices.iter().find(|d| d.path() == path.as_path()) } else { None };
-                    let unmounted = device.is_some_and(|d| d.mount.is_none());
-                    let busy = device.is_some_and(|d| self.dev_busy.contains(&d.dev));
-                    let ejectable = device.is_some_and(|d| d.removable && d.mount.is_some());
-                    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
-                    let selected = *path == cur;
-                    let drop_target = !unmounted && drop_hover(&resp, path);
-                    if !unmounted {
-                        record_folder(ui.ctx(), rect, path);
-                    }
-                    // Eject sits on top of the row, so its click doesn't open the drive.
-                    let eject_rect = Rect::from_center_size(Pos2::new(rect.right() - 13.0, rect.center().y), vec2(20.0, 20.0));
-                    let eject = (ejectable && !busy).then(|| ui.interact(eject_rect, ui.id().with(("eject", path)), Sense::click()));
-                    let painter = ui.painter();
-                    if selected {
-                        painter.rect_filled(rect, CornerRadius::same(5), pal().select);
-                    } else if resp.hovered() || drop_target {
-                        painter.rect_filled(rect, CornerRadius::same(5), pal().hover);
-                    }
-                    if drop_target {
-                        painter.rect_stroke(rect, CornerRadius::same(5), Stroke::new(1.5, pal().accent), egui::StrokeKind::Inside);
-                    }
-                    let kind = match title {
-                        "DEVICES" => Some(fsops::Special::Drive),
-                        _ => fsops::special(path),
-                    };
-                    let icon_color = if selected { pal().accent } else if unmounted { pal().faint } else { pal().dim };
-                    draw_place(painter, Pos2::new(rect.left() + 14.0, rect.center().y), kind, icon_color);
-                    let mut text_rect = rect.shrink(2.0);
-                    if ejectable || busy {
-                        text_rect.max.x = eject_rect.left();
-                    }
-                    painter.with_clip_rect(text_rect).text(
-                        Pos2::new(rect.left() + 30.0, rect.center().y),
-                        Align2::LEFT_CENTER,
-                        name,
-                        FontId::proportional(BODY),
-                        if selected { pal().text } else if unmounted { pal().faint } else { pal().dim },
-                    );
-                    // Thin usage bar along the bottom of a mounted drive's row.
-                    let usage = device.filter(|_| !unmounted).and_then(|_| disk_usage(ui.ctx(), path));
-                    if let Some((free, total)) = usage.filter(|u| u.1 > 0) {
-                        let used = 1.0 - free as f32 / total as f32;
-                        let track = Rect::from_min_max(
-                            Pos2::new(rect.left() + 10.0, rect.bottom() - 3.0),
-                            Pos2::new(rect.right() - 10.0, rect.bottom() - 1.5),
-                        );
-                        let fill = Rect::from_min_size(track.min, vec2(track.width() * used.clamp(0.0, 1.0), track.height()));
-                        let color = if used > 0.9 { pal().danger } else { pal().accent };
-                        ui.painter().rect_filled(track, CornerRadius::same(1), pal().border);
-                        ui.painter().rect_filled(fill, CornerRadius::same(1), color);
-                    }
-                    if busy {
-                        let spin = egui::Spinner::new().size(11.0).color(pal().dim);
-                        ui.put(eject_rect, spin);
-                    }
-                    if let Some(eject) = eject {
-                        if eject.hovered() {
-                            ui.painter().rect_filled(eject_rect, CornerRadius::same(4), pal().select_dim);
-                        }
-                        let color = if eject.hovered() { pal().text } else { pal().dim };
-                        eject_icon(ui.painter(), eject_rect.center(), color);
-                        if eject.on_hover_text("Eject").clicked() {
-                            actions.push(Action::Device(DevOp::Eject, device.unwrap().dev.clone()));
-                        }
-                    }
-                    if !unmounted && let Some(paths) = take_file_drop(&resp) {
-                        let copy = ui.input(|i| i.modifiers.ctrl);
-                        actions.push(Action::Drop { paths: paths.0.clone(), dest: path.clone(), copy });
-                    }
-                    let hover = if unmounted {
-                        format!("{} is not mounted. Click to mount", path.display())
-                    } else if let Some((free, total)) = usage {
-                        format!("{}\n{} free of {}", path.display(), util::human_size(free), util::human_size(total))
-                    } else {
-                        path.display().to_string()
-                    };
-                    let resp = resp.on_hover_text(hover);
-                    if resp.clicked() && !busy {
-                        actions.push(match device {
-                            Some(d) if unmounted => Action::Device(DevOp::Mount, d.dev.clone()),
-                            _ => Action::Navigate(path.clone()),
-                        });
-                    }
-                    if unmounted {
-                        resp.context_menu(|ui| {
-                            ui.set_min_width(180.0);
-                            let d = device.unwrap();
-                            if ui.add_enabled(!busy, egui::Button::new("Mount")).clicked() {
-                                actions.push(Action::Device(DevOp::Mount, d.dev.clone()));
-                                ui.close();
-                            }
-                            if d.removable && ui.add_enabled(!busy, egui::Button::new("Eject")).clicked() {
-                                actions.push(Action::Device(DevOp::Eject, d.dev.clone()));
-                                ui.close();
-                            }
-                        });
+        ScrollArea::vertical()
+            .auto_shrink([false; 2])
+            .show(ui, |ui| {
+                let cur = self.tab().path.clone();
+                let device_items: Vec<(String, PathBuf)> = self
+                    .devices
+                    .iter()
+                    .map(|d| (d.name.clone(), d.path().to_path_buf()))
+                    .collect();
+                let sections: [(&'static str, &Vec<(String, PathBuf)>); 3] = [
+                    ("PLACES", &self.places.places),
+                    ("BOOKMARKS", &self.places.bookmarks),
+                    ("DEVICES", &device_items),
+                ];
+                for (title, items) in sections {
+                    let bookmarks = title == "BOOKMARKS";
+                    let can_drop = bookmarks && !dragged_dirs.is_empty();
+                    if items.is_empty() && !can_drop {
                         continue;
                     }
-                    if resp.middle_clicked() {
-                        actions.push(Action::NewTab(path.clone()));
+                    ui.add_space(8.0);
+                    let collapsed = self.collapsed.contains(title);
+                    let (hrect, header) =
+                        ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::click());
+                    let hot = header.hovered();
+                    let color = if hot { pal().dim } else { pal().faint };
+                    ui.painter().text(
+                        Pos2::new(hrect.left() + 2.0, hrect.center().y),
+                        Align2::LEFT_CENTER,
+                        title,
+                        FontId::proportional(10.5),
+                        color,
+                    );
+                    if hot || collapsed {
+                        chevron(
+                            ui.painter(),
+                            Pos2::new(hrect.right() - 8.0, hrect.center().y),
+                            !collapsed,
+                            color,
+                        );
                     }
-                    let marked = bookmarks || self.places.bookmarks.iter().any(|(_, b)| b == path);
-                    resp.context_menu(|ui| {
-                        ui.set_min_width(180.0);
-                        if ui.button("Open in new tab").clicked() {
+                    if header.clicked() {
+                        actions.push(Action::ToggleSection(title));
+                    }
+                    if can_drop && bookmark_zone(ui, &header, &dragged_dirs, actions) {
+                        ui.painter().rect_stroke(
+                            hrect,
+                            CornerRadius::same(5),
+                            Stroke::new(1.5, pal().accent),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                    ui.add_space(2.0);
+                    if collapsed {
+                        continue;
+                    }
+                    for (name, path) in items {
+                        let device = if title == "DEVICES" {
+                            self.devices.iter().find(|d| d.path() == path.as_path())
+                        } else {
+                            None
+                        };
+                        let unmounted = device.is_some_and(|d| d.mount.is_none());
+                        let busy = device.is_some_and(|d| self.dev_busy.contains(&d.dev));
+                        let ejectable = device.is_some_and(|d| d.removable && d.mount.is_some());
+                        let (rect, resp) = ui
+                            .allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
+                        let selected = *path == cur;
+                        let drop_target = !unmounted && drop_hover(&resp, path);
+                        if !unmounted {
+                            record_folder(ui.ctx(), rect, path);
+                        }
+                        // Eject sits on top of the row, so its click doesn't open the drive.
+                        let eject_rect = Rect::from_center_size(
+                            Pos2::new(rect.right() - 13.0, rect.center().y),
+                            vec2(20.0, 20.0),
+                        );
+                        let eject = (ejectable && !busy).then(|| {
+                            ui.interact(eject_rect, ui.id().with(("eject", path)), Sense::click())
+                        });
+                        let painter = ui.painter();
+                        if selected {
+                            painter.rect_filled(rect, CornerRadius::same(5), pal().select);
+                        } else if resp.hovered() || drop_target {
+                            painter.rect_filled(rect, CornerRadius::same(5), pal().hover);
+                        }
+                        if drop_target {
+                            painter.rect_stroke(
+                                rect,
+                                CornerRadius::same(5),
+                                Stroke::new(1.5, pal().accent),
+                                egui::StrokeKind::Inside,
+                            );
+                        }
+                        let kind = match title {
+                            "DEVICES" => Some(fsops::Special::Drive),
+                            _ => fsops::special(path),
+                        };
+                        let icon_color = if selected {
+                            pal().accent
+                        } else if unmounted {
+                            pal().faint
+                        } else {
+                            pal().dim
+                        };
+                        draw_place(
+                            painter,
+                            Pos2::new(rect.left() + 14.0, rect.center().y),
+                            kind,
+                            icon_color,
+                        );
+                        let mut text_rect = rect.shrink(2.0);
+                        if ejectable || busy {
+                            text_rect.max.x = eject_rect.left();
+                        }
+                        painter.with_clip_rect(text_rect).text(
+                            Pos2::new(rect.left() + 30.0, rect.center().y),
+                            Align2::LEFT_CENTER,
+                            name,
+                            FontId::proportional(BODY),
+                            if selected {
+                                pal().text
+                            } else if unmounted {
+                                pal().faint
+                            } else {
+                                pal().dim
+                            },
+                        );
+                        // Thin usage bar along the bottom of a mounted drive's row.
+                        let usage = device
+                            .filter(|_| !unmounted)
+                            .and_then(|_| disk_usage(ui.ctx(), path));
+                        if let Some((free, total)) = usage.filter(|u| u.1 > 0) {
+                            let used = 1.0 - free as f32 / total as f32;
+                            let track = Rect::from_min_max(
+                                Pos2::new(rect.left() + 10.0, rect.bottom() - 3.0),
+                                Pos2::new(rect.right() - 10.0, rect.bottom() - 1.5),
+                            );
+                            let fill = Rect::from_min_size(
+                                track.min,
+                                vec2(track.width() * used.clamp(0.0, 1.0), track.height()),
+                            );
+                            let color = if used > 0.9 {
+                                pal().danger
+                            } else {
+                                pal().accent
+                            };
+                            ui.painter()
+                                .rect_filled(track, CornerRadius::same(1), pal().border);
+                            ui.painter().rect_filled(fill, CornerRadius::same(1), color);
+                        }
+                        if busy {
+                            let spin = egui::Spinner::new().size(11.0).color(pal().dim);
+                            ui.put(eject_rect, spin);
+                        }
+                        if let Some(eject) = eject {
+                            if eject.hovered() {
+                                ui.painter().rect_filled(
+                                    eject_rect,
+                                    CornerRadius::same(4),
+                                    pal().select_dim,
+                                );
+                            }
+                            let color = if eject.hovered() {
+                                pal().text
+                            } else {
+                                pal().dim
+                            };
+                            eject_icon(ui.painter(), eject_rect.center(), color);
+                            if eject.on_hover_text("Eject").clicked() {
+                                actions.push(Action::Device(
+                                    DevOp::Eject,
+                                    device.unwrap().dev.clone(),
+                                ));
+                            }
+                        }
+                        if !unmounted && let Some(paths) = take_file_drop(&resp) {
+                            let copy = ui.input(|i| i.modifiers.ctrl);
+                            actions.push(Action::Drop {
+                                paths: paths.0.clone(),
+                                dest: path.clone(),
+                                copy,
+                            });
+                        }
+                        let hover = if unmounted {
+                            format!("{} is not mounted. Click to mount", path.display())
+                        } else if let Some((free, total)) = usage {
+                            format!(
+                                "{}\n{} free of {}",
+                                path.display(),
+                                util::human_size(free),
+                                util::human_size(total)
+                            )
+                        } else {
+                            path.display().to_string()
+                        };
+                        let resp = resp.on_hover_text(hover);
+                        if resp.clicked() && !busy {
+                            actions.push(match device {
+                                Some(d) if unmounted => Action::Device(DevOp::Mount, d.dev.clone()),
+                                _ => Action::Navigate(path.clone()),
+                            });
+                        }
+                        if unmounted {
+                            resp.context_menu(|ui| {
+                                ui.set_min_width(180.0);
+                                let d = device.unwrap();
+                                if ui.add_enabled(!busy, egui::Button::new("Mount")).clicked() {
+                                    actions.push(Action::Device(DevOp::Mount, d.dev.clone()));
+                                    ui.close();
+                                }
+                                if d.removable
+                                    && ui.add_enabled(!busy, egui::Button::new("Eject")).clicked()
+                                {
+                                    actions.push(Action::Device(DevOp::Eject, d.dev.clone()));
+                                    ui.close();
+                                }
+                            });
+                            continue;
+                        }
+                        if resp.middle_clicked() {
                             actions.push(Action::NewTab(path.clone()));
-                            ui.close();
                         }
-                        if ui.button("Open terminal here").clicked() {
-                            actions.push(Action::OpenTerminal(path.clone()));
-                            ui.close();
-                        }
-                        ui.separator();
-                        if let Some(d) = device {
-                            if ui.add_enabled(!busy, egui::Button::new("Unmount")).clicked() {
-                                actions.push(Action::Device(DevOp::Unmount, d.dev.clone()));
+                        let marked =
+                            bookmarks || self.places.bookmarks.iter().any(|(_, b)| b == path);
+                        resp.context_menu(|ui| {
+                            ui.set_min_width(180.0);
+                            if ui.button("Open in new tab").clicked() {
+                                actions.push(Action::NewTab(path.clone()));
                                 ui.close();
                             }
-                            if d.removable && ui.add_enabled(!busy, egui::Button::new("Eject")).clicked() {
-                                actions.push(Action::Device(DevOp::Eject, d.dev.clone()));
+                            if ui.button("Open terminal here").clicked() {
+                                actions.push(Action::OpenTerminal(path.clone()));
                                 ui.close();
                             }
                             ui.separator();
-                        }
-                        if marked {
-                            if ui.button("Remove from bookmarks").clicked() {
-                                actions.push(Action::Unbookmark(path.clone()));
+                            if let Some(d) = device {
+                                if ui
+                                    .add_enabled(!busy, egui::Button::new("Unmount"))
+                                    .clicked()
+                                {
+                                    actions.push(Action::Device(DevOp::Unmount, d.dev.clone()));
+                                    ui.close();
+                                }
+                                if d.removable
+                                    && ui.add_enabled(!busy, egui::Button::new("Eject")).clicked()
+                                {
+                                    actions.push(Action::Device(DevOp::Eject, d.dev.clone()));
+                                    ui.close();
+                                }
+                                ui.separator();
+                            }
+                            if marked {
+                                if ui.button("Remove from bookmarks").clicked() {
+                                    actions.push(Action::Unbookmark(path.clone()));
+                                    ui.close();
+                                }
+                            } else if ui.button("Add to bookmarks").clicked() {
+                                actions.push(Action::Bookmark(vec![path.clone()]));
                                 ui.close();
                             }
-                        } else if ui.button("Add to bookmarks").clicked() {
-                            actions.push(Action::Bookmark(vec![path.clone()]));
-                            ui.close();
-                        }
-                    });
+                        });
+                    }
+                    // While folders are dragged, an explicit target under the bookmarks.
+                    if can_drop {
+                        ui.add_space(2.0);
+                        let (rect, resp) = ui
+                            .allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::hover());
+                        let hot = bookmark_zone(ui, &resp, &dragged_dirs, actions);
+                        let painter = ui.painter();
+                        painter.rect_filled(
+                            rect,
+                            CornerRadius::same(5),
+                            if hot { pal().select_dim } else { pal().bg },
+                        );
+                        painter.rect_stroke(
+                            rect,
+                            CornerRadius::same(5),
+                            Stroke::new(1.0, if hot { pal().accent } else { pal().border }),
+                            egui::StrokeKind::Inside,
+                        );
+                        draw_emblem(
+                            painter,
+                            Pos2::new(rect.left() + 14.0, rect.center().y),
+                            fsops::Special::Bookmark,
+                            0.9,
+                            if hot { pal().accent } else { pal().dim },
+                            1.4,
+                        );
+                        painter.text(
+                            Pos2::new(rect.left() + 30.0, rect.center().y),
+                            Align2::LEFT_CENTER,
+                            "Drop to bookmark",
+                            FontId::proportional(12.5),
+                            if hot { pal().text } else { pal().dim },
+                        );
+                    }
                 }
-                // While folders are dragged, an explicit target under the bookmarks.
-                if can_drop {
-                    ui.add_space(2.0);
-                    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::hover());
-                    let hot = bookmark_zone(ui, &resp, &dragged_dirs, actions);
-                    let painter = ui.painter();
-                    painter.rect_filled(rect, CornerRadius::same(5), if hot { pal().select_dim } else { pal().bg });
-                    painter.rect_stroke(
-                        rect,
-                        CornerRadius::same(5),
-                        Stroke::new(1.0, if hot { pal().accent } else { pal().border }),
-                        egui::StrokeKind::Inside,
-                    );
-                    draw_emblem(painter, Pos2::new(rect.left() + 14.0, rect.center().y), fsops::Special::Bookmark, 0.9, if hot { pal().accent } else { pal().dim }, 1.4);
-                    painter.text(
-                        Pos2::new(rect.left() + 30.0, rect.center().y),
-                        Align2::LEFT_CENTER,
-                        "Drop to bookmark",
-                        FontId::proportional(12.5),
-                        if hot { pal().text } else { pal().dim },
-                    );
-                }
-            }
-        });
+            });
     }
 
     /// The bar at the bottom of a file-picker window: heading, name field when saving, buttons.
@@ -1381,7 +2131,11 @@ impl App {
         let Some(p) = &mut self.picker else { return };
         let saving = p.req.kind == crate::picker::Kind::Save;
         let replacing = saving && choice.first().is_some_and(|c| c.exists());
-        let label = if replacing { "Replace" } else { p.req.confirm_label() };
+        let label = if replacing {
+            "Replace"
+        } else {
+            p.req.confirm_label()
+        };
         let mut enter = false;
         ui.horizontal_centered(|ui| {
             ui.label(RichText::new(p.req.heading()).strong());
@@ -1394,17 +2148,27 @@ impl App {
                     n if n > 1 => format!("{label} {n}"),
                     _ => label.to_string(),
                 };
-                if ui.add_enabled(!choice.is_empty(), egui::Button::new(text)).clicked() {
+                if ui
+                    .add_enabled(!choice.is_empty(), egui::Button::new(text))
+                    .clicked()
+                {
                     actions.push(Action::PickConfirm);
                 }
                 if saving {
-                    let r = ui.add(egui::TextEdit::singleline(&mut p.name).hint_text("File name").desired_width(f32::INFINITY));
+                    let r = ui.add(
+                        egui::TextEdit::singleline(&mut p.name)
+                            .hint_text("File name")
+                            .desired_width(f32::INFINITY),
+                    );
                     if std::mem::take(&mut p.focus) {
                         r.request_focus();
                     }
                     enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                 } else if p.req.kind == crate::picker::Kind::Folder {
-                    let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "/".into());
+                    let name = dir
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "/".into());
                     if ui.button(format!("Use “{name}”")).clicked() {
                         actions.push(Action::PickHere);
                     }
@@ -1425,7 +2189,14 @@ impl App {
             if let Some(s) = &tab.search {
                 let n = tab.view.len();
                 let more = if s.truncated { "+" } else { "" };
-                ui.label(small(format!("{n}{more} {}", if s.flatten { "items · subfolders included" } else { "results" })));
+                ui.label(small(format!(
+                    "{n}{more} {}",
+                    if s.flatten {
+                        "items · subfolders included"
+                    } else {
+                        "results"
+                    }
+                )));
                 if s.running {
                     ui.add(egui::Spinner::new().size(11.0).color(pal().dim));
                     ui.label(small("searching".into()));
@@ -1446,9 +2217,20 @@ impl App {
                         bytes += e.size;
                     }
                 }
-                ui.label(small(format!("{} items  ·  {dirs} folders, {files} files", tab.view.len())));
-                ui.label(small(format!("·  {}{}", util::human_size(bytes), if all_known { "" } else { "+" })));
-                if tab.entries.iter().any(|e| e.is_dir && self.sizing.contains(&e.path)) {
+                ui.label(small(format!(
+                    "{} items  ·  {dirs} folders, {files} files",
+                    tab.view.len()
+                )));
+                ui.label(small(format!(
+                    "·  {}{}",
+                    util::human_size(bytes),
+                    if all_known { "" } else { "+" }
+                )));
+                if tab
+                    .entries
+                    .iter()
+                    .any(|e| e.is_dir && self.sizing.contains(&e.path))
+                {
                     ui.add(egui::Spinner::new().size(11.0).color(pal().dim));
                 }
             }
@@ -1458,22 +2240,45 @@ impl App {
                     .entries
                     .iter()
                     .filter(|e| tab.marked.contains(&e.path))
-                    .filter_map(|e| if e.is_dir { self.sizes.get(&e.path).copied() } else { Some(e.size) })
+                    .filter_map(|e| {
+                        if e.is_dir {
+                            self.sizes.get(&e.path).copied()
+                        } else {
+                            Some(e.size)
+                        }
+                    })
                     .sum();
-                ui.label(small(format!("·  {n} selected ({})", util::human_size(bytes))));
+                ui.label(small(format!(
+                    "·  {n} selected ({})",
+                    util::human_size(bytes)
+                )));
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if let Some(job) = &job {
                     let cancel = ui
-                        .add(egui::Button::new(RichText::new("×").size(14.0)).frame_when_inactive(false))
+                        .add(
+                            egui::Button::new(RichText::new("×").size(14.0))
+                                .frame_when_inactive(false),
+                        )
                         .on_hover_text("Cancel");
                     if cancel.clicked() {
-                        self.ops.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                        self.ops
+                            .cancel
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
                     }
-                    let frac = if job.bytes_total > 0 { job.bytes_done as f32 / job.bytes_total as f32 } else { 0.0 };
+                    let frac = if job.bytes_total > 0 {
+                        job.bytes_done as f32 / job.bytes_total as f32
+                    } else {
+                        0.0
+                    };
                     if job.bytes_total > 0 {
-                        ui.add(egui::ProgressBar::new(frac).desired_width(140.0).desired_height(8.0).fill(pal().accent));
+                        ui.add(
+                            egui::ProgressBar::new(frac)
+                                .desired_width(140.0)
+                                .desired_height(8.0)
+                                .fill(pal().accent),
+                        );
                         ui.label(small(format!(
                             "{:.0}%  ·  {} / {}",
                             frac * 100.0,
@@ -1483,10 +2288,22 @@ impl App {
                     } else {
                         ui.add(egui::Spinner::new().size(11.0).color(pal().dim));
                     }
-                    let extra = if queued > 1 { format!("  (+{} queued)", queued - 1) } else { String::new() };
-                    ui.label(RichText::new(format!("{}{extra}", job.title)).size(12.0).color(pal().text));
+                    let extra = if queued > 1 {
+                        format!("  (+{} queued)", queued - 1)
+                    } else {
+                        String::new()
+                    };
+                    ui.label(
+                        RichText::new(format!("{}{extra}", job.title))
+                            .size(12.0)
+                            .color(pal().text),
+                    );
                 } else if let Some((free, total)) = tab.disk {
-                    ui.label(small(format!("{} free of {}", util::human_size(free), util::human_size(total))));
+                    ui.label(small(format!(
+                        "{} free of {}",
+                        util::human_size(free),
+                        util::human_size(total)
+                    )));
                 }
             });
         });
@@ -1498,15 +2315,24 @@ impl App {
         if origin != selected.map(|e| &e.path) {
             self.inspector = selected.filter(|e| e.is_dir).cloned().into_iter().collect();
         }
-        let target = self.inspector.last().or_else(|| self.tab().cursor_entry()).map(|e| (e.path.clone(), e.is_dir));
-        self.preview.request(target.as_ref().map(|(path, dir)| (path.as_path(), *dir)));
+        let target = self
+            .inspector
+            .last()
+            .or_else(|| self.tab().cursor_entry())
+            .map(|e| (e.path.clone(), e.is_dir));
+        self.preview
+            .request(target.as_ref().map(|(path, dir)| (path.as_path(), *dir)));
     }
 
     fn preview_panel(&mut self, ui: &mut Ui) {
         self.sync_inspector();
         if self.inspector.len() > 1 {
             ui.horizontal(|ui| {
-                if ui.button("‹ Back").on_hover_text("Back within the inspector").clicked() {
+                if ui
+                    .button("‹ Back")
+                    .on_hover_text("Back within the inspector")
+                    .clicked()
+                {
                     self.inspector.pop();
                     self.sync_inspector();
                 }
@@ -1514,15 +2340,27 @@ impl App {
             });
         }
         // Keep label selections scoped to the file whose content was selected.
-        let path = self.inspector.last().or_else(|| self.tab().cursor_entry()).map(|e| e.path.clone());
+        let path = self
+            .inspector
+            .last()
+            .or_else(|| self.tab().cursor_entry())
+            .map(|e| e.path.clone());
         let selection_id = ui.id().with("selection_path");
         let previous = ui.data_mut(|d| d.get_temp::<Option<PathBuf>>(selection_id));
         if previous.as_ref() != Some(&path) {
-            ui.ctx().plugin::<egui::text_selection::LabelSelectionState>().lock().clear_selection();
+            ui.ctx()
+                .plugin::<egui::text_selection::LabelSelectionState>()
+                .lock()
+                .clear_selection();
             ui.data_mut(|d| d.insert_temp(selection_id, path));
         }
         ui.style_mut().interaction.selectable_labels = true;
-        let Some(e) = self.inspector.last().or_else(|| self.tab().cursor_entry()).cloned() else {
+        let Some(e) = self
+            .inspector
+            .last()
+            .or_else(|| self.tab().cursor_entry())
+            .cloned()
+        else {
             ui.add_space(40.0);
             ui.vertical_centered(|ui| ui.label(RichText::new("No selection").color(pal().faint)));
             return;
@@ -1538,24 +2376,47 @@ impl App {
         ui.add_space(6.0);
 
         let mut rows: Vec<(String, String)> = Vec::new();
-        let size = if e.is_dir { self.sizes.get(&e.path).copied() } else { Some(e.size) };
-        rows.push(("Size".into(), size.map(util::human_size).unwrap_or_else(|| "calculating…".into())));
+        let size = if e.is_dir {
+            self.sizes.get(&e.path).copied()
+        } else {
+            Some(e.size)
+        };
+        rows.push((
+            "Size".into(),
+            size.map(util::human_size)
+                .unwrap_or_else(|| "calculating…".into()),
+        ));
         if let Some(m) = e.modified {
             rows.push(("Modified".into(), util::fmt_time(m)));
         }
         rows.push(("Permissions".into(), util::fmt_mode(e.mode, e.is_dir)));
         if let State::Ready(c) = &self.preview.state {
             match c {
-                Content::Image { info, .. } | Content::Binary { info } => rows.extend(info.iter().cloned()),
-                Content::Text { lines, truncated, .. } => {
-                    rows.push(("Lines".into(), format!("{lines}{}", if *truncated { "+" } else { "" })))
+                Content::Image { info, .. } | Content::Binary { info } => {
+                    rows.extend(info.iter().cloned())
                 }
+                Content::Text {
+                    lines, truncated, ..
+                } => rows.push((
+                    "Lines".into(),
+                    format!("{lines}{}", if *truncated { "+" } else { "" }),
+                )),
                 Content::Table(t) => {
                     let plus = if t.truncated { "+" } else { "" };
-                    rows.push(("Rows".into(), format!("{}{plus}", t.rows.len().saturating_sub(1))));
+                    rows.push((
+                        "Rows".into(),
+                        format!("{}{plus}", t.rows.len().saturating_sub(1)),
+                    ));
                     rows.push(("Columns".into(), t.widths.len().to_string()));
                 }
-                Content::Dir { entries } => rows.push(("Items".into(), entries.iter().filter(|e| self.show_hidden || !e.hidden).count().to_string())),
+                Content::Dir { entries } => rows.push((
+                    "Items".into(),
+                    entries
+                        .iter()
+                        .filter(|e| self.show_hidden || !e.hidden)
+                        .count()
+                        .to_string(),
+                )),
                 _ => {}
             }
         }
@@ -1565,13 +2426,19 @@ impl App {
             .frame(Frame::new().inner_margin(Margin::symmetric(0, 8)))
             .resizable(false)
             .show(ui, |ui| {
-                egui::Grid::new("info").num_columns(2).spacing(vec2(12.0, 4.0)).show(ui, |ui| {
-                    for (k, v) in rows {
-                        ui.label(RichText::new(k).size(12.0).color(pal().faint));
-                        ui.add(egui::Label::new(RichText::new(v).size(12.0).color(pal().dim)).wrap());
-                        ui.end_row();
-                    }
-                });
+                egui::Grid::new("info")
+                    .num_columns(2)
+                    .spacing(vec2(12.0, 4.0))
+                    .show(ui, |ui| {
+                        for (k, v) in rows {
+                            ui.label(RichText::new(k).size(12.0).color(pal().faint));
+                            ui.add(
+                                egui::Label::new(RichText::new(v).size(12.0).color(pal().dim))
+                                    .wrap(),
+                            );
+                            ui.end_row();
+                        }
+                    });
             });
 
         let mut inspect = None;
@@ -1579,85 +2446,131 @@ impl App {
         if e.is_dir && ui.small_button("Open folder in main view ↗").clicked() {
             open_folder = Some(e.path.clone());
         }
-        CentralPanel::default().frame(Frame::new()).show(ui, |ui| match &mut self.preview.state {
-            State::Loading => {
-                ui.add_space(30.0);
-                ui.vertical_centered(|ui| ui.spinner());
-            }
-            State::Ready(Content::Image { tex, .. }) => {
-                let avail = ui.available_size();
-                let ts = tex.size_vec2();
-                let scale = (avail.x / ts.x).min(avail.y / ts.y).min(2.0);
-                let size = ts * scale;
-                ui.vertical_centered(|ui| {
-                    ui.add_space(((avail.y - size.y) / 2.0).max(0.0));
-                    let (r, _) = ui.allocate_exact_size(size, Sense::hover());
-                    draw_checker(ui.painter(), r);
-                    ui.painter().image(tex.id(), r, UV, Color32::WHITE);
-                });
-            }
-            State::Ready(Content::Text { job, links, truncated, plain, layout, .. }) => {
-                Frame::new()
-                    .fill(pal().bg)
-                    .corner_radius(CornerRadius::same(6))
-                    .inner_margin(Margin::same(8))
-                    .show(ui, |ui| {
-                        if *plain {
-                            ui.label(RichText::new("Plain-text preview: highlighting limit reached.").small().color(pal().faint));
-                        }
-                        if *truncated {
-                            ui.label(RichText::new("… preview truncated").color(pal().faint).italics());
-                        }
-                        if job.text.len() > 32 * 1024 {
-                            preview_code_cached(ui, job, links, layout);
-                        } else {
-                            ScrollArea::vertical().auto_shrink([false; 2]).id_salt("preview_text").show(ui, |ui| {
+        CentralPanel::default()
+            .frame(Frame::new())
+            .show(ui, |ui| match &mut self.preview.state {
+                State::Loading => {
+                    ui.add_space(30.0);
+                    ui.vertical_centered(|ui| ui.spinner());
+                }
+                State::Ready(Content::Image { tex, .. }) => {
+                    let avail = ui.available_size();
+                    let ts = tex.size_vec2();
+                    let scale = (avail.x / ts.x).min(avail.y / ts.y).min(2.0);
+                    let size = ts * scale;
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(((avail.y - size.y) / 2.0).max(0.0));
+                        let (r, _) = ui.allocate_exact_size(size, Sense::hover());
+                        draw_checker(ui.painter(), r);
+                        ui.painter().image(tex.id(), r, UV, Color32::WHITE);
+                    });
+                }
+                State::Ready(Content::Text {
+                    job,
+                    links,
+                    truncated,
+                    plain,
+                    layout,
+                    ..
+                }) => {
+                    Frame::new()
+                        .fill(pal().bg)
+                        .corner_radius(CornerRadius::same(6))
+                        .inner_margin(Margin::same(8))
+                        .show(ui, |ui| {
+                            if *plain {
+                                ui.label(
+                                    RichText::new(
+                                        "Plain-text preview: highlighting limit reached.",
+                                    )
+                                    .small()
+                                    .color(pal().faint),
+                                );
+                            }
+                            if *truncated {
+                                ui.label(
+                                    RichText::new("… preview truncated")
+                                        .color(pal().faint)
+                                        .italics(),
+                                );
+                            }
+                            if job.text.len() > 32 * 1024 {
                                 preview_code_cached(ui, job, links, layout);
-                            });
-                        }
+                            } else {
+                                ScrollArea::vertical()
+                                    .auto_shrink([false; 2])
+                                    .id_salt("preview_text")
+                                    .show(ui, |ui| {
+                                        preview_code_cached(ui, job, links, layout);
+                                    });
+                            }
+                        });
+                }
+                State::Ready(Content::Table(table)) => {
+                    Frame::new()
+                        .fill(pal().bg)
+                        .corner_radius(CornerRadius::same(6))
+                        .inner_margin(Margin::same(8))
+                        .show(ui, |ui| preview_table(ui, table));
+                }
+                State::Ready(Content::Dir { entries }) => {
+                    let entries: Vec<_> = entries
+                        .iter()
+                        .filter(|e| self.show_hidden || !e.hidden)
+                        .collect();
+                    if entries.is_empty() {
+                        ui.label(RichText::new("Empty folder").color(pal().faint));
+                    }
+                    ScrollArea::vertical()
+                        .id_salt(("inspector", &e.path))
+                        .auto_shrink([false; 2])
+                        .show_rows(ui, ROW_H, entries.len(), |ui, range| {
+                            for i in range {
+                                let entry = entries[i];
+                                let (rect, resp) = ui.allocate_exact_size(
+                                    vec2(ui.available_width(), ROW_H),
+                                    Sense::click(),
+                                );
+                                if resp.hovered() {
+                                    ui.painter().rect_filled(rect, 4.0, pal().hover);
+                                }
+                                paint_cell(
+                                    ui.painter(),
+                                    rect,
+                                    entry,
+                                    false,
+                                    &crate::search::Query::new(""),
+                                );
+                                if resp.clicked() {
+                                    inspect = Some(entry.clone());
+                                }
+                                resp.on_hover_text(format!("Inspect {}", entry.path.display()));
+                            }
+                        });
+                }
+                State::Ready(Content::Binary { .. }) => {
+                    ui.add_space(40.0);
+                    ui.vertical_centered(|ui| {
+                        let (r, _) = ui.allocate_exact_size(vec2(64.0, 72.0), Sense::hover());
+                        draw_icon_scaled(ui.painter(), r.center(), cat, 4.0);
+                        ui.add_space(10.0);
+                        ui.label(RichText::new("No preview available").color(pal().faint));
                     });
-            }
-            State::Ready(Content::Table(table)) => {
-                Frame::new()
-                    .fill(pal().bg)
-                    .corner_radius(CornerRadius::same(6))
-                    .inner_margin(Margin::same(8))
-                    .show(ui, |ui| preview_table(ui, table));
-            }
-            State::Ready(Content::Dir { entries }) => {
-                let entries: Vec<_> = entries.iter().filter(|e| self.show_hidden || !e.hidden).collect();
-                if entries.is_empty() { ui.label(RichText::new("Empty folder").color(pal().faint)); }
-                ScrollArea::vertical().id_salt(("inspector", &e.path)).auto_shrink([false; 2])
-                    .show_rows(ui, ROW_H, entries.len(), |ui, range| {
-                        for i in range {
-                            let entry = entries[i];
-                            let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
-                            if resp.hovered() { ui.painter().rect_filled(rect, 4.0, pal().hover); }
-                            paint_cell(ui.painter(), rect, entry, false, &crate::search::Query::new(""));
-                            if resp.clicked() { inspect = Some(entry.clone()); }
-                            resp.on_hover_text(format!("Inspect {}", entry.path.display()));
-                        }
+                }
+                State::Ready(Content::Error(err)) => {
+                    ui.add_space(40.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(RichText::new(err.as_str()).color(pal().faint))
                     });
-            }
-            State::Ready(Content::Binary { .. }) => {
-                ui.add_space(40.0);
-                ui.vertical_centered(|ui| {
-                    let (r, _) = ui.allocate_exact_size(vec2(64.0, 72.0), Sense::hover());
-                    draw_icon_scaled(ui.painter(), r.center(), cat, 4.0);
-                    ui.add_space(10.0);
-                    ui.label(RichText::new("No preview available").color(pal().faint));
-                });
-            }
-            State::Ready(Content::Error(err)) => {
-                ui.add_space(40.0);
-                ui.vertical_centered(|ui| ui.label(RichText::new(err.as_str()).color(pal().faint)));
-            }
-        });
+                }
+            });
         if let Some(entry) = inspect {
             self.inspector.push(entry);
             self.sync_inspector();
         }
-        if let Some(path) = open_folder { self.navigate(path, true); }
+        if let Some(path) = open_folder {
+            self.navigate(path, true);
+        }
     }
 
     // ------------------------------------------------------------ overlays
@@ -1665,32 +2578,71 @@ impl App {
     fn external_drops(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         // Drops via winit (X11); on Wayland they come through `wl_dnd` instead.
         let (dropped, winit_hover, pointer) = ctx.input(|i| {
-            let dropped: Vec<PathBuf> = i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect();
-            (dropped, !i.raw.hovered_files.is_empty(), i.pointer.hover_pos())
+            let dropped: Vec<PathBuf> = i
+                .raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().to_path_buf())
+                .collect();
+            (
+                dropped,
+                !i.raw.hovered_files.is_empty(),
+                i.pointer.hover_pos(),
+            )
         });
         let pos = self.ext_hover.or(if winit_hover { pointer } else { None });
         if let Some(pos) = pos {
-            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("drop_overlay")));
+            let painter = ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::new("drop_overlay"),
+            ));
             if let Some((r, _)) = self.folder_rects.iter().find(|(r, _)| r.contains(pos)) {
                 painter.rect_filled(*r, CornerRadius::same(5), pal().accent.gamma_multiply(0.18));
-                painter.rect_stroke(*r, CornerRadius::same(5), Stroke::new(1.5, pal().accent), egui::StrokeKind::Inside);
+                painter.rect_stroke(
+                    *r,
+                    CornerRadius::same(5),
+                    Stroke::new(1.5, pal().accent),
+                    egui::StrokeKind::Inside,
+                );
             } else if let Some(r) = self.pane_rects.iter().find(|r| r.contains(pos)) {
-                painter.rect_filled(r.shrink(6.0), CornerRadius::same(10), pal().accent.gamma_multiply(0.10));
-                painter.rect_stroke(r.shrink(6.0), CornerRadius::same(10), Stroke::new(2.0, pal().accent), egui::StrokeKind::Inside);
-                painter.text(r.center(), Align2::CENTER_CENTER, "Drop to copy here", FontId::proportional(16.0), pal().text);
+                painter.rect_filled(
+                    r.shrink(6.0),
+                    CornerRadius::same(10),
+                    pal().accent.gamma_multiply(0.10),
+                );
+                painter.rect_stroke(
+                    r.shrink(6.0),
+                    CornerRadius::same(10),
+                    Stroke::new(2.0, pal().accent),
+                    egui::StrokeKind::Inside,
+                );
+                painter.text(
+                    r.center(),
+                    Align2::CENTER_CENTER,
+                    "Drop to copy here",
+                    FontId::proportional(16.0),
+                    pal().text,
+                );
             }
         }
-        if !dropped.is_empty() {
-            if let Some((dest, pane)) = self.drop_destination(pointer.unwrap_or_default()) {
+        if !dropped.is_empty()
+            && let Some((dest, pane)) = self.drop_destination(pointer.unwrap_or_default()) {
                 actions.push(Action::FocusPane(pane));
-                actions.push(Action::Drop { paths: dropped, dest, copy: true });
+                actions.push(Action::Drop {
+                    paths: dropped,
+                    dest,
+                    copy: true,
+                });
             }
-        }
     }
 
     /// Folder under `pos` (row, tile or sidebar entry), else the folder of the pane under it.
     pub(super) fn drop_destination(&self, pos: Pos2) -> Option<(PathBuf, usize)> {
-        let pane = self.pane_rects.iter().position(|r| r.contains(pos)).unwrap_or(self.active_pane);
+        let pane = self
+            .pane_rects
+            .iter()
+            .position(|r| r.contains(pos))
+            .unwrap_or(self.active_pane);
         if let Some((_, p)) = self.folder_rects.iter().find(|(r, _)| r.contains(pos)) {
             return Some((p.clone(), pane));
         }
@@ -1700,11 +2652,15 @@ impl App {
 
     /// Hands the in-app drag to the compositor once it leaves the window.
     fn maybe_drag_out(&mut self, ctx: &egui::Context) {
-        let (Some(wl), Some(payload)) = (&self.wl, &self.dragging) else { return };
+        let (Some(wl), Some(payload)) = (&self.wl, &self.dragging) else {
+            return;
+        };
         if wl.dragging_out() {
             return;
         }
-        let Some(pos) = ctx.pointer_latest_pos() else { return };
+        let Some(pos) = ctx.pointer_latest_pos() else {
+            return;
+        };
         if ctx.content_rect().shrink(2.0).contains(pos) {
             return;
         }
@@ -1722,33 +2678,55 @@ impl App {
 
     /// The card that follows the cursor while dragging: what you hold and where it will go.
     fn drag_chip(&mut self, ctx: &egui::Context) {
-        let Some(payload) = DragAndDrop::payload::<DragPaths>(ctx) else { return };
-        let Some(first) = payload.0.first() else { return };
+        let Some(payload) = DragAndDrop::payload::<DragPaths>(ctx) else {
+            return;
+        };
+        let Some(first) = payload.0.first() else {
+            return;
+        };
         // Nothing is "held" until the pointer actually moves away from the press.
         if !ctx.input(|i| i.pointer.is_decidedly_dragging()) {
             return;
         }
-        let Some(pos) = ctx.pointer_latest_pos() else { return };
+        let Some(pos) = ctx.pointer_latest_pos() else {
+            return;
+        };
         ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
 
         let n = payload.0.len();
         let target = ctx.data(|d| d.get_temp::<PathBuf>(drop_target_id()));
         let force_copy = ctx.input(|i| i.modifiers.ctrl);
-        let bookmarking = ctx.data(|d| d.get_temp::<bool>(bookmark_hover_id())).unwrap_or(false);
+        let bookmarking = ctx
+            .data(|d| d.get_temp::<bool>(bookmark_hover_id()))
+            .unwrap_or(false);
         let hint = target.as_ref().map(|t| {
             let copy = force_copy || !same_filesystem(first, t);
             (copy, ops_name(t))
         });
         let is_dir = first.is_dir();
-        let ext = first.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+        let ext = first
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
         let cat = util::category(&ext, is_dir);
-        let renderer = if is_dir { None } else { thumbs::renderer_for(&ext) };
-        let thumb = renderer.and_then(|r| self.thumbs.get(first, r)).map(|t| (t.id(), t.size_vec2()));
-        let name = if n == 1 { ops_name(first) } else { format!("{} and {} more", ops_name(first), n - 1) };
+        let renderer = if is_dir {
+            None
+        } else {
+            thumbs::renderer_for(&ext)
+        };
+        let thumb = renderer
+            .and_then(|r| self.thumbs.get(first, r))
+            .map(|t| (t.id(), t.size_vec2()));
+        let name = if n == 1 {
+            ops_name(first)
+        } else {
+            format!("{} and {} more", ops_name(first), n - 1)
+        };
 
         let origin = pos + vec2(16.0, 12.0);
         let stack_size = (n > 1).then(|| {
-            ctx.data(|d| d.get_temp::<egui::Vec2>(egui::Id::new("drag_card_size"))).unwrap_or(vec2(220.0, 64.0))
+            ctx.data(|d| d.get_temp::<egui::Vec2>(egui::Id::new("drag_card_size")))
+                .unwrap_or(vec2(220.0, 64.0))
         });
         let shown = egui::Area::new(egui::Id::new("drag_card"))
             .order(egui::Order::Tooltip)
@@ -1757,16 +2735,34 @@ impl App {
             .show(ctx, |ui| {
                 let card = Frame::new()
                     .fill(pal().surface.gamma_multiply(0.96))
-                    .stroke(Stroke::new(1.0, if hint.is_some() || bookmarking { pal().accent } else { pal().border }))
+                    .stroke(Stroke::new(
+                        1.0,
+                        if hint.is_some() || bookmarking {
+                            pal().accent
+                        } else {
+                            pal().border
+                        },
+                    ))
                     .corner_radius(CornerRadius::same(8))
-                    .shadow(egui::Shadow { offset: [0, 4], blur: 14, spread: 0, color: Color32::from_black_alpha(110) })
+                    .shadow(egui::Shadow {
+                        offset: [0, 4],
+                        blur: 14,
+                        spread: 0,
+                        color: Color32::from_black_alpha(110),
+                    })
                     .inner_margin(Margin::symmetric(10, 8));
                 // Cards peeking out behind signal a stack of several items (sized from last frame).
                 if let Some(size) = stack_size {
                     for k in [2.0, 1.0] {
                         let r = Rect::from_min_size(origin + vec2(5.0, 5.0) * k, size);
-                        ui.painter().rect_filled(r, CornerRadius::same(8), pal().panel);
-                        ui.painter().rect_stroke(r, CornerRadius::same(8), Stroke::new(1.0, pal().border), egui::StrokeKind::Inside);
+                        ui.painter()
+                            .rect_filled(r, CornerRadius::same(8), pal().panel);
+                        ui.painter().rect_stroke(
+                            r,
+                            CornerRadius::same(8),
+                            Stroke::new(1.0, pal().border),
+                            egui::StrokeKind::Inside,
+                        );
                     }
                 }
                 card.show(ui, |ui| {
@@ -1777,31 +2773,49 @@ impl App {
                         match thumb {
                             Some((id, size)) => {
                                 let scale = (r.width() / size.x).min(r.height() / size.y);
-                                ui.painter().image(id, Rect::from_center_size(r.center(), size * scale), UV, Color32::WHITE);
+                                ui.painter().image(
+                                    id,
+                                    Rect::from_center_size(r.center(), size * scale),
+                                    UV,
+                                    Color32::WHITE,
+                                );
                             }
                             None => draw_entry_icon(ui.painter(), r.center(), 2.6, first, cat),
                         }
                         if n > 1 {
                             let c = r.right_top() + vec2(-2.0, 2.0);
                             ui.painter().circle_filled(c, 9.0, pal().accent);
-                            ui.painter().text(c, Align2::CENTER_CENTER, n.to_string(), FontId::proportional(10.5), Color32::WHITE);
+                            ui.painter().text(
+                                c,
+                                Align2::CENTER_CENTER,
+                                n.to_string(),
+                                FontId::proportional(10.5),
+                                Color32::WHITE,
+                            );
                         }
                         ui.add_space(4.0);
                         ui.vertical(|ui| {
                             ui.add_space(5.0);
-                            ui.add(egui::Label::new(RichText::new(name).color(pal().text)).truncate());
+                            ui.add(
+                                egui::Label::new(RichText::new(name).color(pal().text)).truncate(),
+                            );
                             let (text, color) = match &hint {
                                 _ if bookmarking => ("Add to bookmarks".to_string(), pal().accent),
                                 Some((true, t)) => (format!("Copy to {t}"), pal().accent),
                                 Some((false, t)) => (format!("Move to {t}"), pal().accent),
                                 None => ("Drop on a folder".to_string(), pal().faint),
                             };
-                            ui.add(egui::Label::new(RichText::new(text).size(12.0).color(color)).truncate());
+                            ui.add(
+                                egui::Label::new(RichText::new(text).size(12.0).color(color))
+                                    .truncate(),
+                            );
                         });
                     });
                 });
             });
-        ctx.data_mut(|d| d.insert_temp(egui::Id::new("drag_card_size"), shown.response.rect.size()));
+        ctx.data_mut(|d| {
+            d.insert_temp(egui::Id::new("drag_card_size"), shown.response.rect.size())
+        });
         ctx.request_repaint();
     }
 
@@ -1811,20 +2825,38 @@ impl App {
         }
         let goto = self.palette.goto;
         // Commands, then places to jump to. Go To instead lists folders and tabs.
-        let mut items: Vec<(String, String, Action)> =
-            COMMANDS.iter().map(|&(c, name, keys)| (name.to_string(), keys.to_string(), Action::Cmd(c))).collect();
+        let mut items: Vec<(String, String, Action)> = COMMANDS
+            .iter()
+            .map(|&(c, name, keys)| (name.to_string(), keys.to_string(), Action::Cmd(c)))
+            .collect();
         for (name, path) in self.places.places.iter().chain(&self.places.bookmarks) {
-            items.push((format!("Go to {name}"), path.display().to_string(), Action::Navigate(path.clone())));
+            items.push((
+                format!("Go to {name}"),
+                path.display().to_string(),
+                Action::Navigate(path.clone()),
+            ));
         }
         for d in &self.devices {
             let action = match &d.mount {
                 Some(m) => Action::Navigate(m.clone()),
                 None => Action::Device(DevOp::Mount, d.dev.clone()),
             };
-            items.push((format!("Go to {}", d.name), d.path().display().to_string(), action));
+            items.push((
+                format!("Go to {}", d.name),
+                d.path().display().to_string(),
+                action,
+            ));
         }
-        for d in self.devices.iter().filter(|d| d.removable && d.mount.is_some()) {
-            items.push((format!("Eject {}", d.name), d.dev.display().to_string(), Action::Device(DevOp::Eject, d.dev.clone())));
+        for d in self
+            .devices
+            .iter()
+            .filter(|d| d.removable && d.mount.is_some())
+        {
+            items.push((
+                format!("Eject {}", d.name),
+                d.dev.display().to_string(),
+                Action::Device(DevOp::Eject, d.dev.clone()),
+            ));
         }
         if goto {
             items = self.goto_items();
@@ -1832,14 +2864,24 @@ impl App {
         let q = self.palette.query.trim().to_string();
         let mut scored: Vec<usize> = if goto {
             let query = crate::search::Query::new(&q);
-            let mut ranked: Vec<_> = items.iter().enumerate().filter_map(|(i, (name, path, _))| {
-                query.score(name).max(query.score(path)).map(|score| (score, i))
-            }).collect();
+            let mut ranked: Vec<_> = items
+                .iter()
+                .enumerate()
+                .filter_map(|(i, (name, path, _))| {
+                    query
+                        .score(name)
+                        .max(query.score(path))
+                        .map(|score| (score, i))
+                })
+                .collect();
             ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
             ranked.into_iter().map(|(_, i)| i).collect()
         } else {
-            let mut ranked: Vec<_> = items.iter().enumerate()
-                .filter_map(|(i, (name, _, _))| palette::fuzzy_score(&q, name).map(|s| (s, i))).collect();
+            let mut ranked: Vec<_> = items
+                .iter()
+                .enumerate()
+                .filter_map(|(i, (name, _, _))| palette::fuzzy_score(&q, name).map(|s| (s, i)))
+                .collect();
             ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
             ranked.into_iter().map(|(_, i)| i).collect()
         };
@@ -1859,16 +2901,27 @@ impl App {
         });
         *sel = (*sel).min(n.saturating_sub(1));
 
-        let area = egui::Area::new(egui::Id::new("palette_area")).anchor(Align2::CENTER_TOP, vec2(0.0, 70.0));
+        let area = egui::Area::new(egui::Id::new("palette_area"))
+            .anchor(Align2::CENTER_TOP, vec2(0.0, 70.0));
         let modal = egui::Modal::new(egui::Id::new("palette"))
             .area(area)
             .backdrop_color(Color32::from_black_alpha(90))
-            .frame(Frame::new().fill(pal().panel).stroke(Stroke::new(1.0, pal().border)).corner_radius(CornerRadius::same(10)).inner_margin(Margin::same(8)))
+            .frame(
+                Frame::new()
+                    .fill(pal().panel)
+                    .stroke(Stroke::new(1.0, pal().border))
+                    .corner_radius(CornerRadius::same(10))
+                    .inner_margin(Margin::same(8)),
+            )
             .show(ctx, |ui| {
                 ui.set_width(520.0);
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut self.palette.query)
-                        .hint_text(if goto { "Go To: folder, open or recently closed tab…" } else { "Type a command or place…" })
+                        .hint_text(if goto {
+                            "Go To: folder, open or recently closed tab…"
+                        } else {
+                            "Type a command or place…"
+                        })
                         .desired_width(f32::INFINITY)
                         .font(FontId::proportional(15.0))
                         .margin(Margin::symmetric(8, 6)),
@@ -1884,19 +2937,50 @@ impl App {
                 let mut clicked = None;
                 for (row, &i) in scored.iter().enumerate() {
                     let (name, keys, _) = &items[i];
-                    let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), if goto { 48.0 } else { 28.0 }), Sense::click());
+                    let (rect, r) = ui.allocate_exact_size(
+                        vec2(ui.available_width(), if goto { 48.0 } else { 28.0 }),
+                        Sense::click(),
+                    );
                     let selected = row == self.palette.selected;
                     if selected || r.hovered() {
-                        ui.painter().rect_filled(rect, CornerRadius::same(5), if selected { pal().select } else { pal().hover });
+                        ui.painter().rect_filled(
+                            rect,
+                            CornerRadius::same(5),
+                            if selected { pal().select } else { pal().hover },
+                        );
                     }
                     if goto {
                         let painter = ui.painter().with_clip_rect(rect.shrink(6.0));
-                        painter.text(rect.left_top() + vec2(10.0, 4.0), Align2::LEFT_TOP, name, FontId::proportional(BODY), pal().text);
-                        painter.text(rect.left_top() + vec2(10.0, 26.0), Align2::LEFT_TOP, keys, FontId::proportional(12.0), pal().faint);
+                        painter.text(
+                            rect.left_top() + vec2(10.0, 4.0),
+                            Align2::LEFT_TOP,
+                            name,
+                            FontId::proportional(BODY),
+                            pal().text,
+                        );
+                        painter.text(
+                            rect.left_top() + vec2(10.0, 26.0),
+                            Align2::LEFT_TOP,
+                            keys,
+                            FontId::proportional(12.0),
+                            pal().faint,
+                        );
                         r.clone().on_hover_text(keys);
                     } else {
-                        ui.painter().text(rect.left_center() + vec2(10.0, 0.0), Align2::LEFT_CENTER, name, FontId::proportional(BODY), pal().text);
-                        ui.painter().with_clip_rect(rect).text(rect.right_center() - vec2(10.0, 0.0), Align2::RIGHT_CENTER, keys, FontId::proportional(12.0), pal().faint);
+                        ui.painter().text(
+                            rect.left_center() + vec2(10.0, 0.0),
+                            Align2::LEFT_CENTER,
+                            name,
+                            FontId::proportional(BODY),
+                            pal().text,
+                        );
+                        ui.painter().with_clip_rect(rect).text(
+                            rect.right_center() - vec2(10.0, 0.0),
+                            Align2::RIGHT_CENTER,
+                            keys,
+                            FontId::proportional(12.0),
+                            pal().faint,
+                        );
                     }
                     if r.clicked() {
                         clicked = Some(row);
@@ -1924,7 +3008,9 @@ impl App {
     }
 
     fn dialog_ui(&mut self, ctx: &egui::Context) {
-        let Some(dialog) = self.dialog.as_mut() else { return };
+        let Some(dialog) = self.dialog.as_mut() else {
+            return;
+        };
         let (mut confirm, mut cancel) = (false, false);
         let (mut load_workspace, mut delete_workspace) = (None, None);
         let frame = Frame::new()
@@ -2092,33 +3178,55 @@ impl App {
             self.load_workspace(&name);
             return;
         }
-        if let Some(name) = delete_workspace { self.delete_workspace(&name); }
+        if let Some(name) = delete_workspace {
+            self.delete_workspace(&name);
+        }
         if confirm {
             match self.dialog.take() {
                 Some(Dialog::SaveWorkspace { name, .. }) => self.save_workspace(&name),
-                Some(Dialog::Workspaces) => {},
+                Some(Dialog::Workspaces) => {}
                 Some(Dialog::BatchRename(editor)) => {
                     if let Some(plan) = editor.plan.filter(|p| p.valid()) {
                         let pairs = plan.changes();
-                        let mut job = crate::ops::Job::new(crate::ops::JobKind::Rename, pairs.iter().map(|(from, _)| from.clone()).collect(), None);
+                        let mut job = crate::ops::Job::new(
+                            crate::ops::JobKind::Rename,
+                            pairs.iter().map(|(from, _)| from.clone()).collect(),
+                            None,
+                        );
                         job.pairs = pairs;
                         self.ops.submit(job);
                     }
                 }
                 Some(Dialog::Rename { path, name, .. }) => self.rename(&path, &name),
-                Some(Dialog::Create { dir, name, folder, .. }) => self.create(&dir, &name, folder),
-                Some(Dialog::Compress { srcs, dest, name, format, level, .. }) => {
+                Some(Dialog::Create {
+                    dir, name, folder, ..
+                }) => self.create(&dir, &name, folder),
+                Some(Dialog::Compress {
+                    srcs,
+                    dest,
+                    name,
+                    format,
+                    level,
+                    ..
+                }) => {
                     let name = name.trim();
                     if !name.is_empty() {
-                        let mut job = crate::ops::Job::new(crate::ops::JobKind::Compress, srcs, Some(dest));
-                        job.name = Some(if name.ends_with(format.ext()) { name.to_string() } else { format!("{name}{}", format.ext()) });
+                        let mut job =
+                            crate::ops::Job::new(crate::ops::JobKind::Compress, srcs, Some(dest));
+                        job.name = Some(if name.ends_with(format.ext()) {
+                            name.to_string()
+                        } else {
+                            format!("{name}{}", format.ext())
+                        });
                         (job.format, job.level) = (format, level);
                         self.ops.submit(job);
                     }
                 }
-                Some(Dialog::ConfirmDelete { paths }) => {
-                    self.ops.submit(crate::ops::Job::new(crate::ops::JobKind::Delete, paths, None))
-                }
+                Some(Dialog::ConfirmDelete { paths }) => self.ops.submit(crate::ops::Job::new(
+                    crate::ops::JobKind::Delete,
+                    paths,
+                    None,
+                )),
                 None => {}
             }
         } else if cancel {
@@ -2138,12 +3246,19 @@ impl App {
                 for t in &self.toasts {
                     Frame::new()
                         .fill(pal().surface)
-                        .stroke(Stroke::new(1.0, if t.error { pal().danger } else { pal().border }))
+                        .stroke(Stroke::new(
+                            1.0,
+                            if t.error { pal().danger } else { pal().border },
+                        ))
                         .corner_radius(CornerRadius::same(8))
                         .inner_margin(Margin::symmetric(12, 8))
                         .show(ui, |ui| {
                             ui.set_max_width(420.0);
-                            ui.label(RichText::new(&t.text).color(if t.error { pal().danger } else { pal().text }));
+                            ui.label(RichText::new(&t.text).color(if t.error {
+                                pal().danger
+                            } else {
+                                pal().text
+                            }));
                         });
                     ui.add_space(6.0);
                 }
@@ -2153,12 +3268,17 @@ impl App {
 
 /// Preserve natural label widths when possible; cap longer tabs first on overflow.
 fn tab_widths(natural: &[f32], budget: f32) -> Vec<f32> {
-    if natural.iter().sum::<f32>() <= budget { return natural.to_vec(); }
+    if natural.iter().sum::<f32>() <= budget {
+        return natural.to_vec();
+    }
     let (mut low, mut high) = (100.0_f32, natural.iter().copied().fold(100.0_f32, f32::max));
     for _ in 0..24 {
         let cap = (low + high) * 0.5;
-        if natural.iter().map(|w| w.min(cap)).sum::<f32>() > budget { high = cap; }
-        else { low = cap; }
+        if natural.iter().map(|w| w.min(cap)).sum::<f32>() > budget {
+            high = cap;
+        } else {
+            low = cap;
+        }
     }
     natural.iter().map(|w| w.min(low)).collect()
 }
@@ -2215,7 +3335,15 @@ fn empty_state(ui: &mut Ui, tab: &Tab) {
 
 /// Rubber-band selection: dragging from empty space selects every item the box touches.
 /// `item_rect` gives an item's current on-screen rect; ctrl adds to the existing selection.
-fn rubber_band(ui: &Ui, p: usize, tab: &mut Tab, inner: Rect, over_item: bool, ctrl: bool, item_rect: impl Fn(usize) -> Rect) {
+fn rubber_band(
+    ui: &Ui,
+    p: usize,
+    tab: &mut Tab,
+    inner: Rect,
+    over_item: bool,
+    ctrl: bool,
+    item_rect: impl Fn(usize) -> Rect,
+) {
     struct Band {
         /// Start point: x on screen, y relative to the content top.
         start: Pos2,
@@ -2223,8 +3351,16 @@ fn rubber_band(ui: &Ui, p: usize, tab: &mut Tab, inner: Rect, over_item: bool, c
     }
     let id = ui.id().with(("rubber", p));
     let ctx = ui.ctx();
-    let (pos, pressed, down) = ctx.input(|i| (i.pointer.latest_pos(), i.pointer.primary_pressed(), i.pointer.primary_down()));
-    let mut band = ctx.data(|d| d.get_temp::<Option<std::sync::Arc<Band>>>(id)).flatten();
+    let (pos, pressed, down) = ctx.input(|i| {
+        (
+            i.pointer.latest_pos(),
+            i.pointer.primary_pressed(),
+            i.pointer.primary_down(),
+        )
+    });
+    let mut band = ctx
+        .data(|d| d.get_temp::<Option<std::sync::Arc<Band>>>(id))
+        .flatten();
     if !down {
         if band.is_some() {
             ctx.data_mut(|d| d.insert_temp::<Option<std::sync::Arc<Band>>>(id, None));
@@ -2237,36 +3373,60 @@ fn rubber_band(ui: &Ui, p: usize, tab: &mut Tab, inner: Rect, over_item: bool, c
         let on_scrollbar = pos.x > inner.right() - 14.0;
         // Menus and dialogs float above the list; clicks on them are not ours.
         let covered = ctx.layer_id_at(pos).is_some_and(|l| l != ui.layer_id());
-        if !inner.contains(pos) || over_item || on_scrollbar || covered || DragAndDrop::has_any_payload(ctx) {
+        if !inner.contains(pos)
+            || over_item
+            || on_scrollbar
+            || covered
+            || DragAndDrop::has_any_payload(ctx)
+        {
             return;
         }
         if let Some(s) = &mut tab.search {
             s.follow_best = false;
         }
-        let base = if ctrl { tab.targets().into_iter().collect() } else { HashSet::new() };
+        let base = if ctrl {
+            tab.targets().into_iter().collect()
+        } else {
+            HashSet::new()
+        };
         if !ctrl {
             tab.marked.clear();
             tab.cursor = None;
         }
-        let b = std::sync::Arc::new(Band { start: Pos2::new(pos.x, pos.y - inner.top() + offset), base });
+        let b = std::sync::Arc::new(Band {
+            start: Pos2::new(pos.x, pos.y - inner.top() + offset),
+            base,
+        });
         ctx.data_mut(|d| d.insert_temp(id, Some(b.clone())));
         band = Some(b);
     }
-    let (Some(band), Some(pos)) = (band, pos) else { return };
+    let (Some(band), Some(pos)) = (band, pos) else {
+        return;
+    };
     let start = Pos2::new(band.start.x, inner.top() + band.start.y - offset);
     let cur = pos.clamp(inner.min, inner.max);
     let boxr = Rect::from_two_pos(start, cur).intersect(inner);
-    let mut hits: Vec<usize> = (0..tab.view.len()).filter(|&vi| item_rect(vi).intersects(boxr)).collect();
+    let mut hits: Vec<usize> = (0..tab.view.len())
+        .filter(|&vi| item_rect(vi).intersects(boxr))
+        .collect();
     hits.sort_unstable();
     let mut marked = band.base.clone();
-    marked.extend(hits.iter().map(|&vi| tab.entries[tab.view[vi]].path.clone()));
+    marked.extend(
+        hits.iter()
+            .map(|&vi| tab.entries[tab.view[vi]].path.clone()),
+    );
     tab.cursor = hits.last().copied().or(tab.cursor);
     tab.anchor = tab.cursor;
     tab.marked = marked;
     let accent = pal().accent;
     let painter = ui.painter().with_clip_rect(inner);
     painter.rect_filled(boxr, 0.0, accent.gamma_multiply(0.18));
-    painter.rect_stroke(boxr, 0.0, Stroke::new(1.0, accent), egui::StrokeKind::Inside);
+    painter.rect_stroke(
+        boxr,
+        0.0,
+        Stroke::new(1.0, accent),
+        egui::StrokeKind::Inside,
+    );
     // Scroll while the pointer is held beyond the top or bottom edge.
     const EDGE: f32 = 24.0;
     let speed = if pos.y < inner.top() + EDGE {
@@ -2286,11 +3446,10 @@ fn rubber_band(ui: &Ui, p: usize, tab: &mut Tab, inner: Rect, over_item: bool, c
 fn disk_usage(ctx: &egui::Context, path: &Path) -> Option<(u64, u64)> {
     const TTL: std::time::Duration = std::time::Duration::from_secs(5);
     let id = egui::Id::new(("disk_usage", path));
-    if let Some((at, usage)) = ctx.data(|d| d.get_temp::<(Instant, Option<(u64, u64)>)>(id)) {
-        if at.elapsed() < TTL {
+    if let Some((at, usage)) = ctx.data(|d| d.get_temp::<(Instant, Option<(u64, u64)>)>(id))
+        && at.elapsed() < TTL {
             return usage;
         }
-    }
     let usage = fsops::disk_space(path);
     ctx.data_mut(|d| d.insert_temp(id, (Instant::now(), usage)));
     usage
@@ -2301,7 +3460,9 @@ fn drag_autoscroll(ui: &Ui, tab: &mut Tab, viewport: Rect) {
     if !DragAndDrop::has_payload_of_type::<DragPaths>(ui.ctx()) {
         return;
     }
-    let Some(pos) = ui.ctx().pointer_latest_pos() else { return };
+    let Some(pos) = ui.ctx().pointer_latest_pos() else {
+        return;
+    };
     if !viewport.x_range().contains(pos.x) {
         return;
     }
@@ -2318,10 +3479,16 @@ fn drag_autoscroll(ui: &Ui, tab: &mut Tab, viewport: Rect) {
 }
 
 /// Drop zone that bookmarks dragged folders; returns whether a drag hovers it.
-fn bookmark_zone(ui: &Ui, resp: &egui::Response, dirs: &[PathBuf], actions: &mut Vec<Action>) -> bool {
+fn bookmark_zone(
+    ui: &Ui,
+    resp: &egui::Response,
+    dirs: &[PathBuf],
+    actions: &mut Vec<Action>,
+) -> bool {
     let hot = resp.dnd_hover_payload::<DragPaths>().is_some();
     if hot {
-        ui.ctx().data_mut(|d| d.insert_temp(bookmark_hover_id(), true));
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(bookmark_hover_id(), true));
     }
     if take_file_drop(resp).is_some() {
         actions.push(Action::Bookmark(dirs.to_vec()));
@@ -2337,14 +3504,26 @@ fn bookmark_hover_id() -> egui::Id {
 fn eject_icon(p: &Painter, c: Pos2, color: Color32) {
     let tri = vec![c + vec2(-4.5, 1.0), c + vec2(0.0, -4.5), c + vec2(4.5, 1.0)];
     p.add(egui::Shape::convex_polygon(tri, color, Stroke::NONE));
-    p.rect_filled(Rect::from_min_max(c + vec2(-4.5, 2.8), c + vec2(4.5, 4.6)), CornerRadius::same(1), color);
+    p.rect_filled(
+        Rect::from_min_max(c + vec2(-4.5, 2.8), c + vec2(4.5, 4.6)),
+        CornerRadius::same(1),
+        color,
+    );
 }
 
 fn chevron(p: &Painter, c: Pos2, open: bool, color: Color32) {
     let pts = if open {
-        vec![c + vec2(-3.5, -1.5), c + vec2(0.0, 2.0), c + vec2(3.5, -1.5)]
+        vec![
+            c + vec2(-3.5, -1.5),
+            c + vec2(0.0, 2.0),
+            c + vec2(3.5, -1.5),
+        ]
     } else {
-        vec![c + vec2(-1.5, -3.5), c + vec2(2.0, 0.0), c + vec2(-1.5, 3.5)]
+        vec![
+            c + vec2(-1.5, -3.5),
+            c + vec2(2.0, 0.0),
+            c + vec2(-1.5, 3.5),
+        ]
     };
     p.line(pts, Stroke::new(1.4, color));
 }
@@ -2363,7 +3542,10 @@ fn folder_rects_id() -> egui::Id {
 
 /// Remembers where folders are drawn so drops from other apps can target them.
 fn record_folder(ctx: &egui::Context, rect: Rect, path: &Path) {
-    ctx.data_mut(|d| d.get_temp_mut_or_default::<Vec<(Rect, PathBuf)>>(folder_rects_id()).push((rect, path.to_path_buf())));
+    ctx.data_mut(|d| {
+        d.get_temp_mut_or_default::<Vec<(Rect, PathBuf)>>(folder_rects_id())
+            .push((rect, path.to_path_buf()))
+    });
 }
 
 fn drop_target_id() -> egui::Id {
@@ -2372,9 +3554,12 @@ fn drop_target_id() -> egui::Id {
 
 /// True while a drag hovers `target`; also records it so the drag card can say where it goes.
 fn drop_hover(resp: &egui::Response, target: &Path) -> bool {
-    let hovering = resp.dnd_hover_payload::<DragPaths>().is_some_and(|p| !p.0.iter().any(|s| s == target));
+    let hovering = resp
+        .dnd_hover_payload::<DragPaths>()
+        .is_some_and(|p| !p.0.iter().any(|s| s == target));
     if hovering {
-        resp.ctx.data_mut(|d| d.insert_temp(drop_target_id(), target.to_path_buf()));
+        resp.ctx
+            .data_mut(|d| d.insert_temp(drop_target_id(), target.to_path_buf()));
     }
     hovering
 }
@@ -2382,7 +3567,8 @@ fn drop_hover(resp: &egui::Response, target: &Path) -> bool {
 /// Only the left button can finish a file drag. egui's generic DnD helper
 /// accepts any button release, including the back/forward navigation buttons.
 fn take_file_drop(resp: &egui::Response) -> Option<Arc<DragPaths>> {
-    if resp.contains_pointer() && resp.ctx.input(|i| i.pointer.primary_released())
+    if resp.contains_pointer()
+        && resp.ctx.input(|i| i.pointer.primary_released())
         && DragAndDrop::has_payload_of_type::<DragPaths>(&resp.ctx)
     {
         DragAndDrop::take_payload::<DragPaths>(&resp.ctx)
@@ -2399,8 +3585,11 @@ fn background_drop(ui: &mut Ui, tab: &Tab, rect: Rect, actions: &mut Vec<Action>
     // Not `Response::contains_pointer`: it is false whenever a file row covers the pointer, which
     // would restrict the drop to empty space. Rows that are folders take the payload first.
     let ctx = ui.ctx();
-    let over = ctx.input(|i| i.pointer.interact_pos()).is_some_and(|pos| rect.contains(pos))
-        && ctx.layer_id_at(ctx.input(|i| i.pointer.interact_pos()).unwrap_or_default()) == Some(ui.layer_id());
+    let over = ctx
+        .input(|i| i.pointer.interact_pos())
+        .is_some_and(|pos| rect.contains(pos))
+        && ctx.layer_id_at(ctx.input(|i| i.pointer.interact_pos()).unwrap_or_default())
+            == Some(ui.layer_id());
     if !over {
         return;
     }
@@ -2416,7 +3605,11 @@ fn background_drop(ui: &mut Ui, tab: &Tab, rect: Rect, actions: &mut Vec<Action>
         && let Some(paths) = DragAndDrop::take_payload::<DragPaths>(ctx)
     {
         let copy = ctx.input(|i| i.modifiers.ctrl);
-        actions.push(Action::Drop { paths: paths.0.clone(), dest: tab.path.clone(), copy });
+        actions.push(Action::Drop {
+            paths: paths.0.clone(),
+            dest: tab.path.clone(),
+            copy,
+        });
     }
 }
 
@@ -2433,14 +3626,21 @@ fn row_interactions(
     bookmarks: &[(String, PathBuf)],
 ) {
     if resp.drag_started_by(egui::PointerButton::Primary) {
-        let paths = if tab.is_selected(vi) { tab.targets() } else { vec![e.path.clone()] };
+        let paths = if tab.is_selected(vi) {
+            tab.targets()
+        } else {
+            vec![e.path.clone()]
+        };
         DragAndDrop::set_payload(ui.ctx(), DragPaths(paths));
     }
-    if let Some(paths) = take_file_drop(resp) {
-        if e.is_dir && !paths.0.contains(&e.path) {
-            actions.push(Action::Drop { paths: paths.0.clone(), dest: e.path.clone(), copy: ctrl });
+    if let Some(paths) = take_file_drop(resp)
+        && e.is_dir && !paths.0.contains(&e.path) {
+            actions.push(Action::Drop {
+                paths: paths.0.clone(),
+                dest: e.path.clone(),
+                copy: ctrl,
+            });
         }
-    }
     if resp.double_clicked() {
         actions.push(Action::FocusPane(p));
         actions.push(Action::OpenEntry(vi));
@@ -2449,7 +3649,11 @@ fn row_interactions(
         actions.push(Action::Click { vi, ctrl, shift });
     } else if resp.secondary_clicked() && !tab.is_selected(vi) {
         actions.push(Action::FocusPane(p));
-        actions.push(Action::Click { vi, ctrl: false, shift: false });
+        actions.push(Action::Click {
+            vi,
+            ctrl: false,
+            shift: false,
+        });
     }
     if resp.middle_clicked() && e.is_dir {
         actions.push(Action::NewTab(e.path.clone()));
@@ -2472,9 +3676,18 @@ fn row_interactions(
         if e.is_dir {
             item(ui, "Open in new tab", "", Action::NewTab(e.path.clone()));
             if bookmarks.iter().any(|(_, b)| *b == e.path) {
-                item(ui, "Remove from bookmarks", "", Action::Unbookmark(e.path.clone()));
+                item(
+                    ui,
+                    "Remove from bookmarks",
+                    "",
+                    Action::Unbookmark(e.path.clone()),
+                );
             } else {
-                let dirs: Vec<PathBuf> = if tab.is_selected(vi) { tab.targets() } else { vec![e.path.clone()] };
+                let dirs: Vec<PathBuf> = if tab.is_selected(vi) {
+                    tab.targets()
+                } else {
+                    vec![e.path.clone()]
+                };
                 let dirs: Vec<PathBuf> = dirs.into_iter().filter(|p| p.is_dir()).collect();
                 item(ui, "Add to bookmarks", "", Action::Bookmark(dirs));
             }
@@ -2491,34 +3704,67 @@ fn row_interactions(
         item(ui, "Duplicate", "Ctrl+D", Action::Cmd(Cmd::Duplicate));
         item(ui, "Rename", "F2", Action::Cmd(Cmd::Rename));
         ui.separator();
-        let targets = if tab.is_selected(vi) { tab.targets() } else { vec![e.path.clone()] };
+        let targets = if tab.is_selected(vi) {
+            tab.targets()
+        } else {
+            vec![e.path.clone()]
+        };
         if targets.iter().any(|t| crate::ops::is_archive(t)) {
             item(ui, "Extract here", "", Action::Cmd(Cmd::Extract));
             item(ui, "Extract to folder", "", Action::Cmd(Cmd::ExtractFolder));
-            if ui.ctx().data(|d| d.get_temp::<bool>(egui::Id::new("is_split"))).unwrap_or(false) {
-                item(ui, "Extract to other pane", "", Action::Cmd(Cmd::ExtractOther));
+            if ui
+                .ctx()
+                .data(|d| d.get_temp::<bool>(egui::Id::new("is_split")))
+                .unwrap_or(false)
+            {
+                item(
+                    ui,
+                    "Extract to other pane",
+                    "",
+                    Action::Cmd(Cmd::ExtractOther),
+                );
             }
         }
         item(ui, "Compress to .zip", "", Action::Cmd(Cmd::Compress));
         item(ui, "Compress…", "", Action::Cmd(Cmd::CompressAs));
         ui.separator();
         item(ui, "Copy path", "Alt+C", Action::CopyPath(e.path.clone()));
-        let term = if e.is_dir { e.path.clone() } else { tab.path.clone() };
+        let term = if e.is_dir {
+            e.path.clone()
+        } else {
+            tab.path.clone()
+        };
         item(ui, "Open terminal here", "", Action::OpenTerminal(term));
         ui.separator();
         item(ui, "Move to trash", "Delete", Action::Cmd(Cmd::Trash));
-        item(ui, "Delete permanently", "Shift+Del", Action::Cmd(Cmd::DeletePermanently));
+        item(
+            ui,
+            "Delete permanently",
+            "Shift+Del",
+            Action::Cmd(Cmd::DeletePermanently),
+        );
         actions.extend(open_with);
     });
 }
 
 /// "Open with" submenu: apps for this file type, default first, and a way to change the default.
-fn open_with_menu(ui: &mut Ui, tab: &Tab, vi: usize, e: &Entry, p: usize, actions: &mut Vec<Action>) {
+fn open_with_menu(
+    ui: &mut Ui,
+    tab: &Tab,
+    vi: usize,
+    e: &Entry,
+    p: usize,
+    actions: &mut Vec<Action>,
+) {
     let choices = crate::apps::choices(&e.path);
     if choices.apps.is_empty() {
         return;
     }
-    let paths: Vec<PathBuf> = if tab.is_selected(vi) { tab.targets().into_iter().filter(|t| !t.is_dir()).collect() } else { vec![e.path.clone()] };
+    let paths: Vec<PathBuf> = if tab.is_selected(vi) {
+        tab.targets().into_iter().filter(|t| !t.is_dir()).collect()
+    } else {
+        vec![e.path.clone()]
+    };
     let what = match e.path.extension() {
         Some(ext) => format!(".{} files", ext.to_string_lossy()),
         None => "files like this".into(),
@@ -2528,7 +3774,14 @@ fn open_with_menu(ui: &mut Ui, tab: &Tab, vi: usize, e: &Entry, p: usize, action
         ui.set_min_width(200.0);
         for app in choices.apps.iter().take(SHOWN) {
             let default = choices.default.as_deref() == Some(app.id.as_str());
-            if ui.add(egui::Button::new(&app.name).shortcut_text(if default { "default" } else { "" })).clicked() {
+            if ui
+                .add(egui::Button::new(&app.name).shortcut_text(if default {
+                    "default"
+                } else {
+                    ""
+                }))
+                .clicked()
+            {
                 actions.push(Action::FocusPane(p));
                 actions.push(Action::OpenWith(app.clone(), paths.clone()));
                 ui.close();
@@ -2539,8 +3792,15 @@ fn open_with_menu(ui: &mut Ui, tab: &Tab, vi: usize, e: &Entry, p: usize, action
             ui.set_min_width(200.0);
             for app in choices.apps.iter().take(SHOWN) {
                 let default = choices.default.as_deref() == Some(app.id.as_str());
-                if ui.add_enabled(!default, egui::Button::new(&app.name)).clicked() {
-                    actions.push(Action::SetDefaultApp(app.clone(), choices.mime.clone(), what.clone()));
+                if ui
+                    .add_enabled(!default, egui::Button::new(&app.name))
+                    .clicked()
+                {
+                    actions.push(Action::SetDefaultApp(
+                        app.clone(),
+                        choices.mime.clone(),
+                        what.clone(),
+                    ));
                     ui.close();
                 }
             }
@@ -2562,13 +3822,34 @@ fn paint_row(
     let cy = rect.center().y;
     let alpha = if faded { 0.45 } else { 1.0 };
     let cat = util::category(&e.ext, e.is_dir);
-    draw_entry_icon(painter, Pos2::new(cols.name.0 - 12.0, cy), 1.0, &e.path, cat);
+    draw_entry_icon(
+        painter,
+        Pos2::new(cols.name.0 - 12.0, cy),
+        1.0,
+        &e.path,
+        cat,
+    );
     let name_color = if e.hidden { pal().dim } else { pal().text };
-    let name_clip = painter.with_clip_rect(Rect::from_x_y_ranges(cols.name.0..=cols.name.1, rect.y_range()));
-    let name_rect = paint_name(&name_clip, Pos2::new(cols.name.0, cy), &e.name, query,
-        FontId::proportional(BODY), name_color.gamma_multiply(alpha));
+    let name_clip = painter.with_clip_rect(Rect::from_x_y_ranges(
+        cols.name.0..=cols.name.1,
+        rect.y_range(),
+    ));
+    let name_rect = paint_name(
+        &name_clip,
+        Pos2::new(cols.name.0, cy),
+        &e.name,
+        query,
+        FontId::proportional(BODY),
+        name_color.gamma_multiply(alpha),
+    );
     if e.is_link {
-        painter.text(Pos2::new(cols.name.0 - 6.0, cy + 6.0), Align2::CENTER_CENTER, "↗", FontId::proportional(9.0), pal().accent);
+        painter.text(
+            Pos2::new(cols.name.0 - 6.0, cy + 6.0),
+            Align2::CENTER_CENTER,
+            "↗",
+            FontId::proportional(9.0),
+            pal().accent,
+        );
     }
     let small = FontId::proportional(12.5);
     let size_text = if e.is_dir {
@@ -2581,10 +3862,22 @@ fn paint_row(
         util::human_size(e.size)
     };
     if let Some(size) = cols.size {
-        painter.text(Pos2::new(size.1, cy), Align2::RIGHT_CENTER, size_text, small.clone(), pal().dim.gamma_multiply(alpha));
+        painter.text(
+            Pos2::new(size.1, cy),
+            Align2::RIGHT_CENTER,
+            size_text,
+            small.clone(),
+            pal().dim.gamma_multiply(alpha),
+        );
     }
     if let (Some(m), Some(date)) = (e.modified, cols.date) {
-        painter.text(Pos2::new(date.0, cy), Align2::LEFT_CENTER, util::fmt_time(m), small.clone(), pal().dim.gamma_multiply(alpha));
+        painter.text(
+            Pos2::new(date.0, cy),
+            Align2::LEFT_CENTER,
+            util::fmt_time(m),
+            small.clone(),
+            pal().dim.gamma_multiply(alpha),
+        );
     }
     if let Some(k) = cols.kind {
         // Search results show where the match lives instead of the type.
@@ -2597,9 +3890,21 @@ fn paint_row(
         };
         painter
             .with_clip_rect(Rect::from_x_y_ranges(k.0..=k.1, rect.y_range()))
-            .text(Pos2::new(k.0, cy), Align2::LEFT_CENTER, text, small, pal().faint);
+            .text(
+                Pos2::new(k.0, cy),
+                Align2::LEFT_CENTER,
+                text,
+                small,
+                pal().faint,
+            );
     } else if let Some(rel) = e.rel.as_ref().filter(|r| !r.is_empty()) {
-        name_clip.text(name_rect.right_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, rel, small, pal().faint);
+        name_clip.text(
+            name_rect.right_center() + vec2(8.0, 0.0),
+            Align2::LEFT_CENTER,
+            rel,
+            small,
+            pal().faint,
+        );
     }
 }
 
@@ -2607,36 +3912,63 @@ fn paint_row(
 fn paint_cell(painter: &Painter, cell: Rect, e: &Entry, faded: bool, query: &crate::search::Query) {
     let alpha = if faded { 0.45 } else { 1.0 };
     let cy = cell.center().y;
-    draw_entry_icon(painter, Pos2::new(cell.left() + 14.0, cy), 1.0, &e.path, util::category(&e.ext, e.is_dir));
+    draw_entry_icon(
+        painter,
+        Pos2::new(cell.left() + 14.0, cy),
+        1.0,
+        &e.path,
+        util::category(&e.ext, e.is_dir),
+    );
     let color = if e.hidden { pal().dim } else { pal().text };
-    paint_name(&painter.with_clip_rect(cell.shrink2(vec2(6.0, 0.0)).intersect(painter.clip_rect())),
+    paint_name(
+        &painter.with_clip_rect(cell.shrink2(vec2(6.0, 0.0)).intersect(painter.clip_rect())),
         Pos2::new(cell.left() + 30.0, cy),
-        &e.name, query,
+        &e.name,
+        query,
         FontId::proportional(BODY),
         color.gamma_multiply(alpha),
     );
 }
 
-fn paint_tile(painter: &Painter, thumbs: &mut Thumbs, tile: Rect, e: &Entry, faded: bool, query: &crate::search::Query) {
+fn paint_tile(
+    painter: &Painter,
+    thumbs: &mut Thumbs,
+    tile: Rect,
+    e: &Entry,
+    faded: bool,
+    query: &crate::search::Query,
+) {
     let alpha = if faded { 0.45 } else { 1.0 };
     let side = tile.width().min(tile.height() - 48.0) - 16.0;
     let thumb_area = Rect::from_center_size(
         Pos2::new(tile.center().x, tile.top() + 8.0 + side / 2.0),
         vec2(tile.width() - 16.0, side),
     );
-    let renderer = if e.is_dir { None } else { thumbs::renderer_for(&e.ext) };
+    let renderer = if e.is_dir {
+        None
+    } else {
+        thumbs::renderer_for(&e.ext)
+    };
     let mut drew = false;
-    if let Some(r) = renderer {
-        if let Some(tex) = thumbs.get(&e.path, r) {
+    if let Some(r) = renderer
+        && let Some(tex) = thumbs.get(&e.path, r) {
             let ts = tex.size_vec2();
-            let scale = (thumb_area.width() / ts.x).min(thumb_area.height() / ts.y).min(1.0);
+            let scale = (thumb_area.width() / ts.x)
+                .min(thumb_area.height() / ts.y)
+                .min(1.0);
             let rect = Rect::from_center_size(thumb_area.center(), ts * scale);
             painter.image(tex.id(), rect, UV, Color32::WHITE.gamma_multiply(alpha));
             drew = true;
         }
-    }
-    if renderer.is_none() && !e.is_dir
-        && !matches!(util::category(&e.ext, false), util::Category::Audio | util::Category::Archive | util::Category::Document | util::Category::Executable)
+    if renderer.is_none()
+        && !e.is_dir
+        && !matches!(
+            util::category(&e.ext, false),
+            util::Category::Audio
+                | util::Category::Archive
+                | util::Category::Document
+                | util::Category::Executable
+        )
         && let Some(job) = thumbs.get_text(&e.path)
     {
         paint_text_thumbnail(painter, thumb_area, job, alpha);
@@ -2653,15 +3985,29 @@ fn paint_tile(painter: &Painter, thumbs: &mut Thumbs, tile: Rect, e: &Entry, fad
     job.wrap.break_anywhere = true;
     job.halign = Align::Center;
     let galley = painter.layout_job(job);
-    painter.galley(Pos2::new(tile.center().x, thumb_area.bottom() + 8.0), galley, color);
+    painter.galley(
+        Pos2::new(tile.center().x, thumb_area.bottom() + 8.0),
+        galley,
+        color,
+    );
 }
 
 /// Decorative document content: tile responses continue to own every interaction.
-pub(super) fn paint_text_thumbnail(painter: &Painter, area: Rect, source: &egui::text::LayoutJob, alpha: f32) {
+pub(super) fn paint_text_thumbnail(
+    painter: &Painter,
+    area: Rect,
+    source: &egui::text::LayoutJob,
+    alpha: f32,
+) {
     let page = Rect::from_center_size(area.center(), vec2(area.height() * 0.78, area.height()));
     let radius = (page.width() * 0.04).clamp(2.0, 6.0) as u8;
     painter.rect_filled(page, radius, pal().panel.gamma_multiply(alpha));
-    painter.rect_stroke(page, radius, Stroke::new(1.0, pal().dim.gamma_multiply(alpha * 0.6)), egui::StrokeKind::Inside);
+    painter.rect_stroke(
+        page,
+        radius,
+        Stroke::new(1.0, pal().dim.gamma_multiply(alpha * 0.6)),
+        egui::StrokeKind::Inside,
+    );
     let padding = (page.width() * 0.08).clamp(3.0, 12.0);
     let body = page.shrink(padding);
     let mut job = source.clone();
@@ -2674,34 +4020,64 @@ pub(super) fn paint_text_thumbnail(painter: &Painter, area: Rect, source: &egui:
     job.wrap.max_rows = 24;
     job.halign = Align::Min;
     let galley = painter.layout_job(job);
-    painter.with_clip_rect(body.intersect(painter.clip_rect())).galley(body.min, galley, pal().text.gamma_multiply(alpha));
+    painter
+        .with_clip_rect(body.intersect(painter.clip_rect()))
+        .galley(body.min, galley, pal().text.gamma_multiply(alpha));
 }
 
 // ---------------------------------------------------------------- dialogs
 
-pub(super) fn name_job(name: &str, query: &crate::search::Query, font: FontId, color: Color32) -> egui::text::LayoutJob {
+pub(super) fn name_job(
+    name: &str,
+    query: &crate::search::Query,
+    font: FontId,
+    color: Color32,
+) -> egui::text::LayoutJob {
     let hits = query.highlights(name);
     let mut job = egui::text::LayoutJob::default();
     job.wrap.max_width = f32::INFINITY;
     for (i, c) in name.chars().enumerate() {
         let hit = hits.binary_search(&i).is_ok();
-        job.append(&c.to_string(), 0.0, egui::TextFormat {
-            font_id: font.clone(), color: if hit { pal().accent } else { color },
-            underline: if hit { Stroke::new(1.0, pal().accent) } else { Stroke::NONE },
-            ..Default::default()
-        });
+        job.append(
+            &c.to_string(),
+            0.0,
+            egui::TextFormat {
+                font_id: font.clone(),
+                color: if hit { pal().accent } else { color },
+                underline: if hit {
+                    Stroke::new(1.0, pal().accent)
+                } else {
+                    Stroke::NONE
+                },
+                ..Default::default()
+            },
+        );
     }
     job
 }
 
-fn paint_name(painter: &Painter, pos: Pos2, name: &str, query: &crate::search::Query, font: FontId, color: Color32) -> Rect {
+fn paint_name(
+    painter: &Painter,
+    pos: Pos2,
+    name: &str,
+    query: &crate::search::Query,
+    font: FontId,
+    color: Color32,
+) -> Rect {
     let galley = painter.layout_job(name_job(name, query, font, color));
     let rect = Align2::LEFT_CENTER.anchor_size(pos, galley.size());
     painter.galley(rect.min, galley, color);
     rect
 }
 
-fn name_field(ui: &mut Ui, title: &str, name: &mut String, focus: &mut bool, select: usize, confirm: &mut bool) {
+fn name_field(
+    ui: &mut Ui,
+    title: &str,
+    name: &mut String,
+    focus: &mut bool,
+    select: usize,
+    confirm: &mut bool,
+) {
     ui.label(RichText::new(title).size(15.0).strong());
     ui.add_space(8.0);
     let id = egui::Id::new("dialog_name");
@@ -2711,7 +4087,10 @@ fn name_field(ui: &mut Ui, title: &str, name: &mut String, focus: &mut bool, sel
     let select_now = std::mem::take(focus);
     if select_now {
         let mut state = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
-        let range = egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(select));
+        let range = egui::text::CCursorRange::two(
+            egui::text::CCursor::new(0),
+            egui::text::CCursor::new(select),
+        );
         state.cursor.set_char_range(Some(range));
         state.store(ui.ctx(), id);
     }
@@ -2736,7 +4115,11 @@ fn dialog_buttons(ui: &mut Ui, ok: &str, danger: bool, confirm: &mut bool, cance
         let hint = |key: &str, color: Color32| RichText::new(key).size(11.0).color(color);
         let ok_button = egui::Button::new(RichText::new(ok).color(Color32::WHITE))
             .shortcut_text(hint("Enter", Color32::from_white_alpha(170)))
-            .fill(if danger { pal().danger } else { pal().accent_strong })
+            .fill(if danger {
+                pal().danger
+            } else {
+                pal().accent_strong
+            })
             .min_size(vec2(84.0, 28.0));
         if ui.add(ok_button).clicked() {
             *confirm = true;
@@ -2760,7 +4143,10 @@ fn stem_chars(name: &str) -> usize {
 
 // ---------------------------------------------------------------- drawing helpers
 
-const UV: Rect = Rect { min: Pos2::new(0.0, 0.0), max: Pos2::new(1.0, 1.0) };
+const UV: Rect = Rect {
+    min: Pos2::new(0.0, 0.0),
+    max: Pos2::new(1.0, 1.0),
+};
 
 fn ops_name(p: &Path) -> String {
     crate::ops::file_name(p)
@@ -2794,7 +4180,12 @@ impl Columns {
             r
         });
         let name = (left + 34.0, x - 8.0);
-        Self { name, size, date, kind }
+        Self {
+            name,
+            size,
+            date,
+            kind,
+        }
     }
 }
 
@@ -2814,7 +4205,12 @@ enum Glyph {
 
 fn glyph_button(ui: &mut Ui, glyph: Glyph, enabled: bool, on: bool, tip: &str) -> bool {
     let resp = ui
-        .add_enabled(enabled, egui::Button::new("").frame_when_inactive(false).min_size(vec2(28.0, 26.0)))
+        .add_enabled(
+            enabled,
+            egui::Button::new("")
+                .frame_when_inactive(false)
+                .min_size(vec2(28.0, 26.0)),
+        )
         .on_hover_text(tip);
     let color = if !enabled {
         pal().faint
@@ -2856,7 +4252,10 @@ fn paint_glyph(p: &Painter, c: Pos2, glyph: Glyph, color: Color32) {
                 .collect();
             let tip = arc[0];
             p.line(arc, stroke);
-            p.line(vec![tip + vec2(-3.5, -0.5), tip, tip + vec2(0.5, -3.5)], stroke);
+            p.line(
+                vec![tip + vec2(-3.5, -0.5), tip, tip + vec2(0.5, -3.5)],
+                stroke,
+            );
         }
         Glyph::Eye => {
             let top: Vec<Pos2> = (0..=16)
@@ -2865,7 +4264,10 @@ fn paint_glyph(p: &Painter, c: Pos2, glyph: Glyph, color: Color32) {
                     pt(-7.0 * t.cos(), -4.5 * t.sin())
                 })
                 .collect();
-            let bottom: Vec<Pos2> = top.iter().map(|q| Pos2::new(q.x, 2.0 * c.y - q.y)).collect();
+            let bottom: Vec<Pos2> = top
+                .iter()
+                .map(|q| Pos2::new(q.x, 2.0 * c.y - q.y))
+                .collect();
             p.line(top, stroke);
             p.line(bottom, stroke);
             p.circle_filled(c, 2.0, color);
@@ -2874,18 +4276,39 @@ fn paint_glyph(p: &Painter, c: Pos2, glyph: Glyph, color: Color32) {
             let r = Rect::from_center_size(c, vec2(15.0, 12.0));
             p.rect_stroke(r, CornerRadius::same(2), stroke, egui::StrokeKind::Middle);
             let side = Rect::from_min_max(Pos2::new(r.right() - 5.5, r.top()), r.max);
-            p.rect_filled(side, CornerRadius { nw: 0, sw: 0, ne: 2, se: 2 }, color);
+            p.rect_filled(
+                side,
+                CornerRadius {
+                    nw: 0,
+                    sw: 0,
+                    ne: 2,
+                    se: 2,
+                },
+                color,
+            );
         }
         Glyph::Sidebar => {
             let r = Rect::from_center_size(c, vec2(15.0, 12.0));
             p.rect_stroke(r, CornerRadius::same(2), stroke, egui::StrokeKind::Middle);
             let side = Rect::from_min_max(r.min, Pos2::new(r.left() + 5.5, r.bottom()));
-            p.rect_filled(side, CornerRadius { nw: 2, sw: 2, ne: 0, se: 0 }, color);
+            p.rect_filled(
+                side,
+                CornerRadius {
+                    nw: 2,
+                    sw: 2,
+                    ne: 0,
+                    se: 0,
+                },
+                color,
+            );
         }
         Glyph::Split => {
             let r = Rect::from_center_size(c, vec2(15.0, 12.0));
             p.rect_stroke(r, CornerRadius::same(2), stroke, egui::StrokeKind::Middle);
-            p.line_segment([Pos2::new(c.x, r.top()), Pos2::new(c.x, r.bottom())], stroke);
+            p.line_segment(
+                [Pos2::new(c.x, r.top()), Pos2::new(c.x, r.bottom())],
+                stroke,
+            );
         }
 
         Glyph::Search => {
@@ -2897,13 +4320,19 @@ fn paint_glyph(p: &Painter, c: Pos2, glyph: Glyph, color: Color32) {
 
 fn sort_arrow(p: &Painter, c: Pos2, ascending: bool) {
     let (a, b) = if ascending { (-2.0, 2.0) } else { (2.0, -2.0) };
-    p.line(vec![c + vec2(-3.5, -a), c + vec2(0.0, -b), c + vec2(3.5, -a)], Stroke::new(1.4, pal().accent));
+    p.line(
+        vec![c + vec2(-3.5, -a), c + vec2(0.0, -b), c + vec2(3.5, -a)],
+        Stroke::new(1.4, pal().accent),
+    );
 }
 
 fn draw_checker(p: &Painter, r: Rect) {
     let cell = 8.0;
     p.rect_filled(r, CornerRadius::ZERO, pal().checker.0);
-    let (nx, ny) = ((r.width() / cell).ceil() as usize, (r.height() / cell).ceil() as usize);
+    let (nx, ny) = (
+        (r.width() / cell).ceil() as usize,
+        (r.height() / cell).ceil() as usize,
+    );
     if nx * ny > 40_000 {
         return;
     }
@@ -2911,9 +4340,11 @@ fn draw_checker(p: &Painter, r: Rect) {
     for y in 0..ny {
         for x in (y % 2..nx).step_by(2) {
             let min = r.min + vec2(x as f32, y as f32) * cell;
-            painter.rect_filled(Rect::from_min_size(min, vec2(cell, cell)), CornerRadius::ZERO, pal().checker.1);
+            painter.rect_filled(
+                Rect::from_min_size(min, vec2(cell, cell)),
+                CornerRadius::ZERO,
+                pal().checker.1,
+            );
         }
     }
 }
-
-

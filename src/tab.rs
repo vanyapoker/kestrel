@@ -41,7 +41,9 @@ impl ViewMode {
 
     /// Steps through Details → List → icons, smallest to largest.
     pub fn zoom(self, steps: i32) -> Self {
-        if self == Self::Columns { return self; }
+        if self == Self::Columns {
+            return self;
+        }
         let max = ICON_SIZES.len() as i32 + 1;
         match (self.level() as i32 + steps).clamp(0, max) {
             0 => ViewMode::Details,
@@ -184,7 +186,10 @@ impl Tab {
     /// Paths an operation should act on, in view order.
     pub fn targets(&self) -> Vec<PathBuf> {
         if self.marked.is_empty() {
-            return self.cursor_entry().map(|e| vec![e.path.clone()]).unwrap_or_default();
+            return self
+                .cursor_entry()
+                .map(|e| vec![e.path.clone()])
+                .unwrap_or_default();
         }
         self.view
             .iter()
@@ -195,7 +200,11 @@ impl Tab {
     }
 
     pub fn selection_count(&self) -> usize {
-        if self.marked.is_empty() { self.cursor.is_some() as usize } else { self.marked.len() }
+        if self.marked.is_empty() {
+            self.cursor.is_some() as usize
+        } else {
+            self.marked.len()
+        }
     }
 
     /// Plain click / plain cursor move: single selection.
@@ -227,13 +236,14 @@ impl Tab {
         if let Some(s) = &mut self.search {
             s.follow_best = false;
         }
-        let Some(path) = self.entry(vi).map(|e| e.path.clone()) else { return };
+        let Some(path) = self.entry(vi).map(|e| e.path.clone()) else {
+            return;
+        };
         if self.marked.is_empty() {
-            if let Some(cur) = self.cursor_entry().map(|e| e.path.clone()) {
-                if cur != path {
+            if let Some(cur) = self.cursor_entry().map(|e| e.path.clone())
+                && cur != path {
                     self.marked.insert(cur);
                 }
-            }
             self.marked.insert(path);
         } else if !self.marked.remove(&path) {
             self.marked.insert(path);
@@ -251,9 +261,18 @@ impl Tab {
             return;
         }
         let vi = vi.min(self.view.len() - 1);
-        let anchor = self.anchor.unwrap_or(self.cursor.unwrap_or(0)).min(self.view.len() - 1);
-        let (a, b) = if anchor <= vi { (anchor, vi) } else { (vi, anchor) };
-        self.marked = (a..=b).map(|i| self.entries[self.view[i]].path.clone()).collect();
+        let anchor = self
+            .anchor
+            .unwrap_or(self.cursor.unwrap_or(0))
+            .min(self.view.len() - 1);
+        let (a, b) = if anchor <= vi {
+            (anchor, vi)
+        } else {
+            (vi, anchor)
+        };
+        self.marked = (a..=b)
+            .map(|i| self.entries[self.view[i]].path.clone())
+            .collect();
         self.cursor = Some(vi);
         self.anchor = Some(anchor);
         self.scroll_to_cursor = true;
@@ -263,7 +282,11 @@ impl Tab {
         if let Some(s) = &mut self.search {
             s.follow_best = false;
         }
-        self.marked = self.view.iter().map(|&i| self.entries[i].path.clone()).collect();
+        self.marked = self
+            .view
+            .iter()
+            .map(|&i| self.entries[i].path.clone())
+            .collect();
     }
 
     pub fn move_cursor(&mut self, delta: isize, extend: bool) {
@@ -272,7 +295,11 @@ impl Tab {
         }
         let cur = self.cursor.map(|s| s as isize).unwrap_or(-1);
         let next = (cur + delta).clamp(0, self.view.len() as isize - 1) as usize;
-        if extend { self.select_range(next) } else { self.select_only(next) }
+        if extend {
+            self.select_range(next)
+        } else {
+            self.select_only(next)
+        }
     }
 
     pub fn select_path(&mut self, path: &std::path::Path) -> bool {
@@ -291,7 +318,8 @@ impl Tab {
     pub fn restore_selection(&mut self, cursor: Option<(usize, PathBuf)>, anchor: Option<PathBuf>) {
         let find = |p: &PathBuf| self.view.iter().position(|&i| &self.entries[i].path == p);
         if let Some((vi, path)) = cursor {
-            self.cursor = find(&path).or_else(|| self.view.len().checked_sub(1).map(|last| vi.min(last)));
+            self.cursor =
+                find(&path).or_else(|| self.view.len().checked_sub(1).map(|last| vi.min(last)));
         }
         self.anchor = anchor.and_then(|p| find(&p)).or(self.cursor);
     }
@@ -305,7 +333,10 @@ impl Tab {
 
     pub fn apply_view(&mut self, sizes: &HashMap<PathBuf, u64>, show_hidden: bool) {
         let keep = self.cursor_entry().map(|e| e.path.clone());
-        let anchor = self.anchor.and_then(|vi| self.entry(vi)).map(|e| e.path.clone());
+        let anchor = self
+            .anchor
+            .and_then(|vi| self.entry(vi))
+            .map(|e| e.path.clone());
         let query = self.query();
         let entries = &self.entries;
         let in_search = self.search.is_some();
@@ -318,22 +349,36 @@ impl Tab {
                 query.score_name(&e.name, e.is_dir).map(|score| (i, score))
             })
             .collect();
-        let size_of = |e: &Entry| if e.is_dir { sizes.get(&e.path).copied().unwrap_or(0) } else { e.size };
+        let size_of = |e: &Entry| {
+            if e.is_dir {
+                sizes.get(&e.path).copied().unwrap_or(0)
+            } else {
+                e.size
+            }
+        };
         let (sort, asc) = (self.sort, self.ascending);
         ranked.sort_by(|&(a, a_score), &(b, b_score)| {
             let (x, y) = (&entries[a], &entries[b]);
-            b_score.cmp(&a_score).then_with(|| y.is_dir.cmp(&x.is_dir)).then_with(|| {
-                let ord = match sort {
-                    SortKey::Name => util::natural_cmp(&x.name, &y.name),
-                    SortKey::Size => size_of(x).cmp(&size_of(y)),
-                    SortKey::Modified => x.modified.cmp(&y.modified),
-                    SortKey::Kind => x.ext.cmp(&y.ext),
-                };
-                let ord = if asc { ord } else { ord.reverse() };
-                ord.then_with(|| util::natural_cmp(&x.name, &y.name))
-                    .then_with(|| x.path.components().count().cmp(&y.path.components().count()))
-                    .then_with(|| x.path.cmp(&y.path))
-            })
+            b_score
+                .cmp(&a_score)
+                .then_with(|| y.is_dir.cmp(&x.is_dir))
+                .then_with(|| {
+                    let ord = match sort {
+                        SortKey::Name => util::natural_cmp(&x.name, &y.name),
+                        SortKey::Size => size_of(x).cmp(&size_of(y)),
+                        SortKey::Modified => x.modified.cmp(&y.modified),
+                        SortKey::Kind => x.ext.cmp(&y.ext),
+                    };
+                    let ord = if asc { ord } else { ord.reverse() };
+                    ord.then_with(|| util::natural_cmp(&x.name, &y.name))
+                        .then_with(|| {
+                            x.path
+                                .components()
+                                .count()
+                                .cmp(&y.path.components().count())
+                        })
+                        .then_with(|| x.path.cmp(&y.path))
+                })
         });
         self.view = ranked.into_iter().map(|(i, _)| i).collect();
         let visible: HashSet<&PathBuf> = self.view.iter().map(|&i| &entries[i].path).collect();
@@ -341,7 +386,9 @@ impl Tab {
         self.cursor = keep
             .and_then(|p| self.view.iter().position(|&i| entries[i].path == p))
             .or(if self.view.is_empty() { None } else { Some(0) });
-        self.anchor = anchor.and_then(|p| self.view.iter().position(|&i| entries[i].path == p)).or(self.cursor);
+        self.anchor = anchor
+            .and_then(|p| self.view.iter().position(|&i| entries[i].path == p))
+            .or(self.cursor);
     }
 }
 

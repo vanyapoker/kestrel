@@ -88,7 +88,9 @@ pub fn dir_size(
         return Some(size);
     }
     let Ok(rd) = fs::read_dir(path) else {
-        if cancel.load(Ordering::Relaxed) { return None; }
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
         completed(path, 0);
         return Some(0);
     };
@@ -101,11 +103,10 @@ pub fn dir_size(
         let Ok(ft) = de.file_type() else { continue };
         if ft.is_dir() {
             subdirs.push(de.path());
-        } else if ft.is_file() {
-            if let Ok(m) = de.metadata() {
+        } else if ft.is_file()
+            && let Ok(m) = de.metadata() {
                 total += m.len();
             }
-        }
     }
     let sub: Option<u64> = subdirs
         .par_iter()
@@ -181,7 +182,10 @@ pub fn special(path: &Path) -> Option<Special> {
         let home = home_dir();
         let mut m = HashMap::new();
         for (name, key, kind) in XDG_DIRS {
-            m.insert(xdg_user_dir(&home, key).unwrap_or_else(|| home.join(name)), kind);
+            m.insert(
+                xdg_user_dir(&home, key).unwrap_or_else(|| home.join(name)),
+                kind,
+            );
         }
         for (name, kind) in [
             ("Work", Special::Work),
@@ -217,9 +221,13 @@ pub fn places() -> Places {
     let mut bookmarks = Vec::new();
     if let Ok(s) = fs::read_to_string(bookmarks_file()) {
         for line in s.lines() {
-            let Some((p, label)) = parse_bookmark(line) else { continue };
+            let Some((p, label)) = parse_bookmark(line) else {
+                continue;
+            };
             let label = if label.is_empty() {
-                p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.display().to_string())
+                p.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| p.display().to_string())
             } else {
                 label.to_string()
             };
@@ -252,7 +260,11 @@ pub fn remove_bookmark(path: &Path) -> std::io::Result<bool> {
 /// Appends `path` unless it is already bookmarked. Returns whether it was added.
 fn add_bookmark_in(file: &Path, path: &Path) -> std::io::Result<bool> {
     let text = fs::read_to_string(file).unwrap_or_default();
-    if text.lines().filter_map(parse_bookmark).any(|(p, _)| p == path) {
+    if text
+        .lines()
+        .filter_map(parse_bookmark)
+        .any(|(p, _)| p == path)
+    {
         return Ok(false);
     }
     if let Some(dir) = file.parent() {
@@ -271,7 +283,10 @@ fn add_bookmark_in(file: &Path, path: &Path) -> std::io::Result<bool> {
 /// Drops every line pointing at `path`, keeping other lines as they were.
 fn remove_bookmark_in(file: &Path, path: &Path) -> std::io::Result<bool> {
     let text = fs::read_to_string(file)?;
-    let kept: Vec<&str> = text.lines().filter(|l| parse_bookmark(l).is_none_or(|(p, _)| p != path)).collect();
+    let kept: Vec<&str> = text
+        .lines()
+        .filter(|l| parse_bookmark(l).is_none_or(|(p, _)| p != path))
+        .collect();
     if kept.len() == text.lines().count() {
         return Ok(false);
     }
@@ -355,12 +370,25 @@ mod tests {
         let a = Path::new("/home/x/My Stuff");
         assert!(add_bookmark_in(&file, a).unwrap());
         assert!(!add_bookmark_in(&file, a).unwrap()); // no duplicates
-        fs::write(&file, format!("file:///keep Kept label\n{}", fs::read_to_string(&file).unwrap())).unwrap();
+        fs::write(
+            &file,
+            format!(
+                "file:///keep Kept label\n{}",
+                fs::read_to_string(&file).unwrap()
+            ),
+        )
+        .unwrap();
         assert!(add_bookmark_in(&file, Path::new("/b")).unwrap());
-        assert_eq!(fs::read_to_string(&file).unwrap(), "file:///keep Kept label\nfile:///home/x/My%20Stuff\nfile:///b\n");
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            "file:///keep Kept label\nfile:///home/x/My%20Stuff\nfile:///b\n"
+        );
         assert!(remove_bookmark_in(&file, a).unwrap());
         assert!(!remove_bookmark_in(&file, a).unwrap());
-        assert_eq!(fs::read_to_string(&file).unwrap(), "file:///keep Kept label\nfile:///b\n");
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            "file:///keep Kept label\nfile:///b\n"
+        );
         fs::remove_dir_all(d).unwrap();
     }
 
@@ -378,10 +406,22 @@ mod tests {
         let mut size = 0;
         for _ in 0..15 {
             let t = Instant::now();
-            size = dir_size(dir, device_of(dir).unwrap(), &AtomicBool::new(false), &|_| None, &|_, _| {}).unwrap();
+            size = dir_size(
+                dir,
+                device_of(dir).unwrap(),
+                &AtomicBool::new(false),
+                &|_| None,
+                &|_, _| {},
+            )
+            .unwrap();
             times.push(t.elapsed());
         }
         times.sort();
-        println!("dir_size /usr: {} median {:?} min {:?}", crate::util::human_size(size), times[times.len() / 2], times[0]);
+        println!(
+            "dir_size /usr: {} median {:?} min {:?}",
+            crate::util::human_size(size),
+            times[times.len() / 2],
+            times[0]
+        );
     }
 }

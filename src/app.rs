@@ -1,9 +1,9 @@
-mod icons;
-mod ui;
-mod goto;
-mod tabs;
 mod columns;
+mod goto;
+mod icons;
 mod preview_text;
+mod tabs;
+mod ui;
 #[cfg(test)]
 mod ui_tests;
 
@@ -49,13 +49,34 @@ struct Clip {
 }
 
 enum Dialog {
-    SaveWorkspace { name: String, focus: bool },
+    SaveWorkspace {
+        name: String,
+        focus: bool,
+    },
     Workspaces,
     BatchRename(Box<crate::rename::Editor>),
-    Rename { path: PathBuf, name: String, focus: bool },
-    Create { dir: PathBuf, name: String, folder: bool, focus: bool },
-    ConfirmDelete { paths: Vec<PathBuf> },
-    Compress { srcs: Vec<PathBuf>, dest: PathBuf, name: String, format: ops::Format, level: ops::Level, focus: bool },
+    Rename {
+        path: PathBuf,
+        name: String,
+        focus: bool,
+    },
+    Create {
+        dir: PathBuf,
+        name: String,
+        folder: bool,
+        focus: bool,
+    },
+    ConfirmDelete {
+        paths: Vec<PathBuf>,
+    },
+    Compress {
+        srcs: Vec<PathBuf>,
+        dest: PathBuf,
+        name: String,
+        format: ops::Format,
+        level: ops::Level,
+        focus: bool,
+    },
 }
 
 struct Toast {
@@ -67,19 +88,33 @@ struct Toast {
 /// Drag-and-drop payload.
 struct DragPaths(Vec<PathBuf>);
 
-struct TabDrag { id: u64 }
+struct TabDrag {
+    id: u64,
+}
 
 enum Action {
-    ColumnAction { tab_id: u64, directory: PathBuf, action: Box<Action> },
+    InColumn {
+        tab_id: u64,
+        directory: PathBuf,
+        action: Box<Action>,
+    },
     ColumnStep(i32),
     SetView(ViewMode),
     Navigate(PathBuf),
     OpenEntry(usize),
-    Click { vi: usize, ctrl: bool, shift: bool },
+    Click {
+        vi: usize,
+        ctrl: bool,
+        shift: bool,
+    },
     NewTab(PathBuf),
     CloseTab(usize, usize),
     SwitchTab(usize, usize),
-    MoveTab { id: u64, pane: usize, before: Option<u64> },
+    MoveTab {
+        id: u64,
+        pane: usize,
+        before: Option<u64>,
+    },
     ReopenClosed(usize),
     FocusPane(usize),
     Sort(SortKey),
@@ -87,7 +122,11 @@ enum Action {
     OpenTerminal(PathBuf),
     ClearFilter,
     Cmd(Cmd),
-    Drop { paths: Vec<PathBuf>, dest: PathBuf, copy: bool },
+    Drop {
+        paths: Vec<PathBuf>,
+        dest: PathBuf,
+        copy: bool,
+    },
     Reveal(PathBuf),
     StopSearch,
     /// Step the active tab's view mode (Ctrl+wheel).
@@ -207,10 +246,18 @@ impl App {
         picker: Option<crate::picker::Request>,
     ) -> Self {
         let start = start.or_else(|| picker.as_ref().and_then(|p| p.dir.clone()));
-        let mut app = Self::with_ctx(cc.egui_ctx.clone(), start.clone().unwrap_or_else(fsops::home_dir));
+        let mut app = Self::with_ctx(
+            cc.egui_ctx.clone(),
+            start.clone().unwrap_or_else(fsops::home_dir),
+        );
         if let Some(req) = picker {
             app.show_preview = false;
-            app.picker = Some(Picker { name: req.name.clone(), focus: true, chosen: Vec::new(), req });
+            app.picker = Some(Picker {
+                name: req.name.clone(),
+                focus: true,
+                chosen: Vec::new(),
+                req,
+            });
             app.devices = crate::devices::scan();
             app.devices_rx = Some(crate::devices::watch(app.ctx.clone()));
             return app;
@@ -246,7 +293,10 @@ impl App {
             theme_reload_at: None,
             ops: Ops::new(ctx.clone()),
             ctx: ctx.clone(),
-            panes: vec![Pane { tabs: Vec::new(), active: 0 }],
+            panes: vec![Pane {
+                tabs: Vec::new(),
+                active: 0,
+            }],
             active_pane: 0,
             split_ratio: 0.5,
             closed_tabs: Vec::new(),
@@ -333,7 +383,9 @@ impl App {
             tab.apply_view(sizes, hidden);
             if let Some(c) = &mut tab.columns {
                 for (i, item) in c.items.iter_mut().enumerate() {
-                    if i != c.active { item.apply_view(sizes, hidden); }
+                    if i != c.active {
+                        item.apply_view(sizes, hidden);
+                    }
                 }
             }
         }
@@ -341,7 +393,11 @@ impl App {
 
     fn toast(&mut self, text: impl Into<String>, error: bool) {
         let secs = if error { 6 } else { 3 };
-        self.toasts.push(Toast { text: text.into(), error, until: Instant::now() + Duration::from_secs(secs) });
+        self.toasts.push(Toast {
+            text: text.into(),
+            error,
+            until: Instant::now() + Duration::from_secs(secs),
+        });
         self.ctx.request_repaint_after(Duration::from_secs(secs));
     }
 
@@ -355,7 +411,10 @@ impl App {
         self.show_preview = s.show_preview;
         self.show_sidebar = s.show_sidebar;
         // Sections are keyed by their static titles; ignore names we no longer have.
-        self.collapsed = ["PLACES", "BOOKMARKS", "DEVICES"].into_iter().filter(|t| s.collapsed.iter().any(|c| c == t)).collect();
+        self.collapsed = ["PLACES", "BOOKMARKS", "DEVICES"]
+            .into_iter()
+            .filter(|t| s.collapsed.iter().any(|c| c == t))
+            .collect();
         if let Some(w) = s.sidebar_width {
             self.sidebar_width = w;
         }
@@ -369,7 +428,11 @@ impl App {
         });
         if !tabs || s.panes.is_empty() {
             // Opened on a specific folder: keep it, but in the view it was last seen in.
-            if let Some(t) = s.panes.get(s.active_pane).and_then(|p| p.tabs.get(p.active)) {
+            if let Some(t) = s
+                .panes
+                .get(s.active_pane)
+                .and_then(|p| p.tabs.get(p.active))
+            {
                 let tab = self.tab_mut();
                 (tab.sort, tab.ascending, tab.mode) = (t.sort, t.ascending, t.mode);
             }
@@ -379,14 +442,18 @@ impl App {
         for pane in std::mem::take(&mut self.panes) {
             for tab in pane.tabs {
                 tab.cancel.store(true, Ordering::Relaxed);
-                if let Some(s) = tab.search { s.cancel.store(true, Ordering::Relaxed); }
+                if let Some(s) = tab.search {
+                    s.cancel.store(true, Ordering::Relaxed);
+                }
             }
         }
         for ps in &s.panes {
             let mut tabs = Vec::new();
             for t in &ps.tabs {
                 // A folder may have been removed since; open its nearest surviving parent.
-                let Some(dir) = t.path.ancestors().find(|a| a.is_dir()) else { continue };
+                let Some(dir) = t.path.ancestors().find(|a| a.is_dir()) else {
+                    continue;
+                };
                 let mut tab = self.new_tab(dir.to_path_buf());
                 (tab.sort, tab.ascending, tab.mode) = (t.sort, t.ascending, t.mode);
                 tabs.push(tab);
@@ -398,7 +465,10 @@ impl App {
         }
         if self.panes.is_empty() {
             let tab = self.new_tab(fsops::home_dir());
-            self.panes.push(Pane { tabs: vec![tab], active: 0 });
+            self.panes.push(Pane {
+                tabs: vec![tab],
+                active: 0,
+            });
         }
         self.active_pane = s.active_pane.min(self.panes.len() - 1);
         self.remember_dir(self.tab().path.clone());
@@ -413,7 +483,12 @@ impl App {
                 tabs: p
                     .tabs
                     .iter()
-                    .map(|t| TabState { path: t.path.clone(), sort: t.sort, ascending: t.ascending, mode: t.mode })
+                    .map(|t| TabState {
+                        path: t.path.clone(),
+                        sort: t.sort,
+                        ascending: t.ascending,
+                        mode: t.mode,
+                    })
                     .collect(),
                 active: p.active,
             })
@@ -437,7 +512,9 @@ impl App {
     /// Writes the session if it changed. Checked every couple of seconds, so a
     /// crash loses little, and once more on exit.
     fn save_session(&mut self, force: bool) {
-        let Some(file) = self.session_file.clone() else { return };
+        let Some(file) = self.session_file.clone() else {
+            return;
+        };
         let now = Instant::now();
         if !force && now < self.next_session_check {
             return;
@@ -480,10 +557,18 @@ impl App {
             return;
         }
         let tab = pane.tabs.remove(i);
-        self.closed_tabs.push(tabs::Closed::Tab { pane: p, position: i, state: tabs::state(&tab) });
-        if self.closed_tabs.len() > 32 { self.closed_tabs.remove(0); }
+        self.closed_tabs.push(tabs::Closed::Tab {
+            pane: p,
+            position: i,
+            state: tabs::state(&tab),
+        });
+        if self.closed_tabs.len() > 32 {
+            self.closed_tabs.remove(0);
+        }
         tab.cancel.store(true, Ordering::Relaxed);
-        if let Some(s) = tab.search { s.cancel.store(true, Ordering::Relaxed); }
+        if let Some(s) = tab.search {
+            s.cancel.store(true, Ordering::Relaxed);
+        }
         if pane.active >= pane.tabs.len() || pane.active > i {
             pane.active = pane.active.saturating_sub(1);
         }
@@ -494,20 +579,31 @@ impl App {
             self.close_split(1 - self.active_pane);
         } else {
             let tab = self.new_tab(self.tab().path.clone());
-            self.panes.push(Pane { tabs: vec![tab], active: 0 });
+            self.panes.push(Pane {
+                tabs: vec![tab],
+                active: 0,
+            });
             self.active_pane = 1;
         }
     }
 
     fn close_split(&mut self, p: usize) {
         let pane = self.panes.remove(p);
-        self.closed_tabs.push(tabs::Closed::Pane { position: p, state: crate::session::PaneState {
-            tabs: pane.tabs.iter().map(tabs::state).collect(), active: pane.active,
-        } });
-        if self.closed_tabs.len() > 32 { self.closed_tabs.remove(0); }
+        self.closed_tabs.push(tabs::Closed::Pane {
+            position: p,
+            state: crate::session::PaneState {
+                tabs: pane.tabs.iter().map(tabs::state).collect(),
+                active: pane.active,
+            },
+        });
+        if self.closed_tabs.len() > 32 {
+            self.closed_tabs.remove(0);
+        }
         for tab in pane.tabs {
             tab.cancel.store(true, Ordering::Relaxed);
-            if let Some(s) = tab.search { s.cancel.store(true, Ordering::Relaxed); }
+            if let Some(s) = tab.search {
+                s.cancel.store(true, Ordering::Relaxed);
+            }
         }
         self.active_pane = 0;
     }
@@ -574,8 +670,7 @@ impl App {
         self.size_service.invalidate(&path, &mut self.sizes);
         self.preview.invalidate();
         let tab = self.tab_mut();
-        if tab.search.is_some() {
-            let s = tab.search.as_mut().unwrap();
+        if let Some(s) = &mut tab.search {
             s.index = None;
             s.running = false;
             self.restart_search();
@@ -585,7 +680,9 @@ impl App {
         let pane = &mut self.panes[self.active_pane];
         if let Some(c) = &mut pane.tabs[pane.active].columns {
             for (i, item) in c.items.iter_mut().enumerate() {
-                if i != c.active { start_listing(item, tx, ctx, true); }
+                if i != c.active {
+                    start_listing(item, tx, ctx, true);
+                }
             }
         }
         self.reload_active(true);
@@ -661,7 +758,10 @@ impl App {
         let tab = self.tab_mut();
         if let Some(s) = tab.search.take() {
             s.cancel.store(true, Ordering::Relaxed);
-            tab.select_after_load = tab.cursor_entry().filter(|e| e.path.parent() == Some(&tab.path)).map(|e| e.path.clone());
+            tab.select_after_load = tab
+                .cursor_entry()
+                .filter(|e| e.path.parent() == Some(&tab.path))
+                .map(|e| e.path.clone());
             self.reload_active(false);
         }
     }
@@ -681,7 +781,9 @@ impl App {
         }
 
         while let Ok(l) = self.list_rx.try_recv() {
-            if l.result.is_err() && self.repair_missing_column(l.listing_id, l.generation) { continue; }
+            if l.result.is_err() && self.repair_missing_column(l.listing_id, l.generation) {
+                continue;
+            }
             let (sizes, hidden) = (&self.sizes, self.show_hidden);
             let Some(tab) = columns::find_listing(&mut self.panes, l.listing_id) else {
                 continue;
@@ -692,7 +794,8 @@ impl App {
             tab.loading = false;
             tab.disk = fsops::disk_space(&tab.path);
             // `view` indexes the old entries; selection is restored by path below.
-            let path_at = |vi: Option<usize>| vi.and_then(|vi| tab.entry(vi)).map(|e| e.path.clone());
+            let path_at =
+                |vi: Option<usize>| vi.and_then(|vi| tab.entry(vi)).map(|e| e.path.clone());
             let kept = (tab.cursor.zip(path_at(tab.cursor)), path_at(tab.anchor));
             if !l.soft {
                 tab.cursor = None;
@@ -707,7 +810,12 @@ impl App {
                 }
                 Err(_) if (l.soft || tab.mode == ViewMode::Columns) && !tab.path.exists() => {
                     // The folder was deleted or renamed under us: fall back to the nearest parent.
-                    if let Some(up) = tab.path.ancestors().find(|a| a.is_dir()).map(Path::to_path_buf) {
+                    if let Some(up) = tab
+                        .path
+                        .ancestors()
+                        .find(|a| a.is_dir())
+                        .map(Path::to_path_buf)
+                    {
                         tab.select_after_load = None;
                         tab.path = up;
                         start_listing(tab, &self.list_tx, &self.ctx, false);
@@ -730,24 +838,43 @@ impl App {
         let mut searched = HashSet::new();
         while let Ok(msg) = self.search_rx.try_recv() {
             let (sizes, hidden) = (&self.sizes, self.show_hidden);
-            let Some(tab) = self.panes.iter_mut().flat_map(|p| &mut p.tabs).find(|t| t.id == msg.tab_id) else { continue };
-            let kept = (tab.cursor.zip(tab.cursor_entry().map(|e| e.path.clone())),
-                tab.anchor.and_then(|vi| tab.entry(vi)).map(|e| e.path.clone()));
-            let Some(s) = tab.search.as_mut() else { continue };
+            let Some(tab) = self
+                .panes
+                .iter_mut()
+                .flat_map(|p| &mut p.tabs)
+                .find(|t| t.id == msg.tab_id)
+            else {
+                continue;
+            };
+            let kept = (
+                tab.cursor.zip(tab.cursor_entry().map(|e| e.path.clone())),
+                tab.anchor
+                    .and_then(|vi| tab.entry(vi))
+                    .map(|e| e.path.clone()),
+            );
+            let Some(s) = tab.search.as_mut() else {
+                continue;
+            };
             if s.generation != msg.generation {
                 continue;
             }
             if msg.done {
                 s.running = false;
                 s.truncated = msg.truncated;
-                if let Some(index) = msg.index { s.index = Some(index); }
-                if s.active_query != s.query { s.restart_at = Some(now); }
+                if let Some(index) = msg.index {
+                    s.index = Some(index);
+                }
+                if s.active_query != s.query {
+                    s.restart_at = Some(now);
+                }
             }
             if msg.replace {
                 tab.entries = msg.batch;
                 tab.view.clear();
                 tab.apply_view(sizes, hidden);
-                if !tab.search.as_ref().unwrap().follow_best { tab.restore_selection(kept.0, kept.1); }
+                if !tab.search.as_ref().unwrap().follow_best {
+                    tab.restore_selection(kept.0, kept.1);
+                }
             } else {
                 tab.entries.extend(msg.batch);
             }
@@ -755,8 +882,14 @@ impl App {
         }
         if !searched.is_empty() {
             let (sizes, hidden) = (&self.sizes, self.show_hidden);
-            for tab in self.panes.iter_mut().flat_map(|p| p.tabs.iter_mut()).filter(|t| searched.contains(&t.id)) {
-                let follow_best = tab.search.as_ref().is_some_and(|s| s.follow_best) && tab.marked.is_empty();
+            for tab in self
+                .panes
+                .iter_mut()
+                .flat_map(|p| p.tabs.iter_mut())
+                .filter(|t| searched.contains(&t.id))
+            {
+                let follow_best =
+                    tab.search.as_ref().is_some_and(|s| s.follow_best) && tab.marked.is_empty();
                 tab.apply_view(sizes, hidden);
                 if follow_best {
                     tab.select_best_match();
@@ -769,12 +902,11 @@ impl App {
         }
 
         // Theme switches rewrite several files; wait for them to settle, then restyle.
-        if let Some((_, rx)) = &self.theme_watch {
-            if rx.try_iter().count() > 0 {
+        if let Some((_, rx)) = &self.theme_watch
+            && rx.try_iter().count() > 0 {
                 self.theme_reload_at = Some(now + Duration::from_millis(300));
                 ctx.request_repaint_after(Duration::from_millis(300));
             }
-        }
         match self.theme_reload_at {
             Some(t) if now >= t => {
                 self.theme_reload_at = None;
@@ -791,22 +923,27 @@ impl App {
         for p in self.watcher.drain() {
             self.size_service.invalidate(&p, &mut self.sizes);
             self.thumbs.invalidate(&p);
-            if self.preview.path.as_deref().is_some_and(|path| path == p || p.parent() == Some(path)) {
+            if self
+                .preview
+                .path
+                .as_deref()
+                .is_some_and(|path| path == p || p.parent() == Some(path))
+            {
                 self.preview.invalidate();
             }
             for tab in self.tabs_mut() {
                 columns::changed(tab, &p, now);
-                if tab.search.is_none() && (Some(tab.path.as_path()) == p.parent() || tab.path == p) {
+                if tab.search.is_none() && (Some(tab.path.as_path()) == p.parent() || tab.path == p)
+                {
                     tab.reload_at.get_or_insert(now + WATCH_DEBOUNCE);
                 }
-                if let Some(s) = &mut tab.search {
-                    if p.starts_with(&s.root) {
+                if let Some(s) = &mut tab.search
+                    && p.starts_with(&s.root) {
                         s.cancel.store(true, Ordering::Relaxed);
                         s.index = None;
                         s.running = false;
                         s.restart_at = Some(now + WATCH_DEBOUNCE);
                     }
-                }
             }
         }
         let mut next_wake: Option<Instant> = None;
@@ -844,10 +981,24 @@ impl App {
             .flat_map(|p| p.tabs.iter())
             .filter(|t| t.search.is_none())
             .map(|t| t.path.clone())
-            .chain(self.panes.iter().flat_map(|p| &p.tabs).flat_map(columns::watched_paths))
-            .chain(self.inspector.last().filter(|_| self.show_preview).and_then(|e| {
-                if e.is_dir { Some(e.path.clone()) } else { e.path.parent().map(Path::to_path_buf) }
-            }))
+            .chain(
+                self.panes
+                    .iter()
+                    .flat_map(|p| &p.tabs)
+                    .flat_map(columns::watched_paths),
+            )
+            .chain(
+                self.inspector
+                    .last()
+                    .filter(|_| self.show_preview)
+                    .and_then(|e| {
+                        if e.is_dir {
+                            Some(e.path.clone())
+                        } else {
+                            e.path.parent().map(Path::to_path_buf)
+                        }
+                    }),
+            )
             .collect();
         self.watcher.sync(wanted);
         self.sync_sizes(now);
@@ -863,24 +1014,43 @@ impl App {
     /// Gather interests independently of tab listing cancellation, including passive columns.
     fn sync_sizes(&mut self, now: Instant) {
         let mut wanted = Vec::new();
-        for tab in self.panes.iter().flat_map(|p| &p.tabs).filter(|t| t.search.is_none()) {
+        for tab in self
+            .panes
+            .iter()
+            .flat_map(|p| &p.tabs)
+            .filter(|t| t.search.is_none())
+        {
             let mut add = |tab: &Tab| {
-                wanted.extend(tab.entries.iter().filter(|e| e.is_dir && !e.is_link).map(|e| e.path.clone()));
+                wanted.extend(
+                    tab.entries
+                        .iter()
+                        .filter(|e| e.is_dir && !e.is_link)
+                        .map(|e| e.path.clone()),
+                );
             };
             add(tab);
             if let Some(c) = &tab.columns {
                 for (i, item) in c.items.iter().enumerate() {
-                    if i != c.active { add(item); }
+                    if i != c.active {
+                        add(item);
+                    }
                 }
             }
         }
-        if self.size_service.sync(wanted, &mut self.sizes, &mut self.sizing, now) {
+        if self
+            .size_service
+            .sync(wanted, &mut self.sizes, &mut self.sizing, now)
+        {
             let (sizes, hidden) = (&self.sizes, self.show_hidden);
             for tab in self.panes.iter_mut().flat_map(|p| &mut p.tabs) {
-                if tab.sort == SortKey::Size { tab.apply_view(sizes, hidden); }
+                if tab.sort == SortKey::Size {
+                    tab.apply_view(sizes, hidden);
+                }
                 if let Some(c) = &mut tab.columns {
                     for (i, item) in c.items.iter_mut().enumerate() {
-                        if i != c.active && item.sort == SortKey::Size { item.apply_view(sizes, hidden); }
+                        if i != c.active && item.sort == SortKey::Size {
+                            item.apply_view(sizes, hidden);
+                        }
                     }
                 }
             }
@@ -900,11 +1070,15 @@ impl App {
         for tab in self.panes.iter_mut().flat_map(|p| p.tabs.iter_mut()) {
             if let Some(c) = &mut tab.columns {
                 for (i, item) in c.items.iter_mut().enumerate() {
-                    if i != c.active && done.dirs.contains(&item.path) { start_listing(item, list_tx, ctx, true); }
+                    if i != c.active && done.dirs.contains(&item.path) {
+                        start_listing(item, list_tx, ctx, true);
+                    }
                 }
             }
             if tab.search.is_none() && done.dirs.contains(&tab.path) {
-                if tab.id == active_id && select.as_ref().and_then(|p| p.parent()) == Some(tab.path.as_path()) {
+                if tab.id == active_id
+                    && select.as_ref().and_then(|p| p.parent()) == Some(tab.path.as_path())
+                {
                     tab.select_after_load = select.clone();
                 }
                 tab.reload_at = None;
@@ -920,9 +1094,23 @@ impl App {
         if done.cancelled {
             self.toast("Operation cancelled", false);
         } else if let Some(first) = done.errors.first() {
-            let more = if done.errors.len() > 1 { format!(" (+{} more errors)", done.errors.len() - 1) } else { String::new() };
+            let more = if done.errors.len() > 1 {
+                format!(" (+{} more errors)", done.errors.len() - 1)
+            } else {
+                String::new()
+            };
             self.toast(format!("{first}{more}"), true);
-        } else if matches!(done.kind, JobKind::Copy | JobKind::Move | JobKind::Rename | JobKind::Trash | JobKind::Delete | JobKind::Extract | JobKind::Compress | JobKind::SaveImage) {
+        } else if matches!(
+            done.kind,
+            JobKind::Copy
+                | JobKind::Move
+                | JobKind::Rename
+                | JobKind::Trash
+                | JobKind::Delete
+                | JobKind::Extract
+                | JobKind::Compress
+                | JobKind::SaveImage
+        ) {
             self.toast(done.summary, false);
         }
     }
@@ -950,26 +1138,46 @@ impl App {
         if paths.is_empty() {
             return;
         }
-        let text = paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n");
-        let on_system = self.wl.as_ref().is_some_and(|wl| wl.set_clipboard_files(&paths, cut));
+        let text = paths
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let on_system = self
+            .wl
+            .as_ref()
+            .is_some_and(|wl| wl.set_clipboard_files(&paths, cut));
         if !on_system {
             self.ctx.copy_text(text.clone());
         }
         let n = paths.len();
         self.clip = Some(Clip { paths, cut, text });
-        let what = if n == 1 { "1 item".into() } else { format!("{n} items") };
-        self.toast(format!("{} {what}", if cut { "Cut" } else { "Copied" }), false);
+        let what = if n == 1 {
+            "1 item".into()
+        } else {
+            format!("{n} items")
+        };
+        self.toast(
+            format!("{} {what}", if cut { "Cut" } else { "Copied" }),
+            false,
+        );
     }
 
     fn set_text_clipboard(&mut self, text: String) {
-        if !self.wl.as_ref().is_some_and(|wl| wl.set_clipboard_text(&text)) {
+        if !self
+            .wl
+            .as_ref()
+            .is_some_and(|wl| wl.set_clipboard_text(&text))
+        {
             self.ctx.copy_text(text);
         }
     }
 
     /// `text` is the system clipboard contents, if egui delivered a paste event.
     fn paste(&mut self, text: Option<String>) {
-        let Some(dest) = self.paste_target() else { return };
+        let Some(dest) = self.paste_target() else {
+            return;
+        };
         if let Some(wl) = &self.wl {
             match wl.read_clipboard() {
                 crate::wl_dnd::ClipRead::Ours => {}
@@ -985,9 +1193,17 @@ impl App {
             }
             // Ours: the internal clipboard knows whether it was a cut.
             if let Some(clip) = self.clip.take() {
-                let kind = if clip.cut { JobKind::Move } else { JobKind::Copy };
+                let kind = if clip.cut {
+                    JobKind::Move
+                } else {
+                    JobKind::Copy
+                };
                 if !clip.cut {
-                    self.clip = Some(Clip { paths: clip.paths.clone(), cut: false, text: clip.text });
+                    self.clip = Some(Clip {
+                        paths: clip.paths.clone(),
+                        cut: false,
+                        text: clip.text,
+                    });
                 }
                 self.ops.submit(Job::new(kind, clip.paths, Some(dest)));
             }
@@ -1000,9 +1216,17 @@ impl App {
         };
         if ours {
             let clip = self.clip.take().unwrap();
-            let kind = if clip.cut { JobKind::Move } else { JobKind::Copy };
+            let kind = if clip.cut {
+                JobKind::Move
+            } else {
+                JobKind::Copy
+            };
             if !clip.cut {
-                self.clip = Some(Clip { paths: clip.paths.clone(), cut: false, text: clip.text });
+                self.clip = Some(Clip {
+                    paths: clip.paths.clone(),
+                    cut: false,
+                    text: clip.text,
+                });
             }
             self.ops.submit(Job::new(kind, clip.paths, Some(dest)));
             return;
@@ -1034,8 +1258,16 @@ impl App {
         }
         // Like other file managers: move within a filesystem, copy across.
         let dest_dev = std::fs::metadata(&dest).map(|m| m.dev()).ok();
-        let same_fs = paths.iter().all(|p| std::fs::symlink_metadata(p).map(|m| Some(m.dev()) == dest_dev).unwrap_or(false));
-        let kind = if force_copy || !same_fs { JobKind::Copy } else { JobKind::Move };
+        let same_fs = paths.iter().all(|p| {
+            std::fs::symlink_metadata(p)
+                .map(|m| Some(m.dev()) == dest_dev)
+                .unwrap_or(false)
+        });
+        let kind = if force_copy || !same_fs {
+            JobKind::Copy
+        } else {
+            JobKind::Move
+        };
         if kind == JobKind::Move && paths.iter().all(|p| p.parent() == Some(dest.as_path())) {
             return;
         }
@@ -1056,7 +1288,10 @@ impl App {
         }
         match std::fs::rename(path, &target) {
             Ok(()) => {
-                self.push_undo(ops::Undo::MoveBack(vec![(path.to_path_buf(), target.clone())]));
+                self.push_undo(ops::Undo::MoveBack(vec![(
+                    path.to_path_buf(),
+                    target.clone(),
+                )]));
                 self.size_service.invalidate(path, &mut self.sizes);
                 self.size_service.invalidate(&target, &mut self.sizes);
                 let tab = self.tab_mut();
@@ -1079,7 +1314,11 @@ impl App {
         let res = if folder {
             std::fs::create_dir(&target)
         } else {
-            std::fs::OpenOptions::new().write(true).create_new(true).open(&target).map(|_| ())
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target)
+                .map(|_| ())
         };
         match res {
             Ok(()) => {
@@ -1098,14 +1337,24 @@ impl App {
     fn run_cmd(&mut self, cmd: Cmd) {
         match cmd {
             Cmd::ReopenTab => {
-                if let Some(i) = self.closed_tabs.len().checked_sub(1) { self.reopen_closed(i); }
+                if let Some(i) = self.closed_tabs.len().checked_sub(1) {
+                    self.reopen_closed(i);
+                }
             }
-            Cmd::SaveWorkspace => self.dialog = Some(Dialog::SaveWorkspace { name: String::new(), focus: true }),
+            Cmd::SaveWorkspace => {
+                self.dialog = Some(Dialog::SaveWorkspace {
+                    name: String::new(),
+                    focus: true,
+                })
+            }
             Cmd::Workspaces => self.dialog = Some(Dialog::Workspaces),
             Cmd::GoTo => self.palette.show_goto(),
             Cmd::NewTab => {
                 let tab = self.tab();
-                let p = tab.cursor_entry().filter(|e| e.is_dir && tab.marked.is_empty()).map(|e| e.path.clone());
+                let p = tab
+                    .cursor_entry()
+                    .filter(|e| e.is_dir && tab.marked.is_empty())
+                    .map(|e| e.path.clone());
                 let p = p.unwrap_or_else(|| tab.path.clone());
                 self.open_tab(p);
             }
@@ -1121,19 +1370,36 @@ impl App {
                 let dir = self.tab().path.clone();
                 let base = if folder { "New folder" } else { "New file.txt" };
                 let name = ops::file_name(&ops::unique_dest(&dir, base));
-                self.dialog = Some(Dialog::Create { dir, name, folder, focus: true });
-                self.ctx.memory_mut(|m| m.request_focus(egui::Id::new("dialog_name")));
+                self.dialog = Some(Dialog::Create {
+                    dir,
+                    name,
+                    folder,
+                    focus: true,
+                });
+                self.ctx
+                    .memory_mut(|m| m.request_focus(egui::Id::new("dialog_name")));
             }
             Cmd::Rename | Cmd::BatchRename => {
                 let tab = self.tab();
                 if cmd == Cmd::BatchRename || tab.selection_count() > 1 {
-                    let entries: Vec<_> = tab.view.iter().enumerate().filter(|(vi, _)| tab.is_selected(*vi))
-                        .map(|(_, &i)| tab.entries[i].clone()).collect();
+                    let entries: Vec<_> = tab
+                        .view
+                        .iter()
+                        .enumerate()
+                        .filter(|(vi, _)| tab.is_selected(*vi))
+                        .map(|(_, &i)| tab.entries[i].clone())
+                        .collect();
                     if !entries.is_empty() {
-                        self.dialog = Some(Dialog::BatchRename(Box::new(crate::rename::Editor::new(entries, self.ctx.clone()))));
+                        self.dialog = Some(Dialog::BatchRename(Box::new(
+                            crate::rename::Editor::new(entries, self.ctx.clone()),
+                        )));
                     }
                 } else if let Some(e) = tab.cursor_entry() {
-                    self.dialog = Some(Dialog::Rename { path: e.path.clone(), name: e.name.clone(), focus: true });
+                    self.dialog = Some(Dialog::Rename {
+                        path: e.path.clone(),
+                        name: e.name.clone(),
+                        focus: true,
+                    });
                 }
             }
             Cmd::Trash => {
@@ -1148,8 +1414,14 @@ impl App {
             }
             Cmd::Undo => self.undo(),
             Cmd::Extract | Cmd::ExtractFolder | Cmd::ExtractOther => {
-                let archives: Vec<PathBuf> = self.tab().targets().into_iter().filter(|p| ops::is_archive(p)).collect();
-                let other = (self.panes.len() > 1).then(|| self.tab_in_pane(1 - self.active_pane).path.clone());
+                let archives: Vec<PathBuf> = self
+                    .tab()
+                    .targets()
+                    .into_iter()
+                    .filter(|p| ops::is_archive(p))
+                    .collect();
+                let other = (self.panes.len() > 1)
+                    .then(|| self.tab_in_pane(1 - self.active_pane).path.clone());
                 if archives.is_empty() {
                     self.toast("Select an archive to extract", false);
                 } else if cmd == Cmd::ExtractOther && other.is_none() {
@@ -1180,7 +1452,14 @@ impl App {
                 let srcs = self.tab().targets();
                 if let Some(dest) = srcs.first().and_then(|p| p.parent()).map(Path::to_path_buf) {
                     let name = ops::archive_base_name(&srcs);
-                    self.dialog = Some(Dialog::Compress { srcs, dest, name, format: ops::Format::Zip, level: ops::Level::Normal, focus: true });
+                    self.dialog = Some(Dialog::Compress {
+                        srcs,
+                        dest,
+                        name,
+                        format: ops::Format::Zip,
+                        level: ops::Level::Normal,
+                        focus: true,
+                    });
                 }
             }
             Cmd::Copy => self.copy_to_clipboard(false),
@@ -1189,7 +1468,10 @@ impl App {
             Cmd::Duplicate => {
                 let srcs = self.tab().targets();
                 if let Some(dest) = srcs.first().and_then(|p| p.parent()).map(Path::to_path_buf) {
-                    let srcs = srcs.into_iter().filter(|p| p.parent() == Some(&dest)).collect();
+                    let srcs = srcs
+                        .into_iter()
+                        .filter(|p| p.parent() == Some(&dest))
+                        .collect();
                     self.ops.submit(Job::new(JobKind::Copy, srcs, Some(dest)));
                 }
             }
@@ -1221,15 +1503,29 @@ impl App {
             Cmd::ZoomOut => self.zoom(-1),
             Cmd::ToggleSplit => self.toggle_split(),
             Cmd::ToggleColumns => {
-                let mode = if self.tab().mode == ViewMode::Columns { self.tab().previous_view } else { ViewMode::Columns };
+                let mode = if self.tab().mode == ViewMode::Columns {
+                    self.tab().previous_view
+                } else {
+                    ViewMode::Columns
+                };
                 self.set_view(mode);
             }
             Cmd::ToggleGrid => {
-                let mode = if self.tab().mode.is_grid() { ViewMode::Details } else { ViewMode::Icons(2) };
+                let mode = if self.tab().mode.is_grid() {
+                    ViewMode::Details
+                } else {
+                    ViewMode::Icons(2)
+                };
                 self.set_view(mode);
             }
             Cmd::CopyPath => {
-                let text = self.tab().targets().iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n");
+                let text = self
+                    .tab()
+                    .targets()
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 if !text.is_empty() {
                     self.set_text_clipboard(text);
                     self.toast("Path copied", false);
@@ -1239,7 +1535,11 @@ impl App {
             Cmd::EditPath => {
                 // A trailing slash lists the subfolders straight away.
                 let path = self.tab().path.display().to_string();
-                let text = if path.ends_with('/') { path } else { format!("{path}/") };
+                let text = if path.ends_with('/') {
+                    path
+                } else {
+                    format!("{path}/")
+                };
                 self.path_edit = Some((self.active_pane, text));
                 self.completer = Default::default(); // pick up folders created since
                 self.path_edit_focus = true;
@@ -1262,7 +1562,10 @@ impl App {
         match p.req.kind {
             // A double-clicked file fills in the name; the Save button decides.
             crate::picker::Kind::Save => {
-                p.name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                p.name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
             }
             crate::picker::Kind::Folder => {}
             crate::picker::Kind::Open => {
@@ -1275,7 +1578,9 @@ impl App {
     /// The paths the Select / Save button would return right now.
     fn pick_choice(&self) -> Vec<PathBuf> {
         use crate::picker::Kind;
-        let Some(p) = &self.picker else { return Vec::new() };
+        let Some(p) = &self.picker else {
+            return Vec::new();
+        };
         let tab = self.tab();
         match p.req.kind {
             Kind::Open => {
@@ -1325,8 +1630,16 @@ impl App {
 
     fn apply(&mut self, action: Action) {
         match action {
-            Action::ColumnAction { tab_id, directory, action } => {
-                if self.activate_column_path(tab_id, &directory) && !matches!(*action, Action::FocusPane(_)) { self.apply(*action); }
+            Action::InColumn {
+                tab_id,
+                directory,
+                action,
+            } => {
+                if self.activate_column_path(tab_id, &directory)
+                    && !matches!(*action, Action::FocusPane(_))
+                {
+                    self.apply(*action);
+                }
             }
             Action::ColumnStep(delta) => self.column_step(delta),
             Action::SetView(mode) => self.set_view(mode),
@@ -1334,7 +1647,9 @@ impl App {
             Action::ReopenClosed(i) => self.reopen_closed(i),
             Action::Navigate(p) => self.navigate(p, true),
             Action::OpenEntry(vi) => {
-                let Some(e) = self.tab().entry(vi) else { return };
+                let Some(e) = self.tab().entry(vi) else {
+                    return;
+                };
                 if e.is_dir {
                     if self.tab().mode == ViewMode::Columns && self.tab().search.is_none() {
                         self.tab_mut().select_only(vi);
@@ -1425,10 +1740,12 @@ impl App {
                     self.toast(e, true);
                 }
             }
-            Action::SetDefaultApp(app, mime, what) => match crate::apps::set_default(&app.id, &mime) {
-                Ok(()) => self.toast(format!("{what} now open with {}", app.name), false),
-                Err(e) => self.toast(format!("Couldn't set the default app: {e}"), true),
-            },
+            Action::SetDefaultApp(app, mime, what) => {
+                match crate::apps::set_default(&app.id, &mime) {
+                    Ok(()) => self.toast(format!("{what} now open with {}", app.name), false),
+                    Err(e) => self.toast(format!("Couldn't set the default app: {e}"), true),
+                }
+            }
             Action::ToggleSection(s) => {
                 if !self.collapsed.remove(s) {
                     self.collapsed.insert(s);
@@ -1447,7 +1764,13 @@ impl App {
                 self.collapsed.remove("BOOKMARKS");
                 match (added, paths.first()) {
                     (0, Some(_)) => self.toast("Already bookmarked", false),
-                    (1, Some(p)) => self.toast(format!("Bookmarked {}", p.file_name().unwrap_or(p.as_os_str()).to_string_lossy()), false),
+                    (1, Some(p)) => self.toast(
+                        format!(
+                            "Bookmarked {}",
+                            p.file_name().unwrap_or(p.as_os_str()).to_string_lossy()
+                        ),
+                        false,
+                    ),
                     (n, _) if n > 1 => self.toast(format!("Bookmarked {n} folders"), false),
                     _ => {}
                 }
@@ -1466,13 +1789,20 @@ impl App {
 
     fn device_op(&mut self, op: crate::devices::DevOp, dev: &Path) {
         use crate::devices::DevOp;
-        let Some(device) = self.devices.iter().find(|d| d.dev == dev) else { return };
+        let Some(device) = self.devices.iter().find(|d| d.dev == dev) else {
+            return;
+        };
         if !self.dev_busy.insert(device.dev.clone()) {
             return;
         }
         // Eject unmounts every mounted partition of the disk first.
         let siblings = match op {
-            DevOp::Eject => self.devices.iter().filter(|d| d.disk == device.disk && d.mount.is_some()).map(|d| d.dev.clone()).collect(),
+            DevOp::Eject => self
+                .devices
+                .iter()
+                .filter(|d| d.disk == device.disk && d.mount.is_some())
+                .map(|d| d.dev.clone())
+                .collect(),
             _ => Vec::new(),
         };
         crate::devices::run(op, device, siblings, self.dev_tx.clone(), self.ctx.clone());
@@ -1481,7 +1811,11 @@ impl App {
     fn device_done(&mut self, r: crate::devices::DevResult) {
         use crate::devices::DevOp;
         self.dev_busy.remove(&r.dev);
-        let left = self.devices.iter().find(|d| d.dev == r.dev).and_then(|d| d.mount.clone());
+        let left = self
+            .devices
+            .iter()
+            .find(|d| d.dev == r.dev)
+            .and_then(|d| d.mount.clone());
         // Rescan now rather than wait for the watcher, so the sidebar updates at once.
         self.devices = crate::devices::scan();
         let verb = match r.op {
@@ -1525,7 +1859,9 @@ impl App {
 
     fn zoom(&mut self, steps: i32) {
         let tab = self.tab_mut();
-        if tab.mode == ViewMode::Columns { return; }
+        if tab.mode == ViewMode::Columns {
+            return;
+        }
         tab.mode = tab.mode.zoom(steps);
         tab.scroll_to_cursor = true;
     }
@@ -1534,12 +1870,16 @@ impl App {
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
         if self.palette.open || self.dialog.is_some() || ctx.text_edit_focused() {
-            if let crate::preview::State::Ready(crate::preview::Content::Text { layout, .. }) = &mut self.preview.state
-                && let Some(chunks) = &mut layout.chunks {
+            if let crate::preview::State::Ready(crate::preview::Content::Text { layout, .. }) =
+                &mut self.preview.state
+                && let Some(chunks) = &mut layout.chunks
+            {
                 chunks.active = false;
                 chunks.selection = None;
             }
-            ctx.plugin::<egui::text_selection::LabelSelectionState>().lock().clear_selection();
+            ctx.plugin::<egui::text_selection::LabelSelectionState>()
+                .lock()
+                .clear_selection();
         }
         if self.palette.open || self.dialog.is_some() {
             return; // they handle their own keys
@@ -1564,14 +1904,19 @@ impl App {
         if ctx.text_edit_focused() {
             return;
         }
-        if egui::DragAndDrop::has_any_payload(ctx) && ctx.input_mut(|i| take(i, Modifiers::NONE, Key::Escape)) {
+        if egui::DragAndDrop::has_any_payload(ctx)
+            && ctx.input_mut(|i| take(i, Modifiers::NONE, Key::Escape))
+        {
             egui::DragAndDrop::clear_payload(ctx); // cancel the drag
             return;
         }
         if self.show_preview
-            && let crate::preview::State::Ready(crate::preview::Content::Text { job, layout, .. }) = &mut self.preview.state
+            && let crate::preview::State::Ready(crate::preview::Content::Text {
+                job, layout, ..
+            }) = &mut self.preview.state
             && let Some(chunks) = &mut layout.chunks
-            && preview_text::selection_keys(ctx, job, chunks) {
+            && preview_text::selection_keys(ctx, job, chunks)
+        {
             return;
         }
         // Tab focus-navigation can park focus on a button; keys belong to the file list.
@@ -1580,17 +1925,31 @@ impl App {
         }
         let mut actions: Vec<Action> = Vec::new();
         let mut filter_changed = false;
-        let preview_selected = self.show_preview && matches!(&self.preview.state,
+        let preview_selected = self.show_preview
+            && matches!(&self.preview.state,
             crate::preview::State::Ready(crate::preview::Content::Text { layout, .. })
                 if layout.chunks.as_ref().is_some_and(|c| c.active && c.selection.is_some_and(|(a, b)| a != b)));
-        let text_selected = (preview_selected || ctx.plugin::<egui::text_selection::LabelSelectionState>().lock().has_selection())
+        let text_selected = (preview_selected
+            || ctx
+                .plugin::<egui::text_selection::LabelSelectionState>()
+                .lock()
+                .has_selection())
             && !ctx.input(|i| i.pointer.any_pressed());
         let columns = self.tab().mode == ViewMode::Columns && self.tab().search.is_none();
-        let grid_cols = if self.tab().mode.is_grid() { self.tab().grid_cols.max(1) as isize } else { 0 };
+        let grid_cols = if self.tab().mode.is_grid() {
+            self.tab().grid_cols.max(1) as isize
+        } else {
+            0
+        };
         let split = self.panes.len() > 1;
         ctx.input_mut(|i| {
             use Cmd::*;
-            let (none, ctrl, shift, alt) = (Modifiers::NONE, Modifiers::COMMAND, Modifiers::SHIFT, Modifiers::ALT);
+            let (none, ctrl, shift, alt) = (
+                Modifiers::NONE,
+                Modifiers::COMMAND,
+                Modifiers::SHIFT,
+                Modifiers::ALT,
+            );
             let cs = ctrl | shift;
             let pane = &mut self.panes[self.active_pane];
             let (n, pane_tab) = (pane.tabs.len(), pane.active);
@@ -1621,19 +1980,21 @@ impl App {
                 }
             }
             if columns {
-                if take(i, none, Key::ArrowLeft) { actions.push(Action::ColumnStep(-1)); }
-                if take(i, none, Key::ArrowRight) { actions.push(Action::ColumnStep(1)); }
+                if take(i, none, Key::ArrowLeft) {
+                    actions.push(Action::ColumnStep(-1));
+                }
+                if take(i, none, Key::ArrowRight) {
+                    actions.push(Action::ColumnStep(1));
+                }
             }
-            if take(i, ctrl, Key::Space) {
-                if let Some(c) = tab.cursor {
+            if take(i, ctrl, Key::Space)
+                && let Some(c) = tab.cursor {
                     tab.toggle_mark(c);
                 }
-            }
-            if take(i, none, Key::Enter) {
-                if let Some(c) = tab.cursor {
+            if take(i, none, Key::Enter)
+                && let Some(c) = tab.cursor {
                     actions.push(Action::OpenEntry(c));
                 }
-            }
             if take(i, none, Key::Backspace) {
                 if tab.filter.pop().is_some() {
                     filter_changed = true;
@@ -1666,7 +2027,17 @@ impl App {
             } else if take(i, ctrl, Key::Tab) {
                 actions.push(Action::SwitchTab(self.active_pane, (pane_tab + 1) % n));
             }
-            let nums = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
+            let nums = [
+                Key::Num1,
+                Key::Num2,
+                Key::Num3,
+                Key::Num4,
+                Key::Num5,
+                Key::Num6,
+                Key::Num7,
+                Key::Num8,
+                Key::Num9,
+            ];
             for (k, key) in nums.into_iter().enumerate() {
                 if take(i, ctrl, key) && k < n {
                     actions.push(Action::SwitchTab(self.active_pane, k));
@@ -1783,13 +2154,23 @@ impl App {
 
 impl App {
     fn init_wayland(&mut self, frame: &eframe::Frame) {
-        use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
+        use raw_window_handle::{
+            HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle,
+        };
         self.wl_tried = true;
-        let Some(win) = frame.winit_window() else { return };
-        let (Ok(d), Ok(w)) = (win.display_handle(), win.window_handle()) else { return };
-        if let (RawDisplayHandle::Wayland(d), RawWindowHandle::Wayland(w)) = (d.as_raw(), w.as_raw()) {
+        let Some(win) = frame.winit_window() else {
+            return;
+        };
+        let (Ok(d), Ok(w)) = (win.display_handle(), win.window_handle()) else {
+            return;
+        };
+        if let (RawDisplayHandle::Wayland(d), RawWindowHandle::Wayland(w)) =
+            (d.as_raw(), w.as_raw())
+        {
             // Safety: both pointers belong to our live window, which outlives the app.
-            match unsafe { crate::wl_dnd::WlDnd::new(d.display.as_ptr(), w.surface.as_ptr(), self.ctx.clone()) } {
+            match unsafe {
+                crate::wl_dnd::WlDnd::new(d.display.as_ptr(), w.surface.as_ptr(), self.ctx.clone())
+            } {
                 Ok(wl) => self.wl = Some(wl),
                 Err(e) => eprintln!("kestrel: system drag and drop unavailable: {e}"),
             }
@@ -1890,7 +2271,12 @@ impl eframe::App for App {
 fn take(i: &mut InputState, mods: Modifiers, key: Key) -> bool {
     let mut found = false;
     i.events.retain(|e| match e {
-        Event::Key { key: k, pressed: true, modifiers, .. } if !found && *k == key && modifiers.matches_exact(mods) => {
+        Event::Key {
+            key: k,
+            pressed: true,
+            modifiers,
+            ..
+        } if !found && *k == key && modifiers.matches_exact(mods) => {
             found = true;
             false
         }
@@ -1909,10 +2295,19 @@ fn start_listing(tab: &mut Tab, tx: &Sender<Listing>, ctx: &egui::Context, soft:
     let (listing_id, generation, path) = (tab.listing_id, tab.generation, tab.path.clone());
     let cancel = tab.cancel.clone();
     std::thread::spawn(move || {
-        if cancel.load(Ordering::Relaxed) { return; }
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
         let result = fsops::list_dir(&path);
-        if cancel.load(Ordering::Relaxed) { return; }
-        let _ = tx.send(Listing { listing_id, generation, soft, result });
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        let _ = tx.send(Listing {
+            listing_id,
+            generation,
+            soft,
+            result,
+        });
         ctx.request_repaint();
     });
 }

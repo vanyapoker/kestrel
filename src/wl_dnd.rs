@@ -25,8 +25,9 @@ use wayland_client::protocol::wl_data_device_manager::{DndAction, WlDataDeviceMa
 use wayland_client::protocol::wl_data_offer::{self, WlDataOffer};
 use wayland_client::protocol::wl_data_source::{self, WlDataSource};
 use wayland_client::protocol::{
-    wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_keyboard, wl_keyboard::WlKeyboard, wl_pointer, wl_pointer::WlPointer, wl_registry::WlRegistry,
-    wl_seat::WlSeat, wl_shm, wl_shm::WlShm, wl_shm_pool::WlShmPool, wl_surface::WlSurface,
+    wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_keyboard, wl_keyboard::WlKeyboard,
+    wl_pointer, wl_pointer::WlPointer, wl_registry::WlRegistry, wl_seat::WlSeat, wl_shm,
+    wl_shm::WlShm, wl_shm_pool::WlShmPool, wl_surface::WlSurface,
 };
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum, event_created_child};
 
@@ -35,9 +36,16 @@ const URI_LIST: &str = "text/uri-list";
 // Prefer image bytes to browser URLs: URLs can refer to remote or blob resources,
 // while Firefox can supply the actual pixels without a separate download.
 fn drop_mime(mimes: &[String]) -> Option<&'static str> {
-    ["image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif", URI_LIST]
-        .into_iter()
-        .find(|mime| mimes.iter().any(|m| m == mime))
+    [
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+        "image/webp",
+        "image/gif",
+        URI_LIST,
+    ]
+    .into_iter()
+    .find(|mime| mimes.iter().any(|m| m == mime))
 }
 
 fn image_name(mime: &str) -> Option<&'static str> {
@@ -61,29 +69,56 @@ fn source_image_name(mime: &str, bytes: &[u8], image_mime: &str) -> Option<Strin
     // Mozilla's native text/x-moz-url can be UTF-16; _NETSCAPE_URL is UTF-8.
     let text = if bytes.starts_with(&[0xff, 0xfe]) || bytes.get(1) == Some(&0) {
         let bytes = bytes.strip_prefix(&[0xff, 0xfe]).unwrap_or(bytes);
-        String::from_utf16(&bytes.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect::<Vec<_>>()).ok()?
+        String::from_utf16(
+            &bytes
+                .as_chunks::<2>().0.iter()
+                .map(|b| u16::from_le_bytes([b[0], b[1]]))
+                .collect::<Vec<_>>(),
+        )
+        .ok()?
     } else if bytes.starts_with(&[0xfe, 0xff]) || bytes.first() == Some(&0) {
         let bytes = bytes.strip_prefix(&[0xfe, 0xff]).unwrap_or(bytes);
-        String::from_utf16(&bytes.chunks_exact(2).map(|b| u16::from_be_bytes([b[0], b[1]])).collect::<Vec<_>>()).ok()?
+        String::from_utf16(
+            &bytes
+                .as_chunks::<2>().0.iter()
+                .map(|b| u16::from_be_bytes([b[0], b[1]]))
+                .collect::<Vec<_>>(),
+        )
+        .ok()?
     } else {
         std::str::from_utf8(bytes).ok()?.to_owned()
     };
     let name = if mime == IMAGE_NAME_MIMES[0] {
         text.trim_end_matches('\0').trim().to_owned()
     } else {
-        let url = text.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with('#'))?;
-        let rest = ["https://", "http://", "file://"].into_iter().find_map(|prefix| url.strip_prefix(prefix))?;
+        let url = text
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty() && !l.starts_with('#'))?;
+        let rest = ["https://", "http://", "file://"]
+            .into_iter()
+            .find_map(|prefix| url.strip_prefix(prefix))?;
         let path = rest.find('/').map(|i| &rest[i..])?;
         let path = path.split(['?', '#']).next()?;
         crate::fsops::percent_decode(path.rsplit('/').next()?)
     };
-    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\']) || name.chars().any(char::is_control) {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains(['/', '\\'])
+        || name.chars().any(char::is_control)
+    {
         return None;
     }
     // The browser may encode a JPEG source as PNG during transfer.
     let ext = Path::new(image_name(image_mime)?).extension()?.to_str()?;
-    let source_ext = Path::new(&name).extension().and_then(|e| e.to_str()).unwrap_or("");
-    let name = if source_ext.eq_ignore_ascii_case(ext) || (ext == "jpg" && source_ext.eq_ignore_ascii_case("jpeg")) {
+    let source_ext = Path::new(&name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    let name = if source_ext.eq_ignore_ascii_case(ext)
+        || (ext == "jpg" && source_ext.eq_ignore_ascii_case("jpeg"))
+    {
         name
     } else {
         Path::new(&name).with_extension(ext).to_str()?.to_owned()
@@ -104,7 +139,10 @@ macro_rules! trace {
 pub enum ClipRead {
     /// We set it ourselves (the app's internal clipboard is authoritative).
     Ours,
-    Files { paths: Vec<PathBuf>, cut: bool },
+    Files {
+        paths: Vec<PathBuf>,
+        cut: bool,
+    },
     Nothing,
 }
 
@@ -112,10 +150,20 @@ const GNOME_FILES: &str = "x-special/gnome-copied-files";
 
 pub enum DndEvent {
     /// Something from another app (or our own outgoing drag) hovers the window.
-    Hover { pos: Pos2 },
+    Hover {
+        pos: Pos2,
+    },
     Leave,
-    Drop { paths: Vec<PathBuf>, pos: Pos2, own: bool },
-    Image { name: String, bytes: Vec<u8>, pos: Pos2 },
+    Drop {
+        paths: Vec<PathBuf>,
+        pos: Pos2,
+        own: bool,
+    },
+    Image {
+        name: String,
+        bytes: Vec<u8>,
+        pos: Pos2,
+    },
     Error(String),
 }
 
@@ -183,14 +231,22 @@ impl ClipboardWriter {
 
     fn set_selection(&self, mut data: SourceData, extra: &[&str]) -> bool {
         let mut shared = self.shared.lock().unwrap();
-        let Some(serial) = shared.input_serial else { return false };
+        let Some(serial) = shared.input_serial else {
+            return false;
+        };
         shared.selection_gen += 1;
         let generation = shared.selection_gen;
         data.clipboard = Some(generation);
         let plain = data.plain.clone();
         let files = !data.uri_list.is_empty();
         let source = self.manager.create_data_source(&self.qh, Arc::new(data));
-        for mime in extra.iter().copied().chain(["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING", "TEXT"]) {
+        for mime in extra.iter().copied().chain([
+            "text/plain;charset=utf-8",
+            "text/plain",
+            "UTF8_STRING",
+            "STRING",
+            "TEXT",
+        ]) {
             source.offer(mime.into());
         }
         self.device.set_selection(Some(&source), serial);
@@ -207,7 +263,9 @@ struct ClipboardOutput {
 }
 
 impl egui::Plugin for ClipboardOutput {
-    fn debug_name(&self) -> &'static str { "Kestrel clipboard" }
+    fn debug_name(&self) -> &'static str {
+        "Kestrel clipboard"
+    }
 
     fn output_hook(&mut self, _ctx: &egui::Context, output: &mut egui::FullOutput) {
         // This runs after label selection's end-of-pass copy output, too.
@@ -218,9 +276,10 @@ impl egui::Plugin for ClipboardOutput {
 }
 
 fn route_text_output(output: &mut egui::FullOutput, mut write: impl FnMut(&str) -> bool) {
-    output.platform_output.commands.retain(|command| {
-        !matches!(command, egui::OutputCommand::CopyText(text) if write(text))
-    });
+    output
+        .platform_output
+        .commands
+        .retain(|command| !matches!(command, egui::OutputCommand::CopyText(text) if write(text)));
 }
 
 pub struct WlDnd {
@@ -245,7 +304,13 @@ impl Drop for WlDnd {
     fn drop(&mut self) {
         // The output plugin must release its proxies before winit frees the display.
         self.ctx.plugin::<ClipboardOutput>().lock().writer = None;
-        let _ = unsafe { libc::write(std::os::fd::AsRawFd::as_raw_fd(&self.wake_tx), [1u8].as_ptr().cast(), 1) };
+        let _ = unsafe {
+            libc::write(
+                std::os::fd::AsRawFd::as_raw_fd(&self.wake_tx),
+                [1u8].as_ptr().cast(),
+                1,
+            )
+        };
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
@@ -259,10 +324,20 @@ fn dispatch_loop(mut queue: wayland_client::EventQueue<State>, mut state: State,
         if queue.dispatch_pending(&mut state).is_err() || queue.flush().is_err() {
             break;
         }
-        let Some(guard) = queue.prepare_read() else { continue };
+        let Some(guard) = queue.prepare_read() else {
+            continue;
+        };
         let mut fds = [
-            libc::pollfd { fd: guard.connection_fd().as_raw_fd(), events: libc::POLLIN, revents: 0 },
-            libc::pollfd { fd: wake.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+            libc::pollfd {
+                fd: guard.connection_fd().as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: wake.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
         ];
         if unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) } < 0 {
             if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
@@ -275,7 +350,8 @@ fn dispatch_loop(mut queue: wayland_client::EventQueue<State>, mut state: State,
         }
         match guard.read() {
             Ok(_) => {}
-            Err(wayland_client::backend::WaylandError::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(wayland_client::backend::WaylandError::Io(e))
+                if e.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(_) => break,
         }
     }
@@ -290,16 +366,22 @@ impl WlDnd {
     /// # Safety
     /// `display` and `surface` must be the live `wl_display` / `wl_surface`
     /// pointers of our window and outlive this object.
-    pub unsafe fn new(display: *mut c_void, surface: *mut c_void, ctx: egui::Context) -> Result<Self, String> {
+    pub unsafe fn new(
+        display: *mut c_void,
+        surface: *mut c_void,
+        ctx: egui::Context,
+    ) -> Result<Self, String> {
         let backend = unsafe { Backend::from_foreign_display(display.cast()) };
         let conn = Connection::from_backend(backend);
         let (globals, queue) = registry_queue_init::<State>(&conn).map_err(|e| e.to_string())?;
         let qh = queue.handle();
         let seat: WlSeat = globals.bind(&qh, 1..=7, ()).map_err(|e| e.to_string())?;
-        let manager: WlDataDeviceManager = globals.bind(&qh, 3..=3, ()).map_err(|e| e.to_string())?;
+        let manager: WlDataDeviceManager =
+            globals.bind(&qh, 3..=3, ()).map_err(|e| e.to_string())?;
         let compositor: WlCompositor = globals.bind(&qh, 4..=6, ()).map_err(|e| e.to_string())?;
         let shm: WlShm = globals.bind(&qh, 1..=1, ()).map_err(|e| e.to_string())?;
-        let surface_id = unsafe { ObjectId::from_ptr(WlSurface::interface(), surface.cast()) }.map_err(|e| e.to_string())?;
+        let surface_id = unsafe { ObjectId::from_ptr(WlSurface::interface(), surface.cast()) }
+            .map_err(|e| e.to_string())?;
         let surface = WlSurface::from_id(&conn, surface_id).map_err(|e| e.to_string())?;
         let _pointer = seat.get_pointer(&qh, ());
         let _keyboard = seat.get_keyboard(&qh, ());
@@ -319,14 +401,30 @@ impl WlDnd {
         if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
             return Err(std::io::Error::last_os_error().to_string());
         }
-        let (wake_rx, wake_tx) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        let (wake_rx, wake_tx) =
+            unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
         let thread = std::thread::Builder::new()
             .name("wayland-dnd".into())
             .spawn(move || dispatch_loop(queue, state, wake_rx))
             .map_err(|e| e.to_string())?;
         conn.flush().map_err(|e| e.to_string())?;
-        let wl = Self { ctx, conn, qh, shared, manager, device, surface, compositor, shm, rx, wake_tx, thread: Some(thread) };
-        wl.ctx.add_plugin(ClipboardOutput { writer: Some(wl.clipboard_writer()) });
+        let wl = Self {
+            ctx,
+            conn,
+            qh,
+            shared,
+            manager,
+            device,
+            surface,
+            compositor,
+            shm,
+            rx,
+            wake_tx,
+            thread: Some(thread),
+        };
+        wl.ctx.add_plugin(ClipboardOutput {
+            writer: Some(wl.clipboard_writer()),
+        });
         Ok(wl)
     }
 
@@ -342,19 +440,36 @@ impl WlDnd {
     /// the mouse button that started the drag is still held.
     pub fn start_drag(&self, paths: &[PathBuf]) -> bool {
         let mut shared = self.shared.lock().unwrap();
-        trace!("start_drag {} paths, serial {:?}, on_us {}", paths.len(), shared.press_serial, shared.pointer_on_us);
-        let Some(serial) = shared.press_serial else { return false };
+        trace!(
+            "start_drag {} paths, serial {:?}, on_us {}",
+            paths.len(),
+            shared.press_serial,
+            shared.pointer_on_us
+        );
+        let Some(serial) = shared.press_serial else {
+            return false;
+        };
         if paths.is_empty() || shared.dragging_out {
             return false;
         }
         let data = Arc::new(source_data(paths, false, None));
         let source = self.manager.create_data_source(&self.qh, data.clone());
-        for mime in [URI_LIST, "text/plain;charset=utf-8", "text/plain", "UTF8_STRING"] {
+        for mime in [
+            URI_LIST,
+            "text/plain;charset=utf-8",
+            "text/plain",
+            "UTF8_STRING",
+        ] {
             source.offer(mime.into());
         }
         source.set_actions(DndAction::Copy);
         let icon = self.make_icon(&drag_icon(paths));
-        self.device.start_drag(Some(&source), &self.surface, icon.as_ref().map(|i| &i.surface), serial);
+        self.device.start_drag(
+            Some(&source),
+            &self.surface,
+            icon.as_ref().map(|i| &i.surface),
+            serial,
+        );
         if let Some(icon) = icon {
             icon.surface.commit();
             *data.icon.lock().unwrap() = Some(icon);
@@ -372,14 +487,21 @@ impl WlDnd {
             let (path, conn) = (paths[0].clone(), self.conn.clone());
             let (shm, qh, data) = (self.shm.clone(), self.qh.clone(), data.clone());
             std::thread::spawn(move || {
-                let Ok(rendered) = crate::thumbs::render(&path, r, 96) else { return };
+                let Ok(rendered) = crate::thumbs::render(&path, r, 96) else {
+                    return;
+                };
                 let mut slot = data.icon.lock().unwrap();
                 let Some(icon) = slot.as_mut() else { return }; // drag already over
                 if let Some((buffer, pool, fd)) = shm_buffer(&shm, &qh, &rendered.image) {
                     icon.surface.attach(Some(&buffer), 0, 0);
                     icon.surface.damage_buffer(0, 0, i32::MAX, i32::MAX);
                     icon.surface.commit();
-                    *icon = Icon { surface: icon.surface.clone(), _buffer: buffer, _pool: pool, _fd: fd };
+                    *icon = Icon {
+                        surface: icon.surface.clone(),
+                        _buffer: buffer,
+                        _pool: pool,
+                        _fd: fd,
+                    };
                     let _ = conn.flush();
                 }
             });
@@ -398,8 +520,11 @@ impl WlDnd {
 
     fn clipboard_writer(&self) -> ClipboardWriter {
         ClipboardWriter {
-            conn: self.conn.clone(), qh: self.qh.clone(), shared: self.shared.clone(),
-            manager: self.manager.clone(), device: self.device.clone(),
+            conn: self.conn.clone(),
+            qh: self.qh.clone(),
+            shared: self.shared.clone(),
+            manager: self.manager.clone(),
+            device: self.device.clone(),
         }
     }
 
@@ -419,10 +544,19 @@ impl WlDnd {
             trace!("paste text: offer {:?}", shared.selection.is_some());
             shared.selection.clone()?
         };
-        let mimes = offer.data::<OfferData>().map(|d| d.mimes.lock().unwrap().clone()).unwrap_or_default();
-        let mime = ["text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "STRING", "TEXT"]
-            .into_iter()
-            .find(|m| mimes.iter().any(|x| x == m));
+        let mimes = offer
+            .data::<OfferData>()
+            .map(|d| d.mimes.lock().unwrap().clone())
+            .unwrap_or_default();
+        let mime = [
+            "text/plain;charset=utf-8",
+            "UTF8_STRING",
+            "text/plain",
+            "STRING",
+            "TEXT",
+        ]
+        .into_iter()
+        .find(|m| mimes.iter().any(|x| x == m));
         trace!("paste text: mimes {mimes:?} -> {mime:?}");
         let text = receive(&self.conn, &offer, mime?);
         trace!("paste text: got {:?}", text.as_ref().map(|t| t.len()));
@@ -438,19 +572,36 @@ impl WlDnd {
                     return ClipRead::Ours;
                 }
                 let paths = crate::app::parse_path_list(&shared.own_text);
-                return if paths.is_empty() { ClipRead::Nothing } else { ClipRead::Files { paths, cut: false } };
+                return if paths.is_empty() {
+                    ClipRead::Nothing
+                } else {
+                    ClipRead::Files { paths, cut: false }
+                };
             }
             match &shared.selection {
                 Some(o) => o.clone(),
                 None => return ClipRead::Nothing,
             }
         };
-        let mimes = offer.data::<OfferData>().map(|d| d.mimes.lock().unwrap().clone()).unwrap_or_default();
-        let pick = [GNOME_FILES, URI_LIST, "text/plain;charset=utf-8", "text/plain", "UTF8_STRING"]
-            .into_iter()
-            .find(|m| mimes.iter().any(|x| x == m));
-        let Some(mime) = pick else { return ClipRead::Nothing };
-        let Some(text) = receive(&self.conn, &offer, mime) else { return ClipRead::Nothing };
+        let mimes = offer
+            .data::<OfferData>()
+            .map(|d| d.mimes.lock().unwrap().clone())
+            .unwrap_or_default();
+        let pick = [
+            GNOME_FILES,
+            URI_LIST,
+            "text/plain;charset=utf-8",
+            "text/plain",
+            "UTF8_STRING",
+        ]
+        .into_iter()
+        .find(|m| mimes.iter().any(|x| x == m));
+        let Some(mime) = pick else {
+            return ClipRead::Nothing;
+        };
+        let Some(text) = receive(&self.conn, &offer, mime) else {
+            return ClipRead::Nothing;
+        };
         let (paths, cut) = match mime {
             GNOME_FILES => {
                 let mut lines = text.lines();
@@ -460,7 +611,11 @@ impl WlDnd {
             URI_LIST => (parse_uri_list(&text), false),
             _ => (crate::app::parse_path_list(&text), false),
         };
-        if paths.is_empty() { ClipRead::Nothing } else { ClipRead::Files { paths, cut } }
+        if paths.is_empty() {
+            ClipRead::Nothing
+        } else {
+            ClipRead::Files { paths, cut }
+        }
     }
 
     fn make_icon(&self, img: &ColorImage) -> Option<Icon> {
@@ -468,7 +623,12 @@ impl WlDnd {
         let surface = self.compositor.create_surface(&self.qh, ());
         surface.attach(Some(&buffer), 0, 0);
         surface.damage_buffer(0, 0, i32::MAX, i32::MAX);
-        Some(Icon { surface, _buffer: buffer, _pool: pool, _fd: fd })
+        Some(Icon {
+            surface,
+            _buffer: buffer,
+            _pool: pool,
+            _fd: fd,
+        })
     }
 }
 
@@ -476,7 +636,11 @@ fn source_data(paths: &[PathBuf], cut: bool, clipboard: Option<u64>) -> SourceDa
     let uris: Vec<String> = paths.iter().map(|p| file_uri(p)).collect();
     SourceData {
         uri_list: uris.iter().map(|u| format!("{u}\r\n")).collect(),
-        plain: paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n"),
+        plain: paths
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join("\n"),
         gnome: format!("{}\n{}", if cut { "cut" } else { "copy" }, uris.join("\n")),
         clipboard,
         icon: Mutex::new(None),
@@ -502,8 +666,14 @@ fn receive_bytes(conn: &Connection, offer: &WlDataOffer, mime: &str) -> Option<V
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
     let mut buf = [0u8; 8192];
     loop {
-        let left = deadline.saturating_duration_since(std::time::Instant::now()).as_millis() as i32;
-        let mut pfd = libc::pollfd { fd: std::os::fd::AsRawFd::as_raw_fd(&file), events: libc::POLLIN, revents: 0 };
+        let left = deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .as_millis() as i32;
+        let mut pfd = libc::pollfd {
+            fd: std::os::fd::AsRawFd::as_raw_fd(&file),
+            events: libc::POLLIN,
+            revents: 0,
+        };
         if left == 0 || unsafe { libc::poll(&mut pfd, 1, left) } <= 0 {
             return None;
         }
@@ -517,7 +687,11 @@ fn receive_bytes(conn: &Connection, offer: &WlDataOffer, mime: &str) -> Option<V
 }
 
 /// Copies an image into a shared-memory buffer (ARGB8888, premultiplied).
-fn shm_buffer(shm: &WlShm, qh: &QueueHandle<State>, img: &ColorImage) -> Option<(WlBuffer, WlShmPool, OwnedFd)> {
+fn shm_buffer(
+    shm: &WlShm,
+    qh: &QueueHandle<State>,
+    img: &ColorImage,
+) -> Option<(WlBuffer, WlShmPool, OwnedFd)> {
     let [w, h] = img.size;
     let stride = w * 4;
     let size = stride * h;
@@ -535,7 +709,15 @@ fn shm_buffer(shm: &WlShm, qh: &QueueHandle<State>, img: &ColorImage) -> Option<
     }
     file.write_all(&bytes).ok()?;
     let pool = shm.create_pool(fd.as_fd(), size as i32, qh, ());
-    let buffer = pool.create_buffer(0, w as i32, h as i32, stride as i32, wl_shm::Format::Argb8888, qh, ());
+    let buffer = pool.create_buffer(
+        0,
+        w as i32,
+        h as i32,
+        stride as i32,
+        wl_shm::Format::Argb8888,
+        qh,
+        (),
+    );
     Some((buffer, pool, fd))
 }
 
@@ -545,7 +727,10 @@ fn drag_icon(paths: &[PathBuf]) -> ColorImage {
     let mut img = ColorImage::filled([S, S], egui::Color32::TRANSPARENT);
     let first = &paths[0];
     let is_dir = first.is_dir();
-    let ext = first.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let ext = first
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
     let color = crate::theme::category_color(util::category(&ext, is_dir));
     if is_dir {
         fill_rect(&mut img, 8, 14, 24, 8, color.gamma_multiply(0.75));
@@ -557,7 +742,13 @@ fn drag_icon(paths: &[PathBuf]) -> ColorImage {
     if paths.len() > 1 {
         // Badge dots: one per item, up to five.
         for i in 0..paths.len().min(5) {
-            fill_circle(&mut img, 54.0 - i as f32 * 9.0, 9.0, 4.5, crate::theme::pal().accent);
+            fill_circle(
+                &mut img,
+                54.0 - i as f32 * 9.0,
+                9.0,
+                4.5,
+                crate::theme::pal().accent,
+            );
         }
     }
     img
@@ -603,7 +794,13 @@ fn parse_uri_list(text: &str) -> Vec<PathBuf> {
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .filter_map(|l| l.strip_prefix("file://"))
         // file://host/path: drop an optional host part.
-        .map(|rest| if rest.starts_with('/') { rest } else { rest.find('/').map_or(rest, |i| &rest[i..]) })
+        .map(|rest| {
+            if rest.starts_with('/') {
+                rest
+            } else {
+                rest.find('/').map_or(rest, |i| &rest[i..])
+            }
+        })
         .map(|p| PathBuf::from(crate::fsops::percent_decode(p)))
         .collect()
 }
@@ -627,7 +824,15 @@ impl State {
 }
 
 impl Dispatch<WlRegistry, GlobalListContents> for State {
-    fn event(_: &mut Self, _: &WlRegistry, _: <WlRegistry as Proxy>::Event, _: &GlobalListContents, _: &Connection, _: &QueueHandle<Self>) {}
+    fn event(
+        _: &mut Self,
+        _: &WlRegistry,
+        _: <WlRegistry as Proxy>::Event,
+        _: &GlobalListContents,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
 }
 
 macro_rules! ignore_events {
@@ -637,10 +842,25 @@ macro_rules! ignore_events {
         }
     )*};
 }
-ignore_events!(WlSeat, WlDataDeviceManager, WlCompositor, WlSurface, WlShm, WlShmPool, WlBuffer);
+ignore_events!(
+    WlSeat,
+    WlDataDeviceManager,
+    WlCompositor,
+    WlSurface,
+    WlShm,
+    WlShmPool,
+    WlBuffer
+);
 
 impl Dispatch<WlPointer, ()> for State {
-    fn event(state: &mut Self, _: &WlPointer, event: wl_pointer::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        state: &mut Self,
+        _: &WlPointer,
+        event: wl_pointer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         let mut shared = state.shared.lock().unwrap();
         match event {
             wl_pointer::Event::Enter { surface, .. } => {
@@ -648,9 +868,11 @@ impl Dispatch<WlPointer, ()> for State {
                 trace!("pointer enter, ours: {}", shared.pointer_on_us);
             }
             wl_pointer::Event::Leave { .. } => shared.pointer_on_us = false,
-            wl_pointer::Event::Button { serial, state: WEnum::Value(wl_pointer::ButtonState::Pressed), .. }
-                if shared.pointer_on_us =>
-            {
+            wl_pointer::Event::Button {
+                serial,
+                state: WEnum::Value(wl_pointer::ButtonState::Pressed),
+                ..
+            } if shared.pointer_on_us => {
                 trace!("press serial {serial}");
                 shared.press_serial = Some(serial);
                 shared.input_serial = Some(serial);
@@ -661,9 +883,18 @@ impl Dispatch<WlPointer, ()> for State {
 }
 
 impl Dispatch<WlKeyboard, ()> for State {
-    fn event(state: &mut Self, _: &WlKeyboard, event: wl_keyboard::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        state: &mut Self,
+        _: &WlKeyboard,
+        event: wl_keyboard::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         let serial = match event {
-            wl_keyboard::Event::Enter { serial, .. } | wl_keyboard::Event::Key { serial, .. } => serial,
+            wl_keyboard::Event::Enter { serial, .. } | wl_keyboard::Event::Key { serial, .. } => {
+                serial
+            }
             _ => return, // the keymap fd is closed when dropped
         };
         state.shared.lock().unwrap().input_serial = Some(serial);
@@ -698,7 +929,9 @@ impl Dispatch<WlDataSource, Arc<SourceData>> for State {
                 let mut shared = state.shared.lock().unwrap();
                 match data.clipboard {
                     // Another client took the clipboard.
-                    Some(generation) if shared.own_selection == Some(generation) => shared.own_selection = None,
+                    Some(generation) if shared.own_selection == Some(generation) => {
+                        shared.own_selection = None
+                    }
                     Some(_) => {}
                     None => {
                         data.icon.lock().unwrap().take();
@@ -713,10 +946,27 @@ impl Dispatch<WlDataSource, Arc<SourceData>> for State {
 }
 
 impl Dispatch<WlDataDevice, ()> for State {
-    fn event(state: &mut Self, _: &WlDataDevice, event: wl_data_device::Event, _: &(), conn: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        state: &mut Self,
+        _: &WlDataDevice,
+        event: wl_data_device::Event,
+        _: &(),
+        conn: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         match event {
-            wl_data_device::Event::Enter { serial, surface, x, y, id } => {
-                trace!("device enter ours={} offer={}", surface.id() == state.our_surface, id.is_some());
+            wl_data_device::Event::Enter {
+                serial,
+                surface,
+                x,
+                y,
+                id,
+            } => {
+                trace!(
+                    "device enter ours={} offer={}",
+                    surface.id() == state.our_surface,
+                    id.is_some()
+                );
                 if let Some((old, _)) = state.offer.take() {
                     old.destroy();
                 }
@@ -724,7 +974,10 @@ impl Dispatch<WlDataDevice, ()> for State {
                     return;
                 }
                 let Some(offer) = id else { return };
-                let mimes = offer.data::<OfferData>().map(|d| d.mimes.lock().unwrap().clone()).unwrap_or_default();
+                let mimes = offer
+                    .data::<OfferData>()
+                    .map(|d| d.mimes.lock().unwrap().clone())
+                    .unwrap_or_default();
                 let mime = drop_mime(&mimes);
                 trace!("drop formats {mimes:?}, accepting {mime:?}");
                 if let Some(mime) = mime {
@@ -758,44 +1011,65 @@ impl Dispatch<WlDataDevice, ()> for State {
             }
             wl_data_device::Event::Drop => {
                 trace!("device drop, offer={}", state.offer.is_some());
-                let Some((offer, mime)) = state.offer.take() else { return };
+                let Some((offer, mime)) = state.offer.take() else {
+                    return;
+                };
                 state.emit(DndEvent::Leave);
                 let mut fds = [0; 2];
                 if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
                     offer.destroy();
                     return;
                 }
-                let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+                let (read, write) =
+                    unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
                 offer.receive(mime.into(), write.as_fd());
                 drop(write); // libwayland dup'd it when marshalling
                 let _ = conn.flush();
-                let (tx, ctx, conn, pos) = (state.tx.clone(), state.ctx.clone(), conn.clone(), state.pos);
+                let (tx, ctx, conn, pos) =
+                    (state.tx.clone(), state.ctx.clone(), conn.clone(), state.pos);
                 let own = state.shared.lock().unwrap().dragging_out;
                 std::thread::spawn(move || {
                     let mut bytes = Vec::new();
                     let result = std::fs::File::from(read).read_to_end(&mut bytes);
                     // Read optional naming metadata while the offer is still alive.
-                    let mimes = offer.data::<OfferData>().map(|d| d.mimes.lock().unwrap().clone()).unwrap_or_default();
-                    let source_name = if result.is_ok() && !bytes.is_empty() && image_name(mime).is_some() {
-                        IMAGE_NAME_MIMES.into_iter().filter(|m| mimes.iter().any(|offered| offered == m)).find_map(|name_mime| {
-                            let metadata = receive_bytes(&conn, &offer, name_mime)?;
-                            source_image_name(name_mime, &metadata, mime)
-                        })
-                    } else {
-                        None
-                    };
+                    let mimes = offer
+                        .data::<OfferData>()
+                        .map(|d| d.mimes.lock().unwrap().clone())
+                        .unwrap_or_default();
+                    let source_name =
+                        if result.is_ok() && !bytes.is_empty() && image_name(mime).is_some() {
+                            IMAGE_NAME_MIMES
+                                .into_iter()
+                                .filter(|m| mimes.iter().any(|offered| offered == m))
+                                .find_map(|name_mime| {
+                                    let metadata = receive_bytes(&conn, &offer, name_mime)?;
+                                    source_image_name(name_mime, &metadata, mime)
+                                })
+                        } else {
+                            None
+                        };
                     offer.finish();
                     offer.destroy();
                     let _ = conn.flush();
                     let event = match result {
-                        Err(e) => DndEvent::Error(format!("Could not receive dropped image or files: {e}")),
-                        Ok(_) if bytes.is_empty() => DndEvent::Error("The source sent no image or files".into()),
+                        Err(e) => DndEvent::Error(format!(
+                            "Could not receive dropped image or files: {e}"
+                        )),
+                        Ok(_) if bytes.is_empty() => {
+                            DndEvent::Error("The source sent no image or files".into())
+                        }
                         Ok(_) => match image_name(mime) {
-                            Some(name) => DndEvent::Image { name: source_name.unwrap_or_else(|| name.into()), bytes, pos },
+                            Some(name) => DndEvent::Image {
+                                name: source_name.unwrap_or_else(|| name.into()),
+                                bytes,
+                                pos,
+                            },
                             None => {
                                 let paths = parse_uri_list(&String::from_utf8_lossy(&bytes));
                                 if paths.is_empty() {
-                                    DndEvent::Error("The drop contains no local files or image data".into())
+                                    DndEvent::Error(
+                                        "The drop contains no local files or image data".into(),
+                                    )
                                 } else {
                                     DndEvent::Drop { paths, pos, own }
                                 }
@@ -816,7 +1090,14 @@ impl Dispatch<WlDataDevice, ()> for State {
 }
 
 impl Dispatch<WlDataOffer, OfferData> for State {
-    fn event(_: &mut Self, _: &WlDataOffer, event: wl_data_offer::Event, data: &OfferData, _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        _: &mut Self,
+        _: &WlDataOffer,
+        event: wl_data_offer::Event,
+        data: &OfferData,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         if let wl_data_offer::Event::Offer { mime_type } = event {
             data.mimes.lock().unwrap().push(mime_type);
         }
@@ -829,35 +1110,87 @@ mod tests {
 
     #[test]
     fn image_names_come_from_source_urls_and_match_transferred_format() {
-        assert_eq!(source_image_name("_NETSCAPE_URL", b"https://example.com/photos/Red%20fox.jpg?size=large#image\nPage title", "image/png"), Some("Red fox.png".into()));
-        assert_eq!(source_image_name(URI_LIST, "# comment\r\nfile:///tmp/Лиса.png\r\n".as_bytes(), "image/png"), Some("Лиса.png".into()));
-        assert_eq!(source_image_name(IMAGE_NAME_MIMES[0], b"original.jpeg", "image/jpeg"), Some("original.jpeg".into()));
-        assert_eq!(source_image_name("_NETSCAPE_URL", b"https://example.com/render?filename=fox.jpg", "image/png"), Some("render.png".into()));
-        let utf16: Vec<u8> = "https://example.com/Лиса.jpg\nImage title".encode_utf16().flat_map(u16::to_le_bytes).collect();
-        assert_eq!(source_image_name("text/x-moz-url", &utf16, "image/png"), Some("Лиса.png".into()));
+        assert_eq!(
+            source_image_name(
+                "_NETSCAPE_URL",
+                b"https://example.com/photos/Red%20fox.jpg?size=large#image\nPage title",
+                "image/png"
+            ),
+            Some("Red fox.png".into())
+        );
+        assert_eq!(
+            source_image_name(
+                URI_LIST,
+                "# comment\r\nfile:///tmp/Лиса.png\r\n".as_bytes(),
+                "image/png"
+            ),
+            Some("Лиса.png".into())
+        );
+        assert_eq!(
+            source_image_name(IMAGE_NAME_MIMES[0], b"original.jpeg", "image/jpeg"),
+            Some("original.jpeg".into())
+        );
+        assert_eq!(
+            source_image_name(
+                "_NETSCAPE_URL",
+                b"https://example.com/render?filename=fox.jpg",
+                "image/png"
+            ),
+            Some("render.png".into())
+        );
+        let utf16: Vec<u8> = "https://example.com/Лиса.jpg\nImage title"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        assert_eq!(
+            source_image_name("text/x-moz-url", &utf16, "image/png"),
+            Some("Лиса.png".into())
+        );
     }
 
     #[test]
     fn unsafe_or_missing_source_names_use_the_default() {
         for url in [
-            "https://example.com/", "https://example.com", "blob:https://example.com/uuid",
-            "data:image/png;base64,abc", "https://example.com/%2e%2e", "https://example.com/a%2Fb.png",
-            "https://example.com/a%5Cb.png", "https://example.com/a%00b.png", "https://example.com/a%0Ab.png",
+            "https://example.com/",
+            "https://example.com",
+            "blob:https://example.com/uuid",
+            "data:image/png;base64,abc",
+            "https://example.com/%2e%2e",
+            "https://example.com/a%2Fb.png",
+            "https://example.com/a%5Cb.png",
+            "https://example.com/a%00b.png",
+            "https://example.com/a%0Ab.png",
         ] {
-            assert_eq!(source_image_name(URI_LIST, url.as_bytes(), "image/png"), None, "{url}");
+            assert_eq!(
+                source_image_name(URI_LIST, url.as_bytes(), "image/png"),
+                None,
+                "{url}"
+            );
         }
         for name in ["../outside.png", "..", "", "a/b.png"] {
-            assert_eq!(source_image_name(IMAGE_NAME_MIMES[0], name.as_bytes(), "image/png"), None);
+            assert_eq!(
+                source_image_name(IMAGE_NAME_MIMES[0], name.as_bytes(), "image/png"),
+                None
+            );
         }
     }
 
     #[test]
     fn browser_images_prefer_binary_data_and_file_drags_keep_uri_lists() {
-        let firefox = [URI_LIST, "text/x-moz-url", "text/html", "image/jpeg", "image/png"]
-            .map(String::from);
+        let firefox = [
+            URI_LIST,
+            "text/x-moz-url",
+            "text/html",
+            "image/jpeg",
+            "image/png",
+        ]
+        .map(String::from);
         assert_eq!(drop_mime(&firefox), Some("image/png"));
         assert_eq!(image_name(drop_mime(&firefox).unwrap()), Some("image.png"));
-        assert_eq!(drop_mime(&[URI_LIST.into(), "text/plain".into()]), Some(URI_LIST));
+        assert_eq!(
+            drop_mime(&[URI_LIST.into(), "text/plain".into()]),
+            Some(URI_LIST)
+        );
         assert_eq!(drop_mime(&["image/jpeg".into()]), Some("image/jpeg"));
         assert_eq!(drop_mime(&["text/html".into(), "text/plain".into()]), None);
     }
@@ -877,8 +1210,12 @@ mod tests {
         });
         assert_eq!(copied, ["Привет\nworld", "fallback"]);
         assert_eq!(output.platform_output.commands.len(), 2);
-        assert!(matches!(&output.platform_output.commands[0], egui::OutputCommand::OpenUrl(url) if url.url == "https://example.com"));
-        assert!(matches!(&output.platform_output.commands[1], egui::OutputCommand::CopyText(text) if text == "fallback"));
+        assert!(
+            matches!(&output.platform_output.commands[0], egui::OutputCommand::OpenUrl(url) if url.url == "https://example.com")
+        );
+        assert!(
+            matches!(&output.platform_output.commands[1], egui::OutputCommand::CopyText(text) if text == "fallback")
+        );
     }
 
     #[test]
@@ -886,6 +1223,9 @@ mod tests {
         let p = PathBuf::from("/tmp/a b/ü#1.txt");
         let uri = file_uri(&p);
         assert_eq!(uri, "file:///tmp/a%20b/%C3%BC%231.txt");
-        assert_eq!(parse_uri_list(&format!("{uri}\r\n# comment\r\nfile://host/etc/x\r\n")), vec![p, PathBuf::from("/etc/x")]);
+        assert_eq!(
+            parse_uri_list(&format!("{uri}\r\n# comment\r\nfile://host/etc/x\r\n")),
+            vec![p, PathBuf::from("/etc/x")]
+        );
     }
 }

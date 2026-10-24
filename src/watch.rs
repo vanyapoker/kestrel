@@ -27,7 +27,11 @@ impl Watcher {
             ctx.request_repaint();
         })
         .ok();
-        Self { inner, watched: HashSet::new(), rx }
+        Self {
+            inner,
+            watched: HashSet::new(),
+            rx,
+        }
     }
 
     /// Makes the watched set equal to `wanted`.

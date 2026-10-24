@@ -28,8 +28,8 @@ pub enum Renderer {
 
 pub fn renderer_for(ext: &str) -> Option<Renderer> {
     Some(match ext {
-        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "ico" | "tif" | "tiff" | "tga" | "qoi"
-        | "pnm" | "hdr" | "exr" | "avif" => Renderer::Raster,
+        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "ico" | "tif" | "tiff" | "tga"
+        | "qoi" | "pnm" | "hdr" | "exr" | "avif" => Renderer::Raster,
         "svg" | "svgz" => Renderer::Svg,
         "pdf" => Renderer::Pdf,
         "mp4" | "mkv" | "webm" | "avi" | "mov" | "wmv" | "flv" | "m4v" | "mpg" | "mpeg" => {
@@ -67,7 +67,10 @@ pub fn render(path: &Path, renderer: Renderer, max: u32) -> Result<Rendered, Str
         Renderer::Video => {
             // Grab a frame ~10% in (capped at 30s) to skip black intros.
             let info = media_info(path);
-            let dur = info.iter().find(|(k, _)| k == "duration").and_then(|(_, v)| v.parse::<f64>().ok());
+            let dur = info
+                .iter()
+                .find(|(k, _)| k == "duration")
+                .and_then(|(_, v)| v.parse::<f64>().ok());
             let at = dur.map(|d| (d * 0.1).min(30.0)).unwrap_or(0.0);
             let scale = format!("scale='min({max},iw)':-2");
             let frame = |t: f64| {
@@ -75,19 +78,38 @@ pub fn render(path: &Path, renderer: Renderer, max: u32) -> Result<Rendered, Str
                     Command::new("ffmpeg")
                         .args(["-v", "error", "-ss", &format!("{t:.2}"), "-i"])
                         .arg(path)
-                        .args(["-frames:v", "1", "-vf", &scale, "-f", "image2pipe", "-c:v", "png", "-"]),
+                        .args([
+                            "-frames:v",
+                            "1",
+                            "-vf",
+                            &scale,
+                            "-f",
+                            "image2pipe",
+                            "-c:v",
+                            "png",
+                            "-",
+                        ]),
                 )
             };
             let png = frame(at).or_else(|_| frame(0.0))?;
-            let w = info.iter().find(|(k, _)| k == "width").and_then(|(_, v)| v.parse().ok());
-            let h = info.iter().find(|(k, _)| k == "height").and_then(|(_, v)| v.parse().ok());
+            let w = info
+                .iter()
+                .find(|(k, _)| k == "width")
+                .and_then(|(_, v)| v.parse().ok());
+            let h = info
+                .iter()
+                .find(|(k, _)| k == "height")
+                .and_then(|(_, v)| v.parse().ok());
             decode_png(&png, w.zip(h))
         }
     }
 }
 
 fn render_raster(path: &Path, max: u32) -> Result<Rendered, String> {
-    if std::fs::metadata(path).map(|m| m.len() > MAX_IMAGE_FILE).unwrap_or(false) {
+    if std::fs::metadata(path)
+        .map(|m| m.len() > MAX_IMAGE_FILE)
+        .unwrap_or(false)
+    {
         return Err("Image too large to preview".into());
     }
     let img = image::ImageReader::open(path)
@@ -97,14 +119,24 @@ fn render_raster(path: &Path, max: u32) -> Result<Rendered, String> {
         .decode()
         .map_err(|e| e.to_string())?;
     let dims = (img.width(), img.height());
-    let img = if dims.0 > max || dims.1 > max { img.thumbnail(max, max) } else { img };
-    Ok(Rendered { image: to_color_image(img), dims: Some(dims) })
+    let img = if dims.0 > max || dims.1 > max {
+        img.thumbnail(max, max)
+    } else {
+        img
+    };
+    Ok(Rendered {
+        image: to_color_image(img),
+        dims: Some(dims),
+    })
 }
 
 fn decode_png(bytes: &[u8], dims: Option<(u32, u32)>) -> Result<Rendered, String> {
     let img = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
     let dims = dims.or(Some((img.width(), img.height())));
-    Ok(Rendered { image: to_color_image(img), dims })
+    Ok(Rendered {
+        image: to_color_image(img),
+        dims,
+    })
 }
 
 fn to_color_image(img: image::DynamicImage) -> ColorImage {
@@ -184,7 +216,11 @@ fn run_tool(cmd: &mut Command) -> Result<Vec<u8>, String> {
         }
     }
     let buf = reader.join().unwrap_or_default();
-    if buf.is_empty() { Err("No output".into()) } else { Ok(buf) }
+    if buf.is_empty() {
+        Err("No output".into())
+    } else {
+        Ok(buf)
+    }
 }
 
 // A tiny sample is enough for document thumbnails. Never open streams or devices.
@@ -193,26 +229,46 @@ const TEXT_LINES: usize = 24;
 const TEXT_COLUMNS: usize = 160;
 
 fn text_thumbnail(path: &Path) -> Option<egui::text::LayoutJob> {
-    if !std::fs::metadata(path).ok()?.is_file() { return None; }
-    let file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(path).ok()?;
+    if !std::fs::metadata(path).ok()?.is_file() {
+        return None;
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .ok()?;
     let meta = file.metadata().ok()?;
-    if !meta.is_file() { return None; }
+    if !meta.is_file() {
+        return None;
+    }
     let mut bytes = Vec::new();
     file.take(TEXT_BYTES as u64).read_to_end(&mut bytes).ok()?;
     let text = match std::str::from_utf8(&bytes) {
         Ok(text) => text,
-        Err(e) if e.error_len().is_none() && bytes.len() == TEXT_BYTES && meta.len() > bytes.len() as u64 => {
+        Err(e)
+            if e.error_len().is_none()
+                && bytes.len() == TEXT_BYTES
+                && meta.len() > bytes.len() as u64 =>
+        {
             std::str::from_utf8(&bytes[..e.valid_up_to()]).ok()?
         }
         Err(_) => return None,
-    }.trim_start_matches('\u{feff}');
-    if text.chars().any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t')) { return None; }
+    }
+    .trim_start_matches('\u{feff}');
+    if text
+        .chars()
+        .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+    {
+        return None;
+    }
     let mut sample = String::new();
     for line in text.lines().take(TEXT_LINES) {
         sample.extend(line.replace('\t', "    ").chars().take(TEXT_COLUMNS));
         sample.push('\n');
     }
-    if sample.trim().is_empty() { return None; }
+    if sample.trim().is_empty() {
+        return None;
+    }
     Some(crate::preview::highlight_text(path, &sample, TEXT_LINES, egui::FontId::monospace(12.5)).0)
 }
 
@@ -271,10 +327,14 @@ pub struct Thumbs {
 
 impl Thumbs {
     pub fn new(ctx: egui::Context) -> Self {
-        let queue = Arc::new(Queue { stack: Mutex::new(Vec::new()), ready: Condvar::new() });
+        let queue = Arc::new(Queue {
+            stack: Mutex::new(Vec::new()),
+            ready: Condvar::new(),
+        });
         let (tx, rx) = channel();
         for i in 0..WORKERS {
-            let (queue, tx, ctx): (_, Sender<ResultMsg>, _) = (queue.clone(), tx.clone(), ctx.clone());
+            let (queue, tx, ctx): (_, Sender<ResultMsg>, _) =
+                (queue.clone(), tx.clone(), ctx.clone());
             std::thread::Builder::new()
                 .name(format!("thumb-{i}"))
                 .spawn(move || {
@@ -282,31 +342,57 @@ impl Thumbs {
                         let request = {
                             let mut stack = queue.stack.lock().unwrap();
                             loop {
-                                if let Some(job) = stack.pop() { break job; }
+                                if let Some(job) = stack.pop() {
+                                    break job;
+                                }
                                 stack = queue.ready.wait(stack).unwrap();
                             }
                         };
                         let payload = match request.kind {
-                            Kind::Image(renderer) => render(&request.path, renderer, THUMB_SIZE).ok().map(|r| Payload::Image(r.image)),
+                            Kind::Image(renderer) => render(&request.path, renderer, THUMB_SIZE)
+                                .ok()
+                                .map(|r| Payload::Image(r.image)),
                             Kind::Text(_) => text_thumbnail(&request.path).map(Payload::Text),
                         };
-                        if tx.send(ResultMsg { request, payload }).is_err() { return; }
+                        if tx.send(ResultMsg { request, payload }).is_err() {
+                            return;
+                        }
                         ctx.request_repaint();
                     }
                 })
                 .expect("spawn thumbnail thread");
         }
-        Self { cache: HashMap::new(), order: VecDeque::new(), queue, rx, next_request: 0, touched: HashSet::new() }
+        Self {
+            cache: HashMap::new(),
+            order: VecDeque::new(),
+            queue,
+            rx,
+            next_request: 0,
+            touched: HashSet::new(),
+        }
     }
 
     fn request(&mut self, path: &Path, kind: Kind) {
         self.touched.insert(path.to_path_buf());
-        if self.cache.get(path).is_some_and(|c| c.kind == kind) { return; }
+        if self.cache.get(path).is_some_and(|c| c.kind == kind) {
+            return;
+        }
         self.invalidate(path);
         self.next_request += 1;
-        self.cache.insert(path.to_path_buf(), Cached { request: self.next_request, kind, value: Thumb::Pending });
+        self.cache.insert(
+            path.to_path_buf(),
+            Cached {
+                request: self.next_request,
+                kind,
+                value: Thumb::Pending,
+            },
+        );
         self.order.push_back(path.to_path_buf());
-        self.queue.stack.lock().unwrap().push(Request { path: path.to_path_buf(), id: self.next_request, kind });
+        self.queue.stack.lock().unwrap().push(Request {
+            path: path.to_path_buf(),
+            id: self.next_request,
+            kind,
+        });
         self.queue.ready.notify_one();
     }
 
@@ -343,12 +429,20 @@ impl Thumbs {
 
     fn accept(&mut self, ctx: &egui::Context, msg: ResultMsg) {
         let request = msg.request;
-        let Some(cached) = self.cache.get_mut(&request.path) else { return };
-        if cached.request != request.id || cached.kind != request.kind { return; }
-        if matches!(request.kind, Kind::Text(g) if g != crate::theme::generation()) { return; }
+        let Some(cached) = self.cache.get_mut(&request.path) else {
+            return;
+        };
+        if cached.request != request.id || cached.kind != request.kind {
+            return;
+        }
+        if matches!(request.kind, Kind::Text(g) if g != crate::theme::generation()) {
+            return;
+        }
         cached.value = match msg.payload {
             Some(Payload::Image(img)) => Thumb::Ready(ctx.load_texture(
-                format!("thumb:{}", request.path.display()), img, egui::TextureOptions::LINEAR,
+                format!("thumb:{}", request.path.display()),
+                img,
+                egui::TextureOptions::LINEAR,
             )),
             Some(Payload::Text(job)) => Thumb::Text(Arc::new(job)),
             None => Thumb::Failed,
@@ -356,12 +450,16 @@ impl Thumbs {
     }
 
     pub fn poll(&mut self, ctx: &egui::Context) {
-        while let Ok(msg) = self.rx.try_recv() { self.accept(ctx, msg); }
+        while let Ok(msg) = self.rx.try_recv() {
+            self.accept(ctx, msg);
+        }
         // Evict oldest entries that weren't visible this frame, including pending work.
         let mut guard = self.order.len();
         while self.cache.len() > CACHE_CAP && guard > 0 {
             guard -= 1;
-            let Some(p) = self.order.pop_front() else { break };
+            let Some(p) = self.order.pop_front() else {
+                break;
+            };
             if self.touched.contains(&p) {
                 self.order.push_back(p);
             } else {
@@ -382,7 +480,11 @@ mod tests {
 
     fn directory() -> PathBuf {
         static NEXT: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!("kestrel-text-thumbs-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let path = std::env::temp_dir().join(format!(
+            "kestrel-text-thumbs-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
         fs::create_dir_all(&path).unwrap();
         path
     }
@@ -410,7 +512,10 @@ mod tests {
         let job = text_thumbnail(&dir.join("main.rs")).unwrap();
         let colors: HashSet<_> = job.sections.iter().map(|s| s.format.color).collect();
         assert!(colors.len() > 1, "code should retain syntax colors");
-        assert!(renderer_for("ts").is_none(), "TypeScript uses document thumbnails");
+        assert!(
+            renderer_for("ts").is_none(),
+            "TypeScript uses document thumbnails"
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -418,12 +523,26 @@ mod tests {
     fn document_samples_bound_reads_lines_and_columns_without_breaking_utf8() {
         let dir = directory();
         let path = dir.join("large.txt");
-        fs::write(&path, format!("{}\n{}", "界".repeat(300), "next line\n".repeat(1000))).unwrap();
+        fs::write(
+            &path,
+            format!("{}\n{}", "界".repeat(300), "next line\n".repeat(1000)),
+        )
+        .unwrap();
         let job = text_thumbnail(&path).unwrap();
         assert_eq!(job.text.lines().count(), TEXT_LINES);
-        assert_eq!(job.text.lines().next().unwrap().chars().count(), TEXT_COLUMNS);
-        fs::write(&path, format!("{}界after the byte limit", "a".repeat(TEXT_BYTES - 1))).unwrap();
-        assert!(text_thumbnail(&path).is_some(), "a byte cap may split the final character");
+        assert_eq!(
+            job.text.lines().next().unwrap().chars().count(),
+            TEXT_COLUMNS
+        );
+        fs::write(
+            &path,
+            format!("{}界after the byte limit", "a".repeat(TEXT_BYTES - 1)),
+        )
+        .unwrap();
+        assert!(
+            text_thumbnail(&path).is_some(),
+            "a byte cap may split the final character"
+        );
         fs::write(&path, b"\xef\xbb\xbfhello\tworld\r\n").unwrap();
         assert_eq!(text_thumbnail(&path).unwrap().text, "hello    world\n");
         fs::remove_dir_all(dir).unwrap();
@@ -455,21 +574,38 @@ mod tests {
         let locked = dir.join("locked.txt");
         fs::write(&locked, "not readable").unwrap();
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
-        if unsafe { libc::geteuid() } != 0 { assert!(text_thumbnail(&locked).is_none()); }
+        if unsafe { libc::geteuid() } != 0 {
+            assert!(text_thumbnail(&locked).is_none());
+        }
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o600)).unwrap();
         fs::remove_dir_all(dir).unwrap();
     }
 
     fn empty_cache() -> Thumbs {
         let (_, rx) = channel();
-        Thumbs { cache: HashMap::new(), order: VecDeque::new(),
-            queue: Arc::new(Queue { stack: Mutex::new(Vec::new()), ready: Condvar::new() }),
-            rx, next_request: 0, touched: HashSet::new() }
+        Thumbs {
+            cache: HashMap::new(),
+            order: VecDeque::new(),
+            queue: Arc::new(Queue {
+                stack: Mutex::new(Vec::new()),
+                ready: Condvar::new(),
+            }),
+            rx,
+            next_request: 0,
+            touched: HashSet::new(),
+        }
     }
 
     fn result(request: Request, text: &str) -> ResultMsg {
-        ResultMsg { request, payload: Some(Payload::Text(egui::text::LayoutJob::simple(
-            text.into(), egui::FontId::monospace(12.5), egui::Color32::WHITE, f32::INFINITY))) }
+        ResultMsg {
+            request,
+            payload: Some(Payload::Text(egui::text::LayoutJob::simple(
+                text.into(),
+                egui::FontId::monospace(12.5),
+                egui::Color32::WHITE,
+                f32::INFINITY,
+            ))),
+        }
     }
 
     #[test]
@@ -504,7 +640,9 @@ mod tests {
     fn pending_work_is_bounded_and_visible_entries_are_retained() {
         let ctx = egui::Context::default();
         let mut cache = empty_cache();
-        for i in 0..CACHE_CAP { cache.get_text(Path::new(&format!("file{i}.txt"))); }
+        for i in 0..CACHE_CAP {
+            cache.get_text(Path::new(&format!("file{i}.txt")));
+        }
         cache.poll(&ctx); // finish the frame that requested the original files
         let visible = Path::new("file0.txt");
         cache.get_text(visible);

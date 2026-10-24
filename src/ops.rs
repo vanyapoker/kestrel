@@ -44,7 +44,14 @@ pub enum Format {
 }
 
 impl Format {
-    pub const ALL: [Format; 6] = [Format::Zip, Format::TarGz, Format::TarXz, Format::TarZst, Format::TarBz2, Format::SevenZip];
+    pub const ALL: [Format; 6] = [
+        Format::Zip,
+        Format::TarGz,
+        Format::TarXz,
+        Format::TarZst,
+        Format::TarBz2,
+        Format::SevenZip,
+    ];
 
     pub fn ext(self) -> &'static str {
         match self {
@@ -67,13 +74,41 @@ impl Format {
         };
         let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         match self {
-            Format::Zip if level == Level::Store => a(&["--format", "zip", "--options", "zip:compression=store"]),
-            Format::Zip => a(&["--format", "zip", "--options", &format!("zip:compression-level={}", pick((1, 6, 9)))]),
-            Format::TarGz => a(&["--gzip", "--options", &format!("gzip:compression-level={}", pick((1, 6, 9)))]),
-            Format::TarXz => a(&["--xz", "--options", &format!("xz:compression-level={}", pick((1, 6, 9)))]),
-            Format::TarZst => a(&["--zstd", "--options", &format!("zstd:compression-level={}", pick((3, 10, 19)))]),
-            Format::TarBz2 => a(&["--bzip2", "--options", &format!("bzip2:compression-level={}", pick((1, 6, 9)))]),
-            Format::SevenZip => a(&["--format", "7zip", "--options", &format!("7zip:compression-level={}", pick((1, 6, 9)))]),
+            Format::Zip if level == Level::Store => {
+                a(&["--format", "zip", "--options", "zip:compression=store"])
+            }
+            Format::Zip => a(&[
+                "--format",
+                "zip",
+                "--options",
+                &format!("zip:compression-level={}", pick((1, 6, 9))),
+            ]),
+            Format::TarGz => a(&[
+                "--gzip",
+                "--options",
+                &format!("gzip:compression-level={}", pick((1, 6, 9))),
+            ]),
+            Format::TarXz => a(&[
+                "--xz",
+                "--options",
+                &format!("xz:compression-level={}", pick((1, 6, 9))),
+            ]),
+            Format::TarZst => a(&[
+                "--zstd",
+                "--options",
+                &format!("zstd:compression-level={}", pick((3, 10, 19))),
+            ]),
+            Format::TarBz2 => a(&[
+                "--bzip2",
+                "--options",
+                &format!("bzip2:compression-level={}", pick((1, 6, 9))),
+            ]),
+            Format::SevenZip => a(&[
+                "--format",
+                "7zip",
+                "--options",
+                &format!("7zip:compression-level={}", pick((1, 6, 9))),
+            ]),
         }
     }
 
@@ -151,11 +186,18 @@ impl Job {
                 pairs: pairs.into_iter().map(|(from, to)| (to, from)).collect(),
                 ..Self::new(JobKind::Rename, Vec::new(), None)
             },
-            Undo::MoveBack(pairs) => Self { srcs: pairs.iter().map(|(_, cur)| cur.clone()).collect(), pairs, ..Self::new(JobKind::MoveBack, Vec::new(), None) },
+            Undo::MoveBack(pairs) => Self {
+                srcs: pairs.iter().map(|(_, cur)| cur.clone()).collect(),
+                pairs,
+                ..Self::new(JobKind::MoveBack, Vec::new(), None)
+            },
             Undo::TrashCreated(paths) => Self::new(JobKind::Trash, paths, None),
             Undo::Untrash(paths) => Self::new(JobKind::Untrash, paths, None),
         };
-        Self { undoing: true, ..job }
+        Self {
+            undoing: true,
+            ..job
+        }
     }
 }
 
@@ -176,13 +218,29 @@ impl Undo {
     /// "the rename of \"x\"", "moving 3 items", … for the undo toast.
     pub fn describe(&self) -> String {
         let what = |paths: Vec<&Path>| {
-            if paths.len() == 1 { format!("\"{}\"", file_name(paths[0])) } else { format!("{} items", paths.len()) }
+            if paths.len() == 1 {
+                format!("\"{}\"", file_name(paths[0]))
+            } else {
+                format!("{} items", paths.len())
+            }
         };
         match self {
-            Undo::RenameBack(p) => format!("Renamed {}", what(p.iter().map(|(o, _)| o.as_path()).collect())),
-            Undo::MoveBack(p) => format!("Moved back {}", what(p.iter().map(|(o, _)| o.as_path()).collect())),
-            Undo::TrashCreated(p) => format!("Moved {} to trash", what(p.iter().map(PathBuf::as_path).collect())),
-            Undo::Untrash(p) => format!("Restored {} from trash", what(p.iter().map(PathBuf::as_path).collect())),
+            Undo::RenameBack(p) => format!(
+                "Renamed {}",
+                what(p.iter().map(|(o, _)| o.as_path()).collect())
+            ),
+            Undo::MoveBack(p) => format!(
+                "Moved back {}",
+                what(p.iter().map(|(o, _)| o.as_path()).collect())
+            ),
+            Undo::TrashCreated(p) => format!(
+                "Moved {} to trash",
+                what(p.iter().map(PathBuf::as_path).collect())
+            ),
+            Undo::Untrash(p) => format!(
+                "Restored {} from trash",
+                what(p.iter().map(PathBuf::as_path).collect())
+            ),
         }
     }
 }
@@ -237,7 +295,13 @@ impl Ops {
             .name("file-ops".into())
             .spawn(move || worker.run(rx, done_tx, q))
             .expect("spawn file-ops thread");
-        Self { tx, done_rx, progress, cancel, queued }
+        Self {
+            tx,
+            done_rx,
+            progress,
+            cancel,
+            queued,
+        }
     }
 
     pub fn submit(&self, job: Job) {
@@ -305,7 +369,10 @@ impl Worker {
             JobKind::Compress => format!("Compressing {what}"),
             JobKind::SaveImage => "Saving dropped image".into(),
         };
-        *self.progress.lock().unwrap() = Some(Progress { title, ..Default::default() });
+        *self.progress.lock().unwrap() = Some(Progress {
+            title,
+            ..Default::default()
+        });
         self.ctx.request_repaint();
 
         let mut done = Done {
@@ -340,18 +407,23 @@ impl Worker {
                             done.created.push(path);
                             done.undo = Some(Undo::TrashCreated(done.created.clone()));
                         }
-                        Err(e) => done.errors.push(format!("Could not save dropped image: {e}")),
+                        Err(e) => done
+                            .errors
+                            .push(format!("Could not save dropped image: {e}")),
                     }
                 }
                 done.summary = "Saved dropped image".into();
             }
             JobKind::Rename => {
-                if self.cancelled() { done.cancelled = true; }
-                else {
+                if self.cancelled() {
+                    done.cancelled = true;
+                } else {
                     match crate::rename::apply(&job.pairs) {
                         Ok(()) => {
                             done.created = job.pairs.iter().map(|(_, to)| to.clone()).collect();
-                            if !job.undoing { done.undo = Some(Undo::RenameBack(job.pairs)); }
+                            if !job.undoing {
+                                done.undo = Some(Undo::RenameBack(job.pairs));
+                            }
                         }
                         Err(error) => done.errors.push(format!("Rename failed: {error}")),
                     }
@@ -362,7 +434,12 @@ impl Worker {
                 if let Err(e) = trash::delete_all(&job.srcs) {
                     done.errors.push(format!("Trash failed: {e}"));
                 }
-                let gone: Vec<PathBuf> = job.srcs.iter().filter(|p| fs::symlink_metadata(p).is_err()).cloned().collect();
+                let gone: Vec<PathBuf> = job
+                    .srcs
+                    .iter()
+                    .filter(|p| fs::symlink_metadata(p).is_err())
+                    .cloned()
+                    .collect();
                 if !gone.is_empty() {
                     done.undo = Some(Undo::Untrash(gone));
                 }
@@ -384,7 +461,12 @@ impl Worker {
                         break;
                     }
                     self.update(|p| p.current = file_name(src));
-                    self.extract(src, job.dest.as_deref(), job.extract_to == ExtractTo::Folder, &mut done);
+                    self.extract(
+                        src,
+                        job.dest.as_deref(),
+                        job.extract_to == ExtractTo::Folder,
+                        &mut done,
+                    );
                 }
                 if !done.created.is_empty() {
                     done.undo = Some(Undo::TrashCreated(done.created.clone()));
@@ -393,12 +475,18 @@ impl Worker {
             }
             JobKind::Compress => {
                 let dest = job.dest.clone().expect("compress needs a destination");
-                let name = job.name.clone().unwrap_or_else(|| format!("Archive{}", job.format.ext()));
+                let name = job
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("Archive{}", job.format.ext()));
                 self.compress(&job.srcs, &dest, &name, job.format, job.level, &mut done);
                 if !done.created.is_empty() {
                     done.undo = Some(Undo::TrashCreated(done.created.clone()));
                 }
-                done.summary = format!("Compressed {what} to \"{}\"", done.created.first().map(|p| file_name(p)).unwrap_or(name));
+                done.summary = format!(
+                    "Compressed {what} to \"{}\"",
+                    done.created.first().map(|p| file_name(p)).unwrap_or(name)
+                );
             }
             JobKind::Delete => {
                 for src in &job.srcs {
@@ -418,10 +506,16 @@ impl Worker {
                 let moved = self.transfer(job.kind, &job.srcs, &dest, &mut done);
                 done.undo = match job.kind {
                     JobKind::Move if !moved.is_empty() => Some(Undo::MoveBack(moved)),
-                    JobKind::Copy if !done.created.is_empty() => Some(Undo::TrashCreated(done.created.clone())),
+                    JobKind::Copy if !done.created.is_empty() => {
+                        Some(Undo::TrashCreated(done.created.clone()))
+                    }
                     _ => None,
                 };
-                let verb = if job.kind == JobKind::Copy { "Copied" } else { "Moved" };
+                let verb = if job.kind == JobKind::Copy {
+                    "Copied"
+                } else {
+                    "Moved"
+                };
                 done.summary = format!("{verb} {what} to {}", file_name(&dest));
             }
         }
@@ -435,7 +529,11 @@ impl Worker {
         image::load_from_memory(bytes).map_err(io::Error::other)?;
         let (path, mut file) = loop {
             let path = unique_dest(dest, name);
-            match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
                 Ok(file) => break (path, file),
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(e) => return Err(e),
@@ -461,20 +559,29 @@ impl Worker {
     }
 
     /// Copies or moves `srcs` into `dest`. Returns (source, new path) for each item moved.
-    fn transfer(&mut self, kind: JobKind, srcs: &[PathBuf], dest: &Path, done: &mut Done) -> Vec<(PathBuf, PathBuf)> {
+    fn transfer(
+        &mut self,
+        kind: JobKind,
+        srcs: &[PathBuf],
+        dest: &Path,
+        done: &mut Done,
+    ) -> Vec<(PathBuf, PathBuf)> {
         let mut moved = Vec::new();
         // Same-filesystem moves are renames and need no byte counting.
         let dest_dev = fs::metadata(dest).map(|m| m.dev()).ok();
         let mut need_copy = Vec::new();
         for src in srcs {
             if src.is_dir() && dest.starts_with(src) {
-                done.errors.push(format!("Cannot put \"{}\" inside itself", file_name(src)));
+                done.errors
+                    .push(format!("Cannot put \"{}\" inside itself", file_name(src)));
                 continue;
             }
             if kind == JobKind::Move && src.parent() == Some(dest) {
                 continue; // already there
             }
-            let same_dev = fs::symlink_metadata(src).map(|m| Some(m.dev()) == dest_dev).unwrap_or(false);
+            let same_dev = fs::symlink_metadata(src)
+                .map(|m| Some(m.dev()) == dest_dev)
+                .unwrap_or(false);
             if kind == JobKind::Move && same_dev {
                 let target = unique_dest(dest, &file_name(src));
                 match fs::rename(src, &target) {
@@ -564,7 +671,9 @@ impl Worker {
             match child.try_wait() {
                 Ok(Some(status)) => break status,
                 Ok(None) => {
-                    if total > 0 && let Some(read) = read_chars(&io) {
+                    if total > 0
+                        && let Some(read) = read_chars(&io)
+                    {
                         self.update(|p| p.bytes_done = read.min(total));
                     }
                     std::thread::sleep(Duration::from_millis(30));
@@ -576,21 +685,37 @@ impl Worker {
         if status.success() {
             Ok(())
         } else {
-            Err(err.lines().find(|l| !l.trim().is_empty()).unwrap_or("failed").trim().to_string())
+            Err(err
+                .lines()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("failed")
+                .trim()
+                .to_string())
         }
     }
 
     /// Unpacks `archive` into `out` (default: next to itself). A single top-level item comes
     /// out as is, unless `into_folder`; anything else goes into a folder named after the archive.
     fn extract(&mut self, archive: &Path, out: Option<&Path>, into_folder: bool, done: &mut Done) {
-        let Some(dir) = out.or_else(|| archive.parent()) else { return };
+        let Some(dir) = out.or_else(|| archive.parent()) else {
+            return;
+        };
         let tmp = unique_dest(dir, &format!(".kestrel-extract-{}", file_name(archive)));
         if let Err(e) = fs::create_dir(&tmp) {
             return done.errors.push(format!("{}: {e}", file_name(archive)));
         }
         let total = fs::metadata(archive).map(|m| m.len()).unwrap_or(0);
-        let res = self.run_tool(std::process::Command::new("bsdtar").arg("-xf").arg(archive).arg("-C").arg(&tmp), total);
-        let items: Vec<PathBuf> = fs::read_dir(&tmp).map(|rd| rd.flatten().map(|d| d.path()).collect()).unwrap_or_default();
+        let res = self.run_tool(
+            std::process::Command::new("bsdtar")
+                .arg("-xf")
+                .arg(archive)
+                .arg("-C")
+                .arg(&tmp),
+            total,
+        );
+        let items: Vec<PathBuf> = fs::read_dir(&tmp)
+            .map(|rd| rd.flatten().map(|d| d.path()).collect())
+            .unwrap_or_default();
         if let Err(e) = &res {
             if e != "cancelled" {
                 done.errors.push(format!("{}: {e}", file_name(archive)));
@@ -622,13 +747,23 @@ impl Worker {
 
     /// Archives `srcs` into `dest/name`, writing to a temporary file first so a
     /// failed or cancelled run leaves nothing half-written behind.
-    fn compress(&mut self, srcs: &[PathBuf], dest: &Path, name: &str, format: Format, level: Level, done: &mut Done) {
+    fn compress(
+        &mut self,
+        srcs: &[PathBuf],
+        dest: &Path,
+        name: &str,
+        format: Format,
+        level: Level,
+        done: &mut Done,
+    ) {
         let target = unique_dest(dest, name);
         let part = dest.join(format!(".{}.part", file_name(&target)));
         let mut cmd = std::process::Command::new("bsdtar");
         cmd.args(format.args(level)).arg("-cf").arg(&part);
         for src in srcs {
-            let (Some(parent), Some(base)) = (src.parent(), src.file_name()) else { continue };
+            let (Some(parent), Some(base)) = (src.parent(), src.file_name()) else {
+                continue;
+            };
             // `-C` per item lets search results from different folders go in one archive.
             let mut entry = std::ffi::OsString::new();
             if base.to_string_lossy().starts_with('-') {
@@ -638,7 +773,10 @@ impl Worker {
             cmd.arg("-C").arg(parent).arg(entry);
         }
         let total: u64 = srcs.iter().map(|s| tree_size(s)).sum();
-        match self.run_tool(&mut cmd, total).and_then(|()| fs::rename(&part, &target).map_err(|e| e.to_string())) {
+        match self
+            .run_tool(&mut cmd, total)
+            .and_then(|()| fs::rename(&part, &target).map_err(|e| e.to_string()))
+        {
             Ok(()) => done.created.push(target),
             Err(e) => {
                 let _ = fs::remove_file(&part);
@@ -652,13 +790,21 @@ impl Worker {
     /// Moves `cur` back to exactly `orig`, never replacing something already there.
     fn move_back(&mut self, orig: &Path, cur: &Path, done: &mut Done) {
         if fs::symlink_metadata(orig).is_ok() {
-            return done.errors.push(format!("Can't undo: \"{}\" already exists", file_name(orig)));
+            return done.errors.push(format!(
+                "Can't undo: \"{}\" already exists",
+                file_name(orig)
+            ));
         }
         if fs::symlink_metadata(cur).is_err() {
-            return done.errors.push(format!("Can't undo: \"{}\" is gone", file_name(cur)));
+            return done
+                .errors
+                .push(format!("Can't undo: \"{}\" is gone", file_name(cur)));
         }
         if !orig.parent().is_some_and(Path::is_dir) {
-            return done.errors.push(format!("Can't undo: the folder of \"{}\" is gone", file_name(orig)));
+            return done.errors.push(format!(
+                "Can't undo: the folder of \"{}\" is gone",
+                file_name(orig)
+            ));
         }
         match fs::rename(cur, orig) {
             Ok(()) => done.created.push(orig.to_path_buf()),
@@ -666,7 +812,11 @@ impl Worker {
                 let before = done.errors.len();
                 self.copy_tree(cur, orig, &mut done.errors);
                 if done.errors.len() == before && !self.cancelled() {
-                    let res = if cur.is_dir() && !cur.is_symlink() { fs::remove_dir_all(cur) } else { fs::remove_file(cur) };
+                    let res = if cur.is_dir() && !cur.is_symlink() {
+                        fs::remove_dir_all(cur)
+                    } else {
+                        fs::remove_file(cur)
+                    };
                     if let Err(e) = res {
                         done.errors.push(format!("{}: {e}", cur.display()));
                     }
@@ -709,16 +859,18 @@ impl Worker {
             self.update(|p| p.files_done += 1);
             r
         };
-        if let Err(e) = res {
-            if e.kind() != io::ErrorKind::Interrupted {
+        if let Err(e) = res
+            && e.kind() != io::ErrorKind::Interrupted {
                 errors.push(format!("{}: {e}", src.display()));
             }
-        }
     }
 
     fn copy_file(&mut self, src: &Path, dst: &Path, meta: &fs::Metadata) -> io::Result<()> {
         let mut input = fs::File::open(src)?;
-        let mut output = fs::OpenOptions::new().write(true).create_new(true).open(dst)?;
+        let mut output = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(dst)?;
         let result = self.copy_contents(&mut input, &mut output);
         if result.is_err() {
             drop(output);
@@ -756,7 +908,13 @@ impl Worker {
                 if r < 0 {
                     let err = io::Error::last_os_error();
                     match err.raw_os_error() {
-                        Some(libc::EXDEV | libc::ENOSYS | libc::EINVAL | libc::EOPNOTSUPP | libc::EPERM) => {
+                        Some(
+                            libc::EXDEV
+                            | libc::ENOSYS
+                            | libc::EINVAL
+                            | libc::EOPNOTSUPP
+                            | libc::EPERM,
+                        ) => {
                             kernel = false;
                             continue;
                         }
@@ -782,7 +940,9 @@ impl Worker {
 
 /// Total bytes and file count under `path` (not following symlinks).
 fn measure(path: &Path) -> (u64, u64) {
-    let Ok(meta) = fs::symlink_metadata(path) else { return (0, 0) };
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return (0, 0);
+    };
     if !meta.is_dir() {
         return (meta.len(), 1);
     }
@@ -826,25 +986,51 @@ fn push_unique(v: &mut Vec<PathBuf>, p: PathBuf) {
 }
 
 const ARCHIVE_EXTS: &[&str] = &[
-    ".tar.gz", ".tar.xz", ".tar.bz2", ".tar.zst", ".tar.lz4", ".tar.lzma", ".tar", ".tgz", ".txz", ".tbz", ".tbz2", ".tzst",
-    ".zip", ".7z", ".rar", ".jar", ".cpio", ".iso", ".cab", ".xar", ".deb",
+    ".tar.gz",
+    ".tar.xz",
+    ".tar.bz2",
+    ".tar.zst",
+    ".tar.lz4",
+    ".tar.lzma",
+    ".tar",
+    ".tgz",
+    ".txz",
+    ".tbz",
+    ".tbz2",
+    ".tzst",
+    ".zip",
+    ".7z",
+    ".rar",
+    ".jar",
+    ".cpio",
+    ".iso",
+    ".cab",
+    ".xar",
+    ".deb",
 ];
 
 /// Whether bsdtar can unpack this file, judging by its name.
 pub fn is_archive(path: &Path) -> bool {
     let name = file_name(path).to_lowercase();
-    ARCHIVE_EXTS.iter().any(|ext| name.len() > ext.len() && name.ends_with(ext))
+    ARCHIVE_EXTS
+        .iter()
+        .any(|ext| name.len() > ext.len() && name.ends_with(ext))
 }
 
 /// Bytes read so far by a process, from its /proc io file.
 fn read_chars(path: &str) -> Option<u64> {
-    fs::read_to_string(path).ok()?.lines().find_map(|l| l.strip_prefix("rchar: ")?.trim().parse().ok())
+    fs::read_to_string(path)
+        .ok()?
+        .lines()
+        .find_map(|l| l.strip_prefix("rchar: ")?.trim().parse().ok())
 }
 
 /// Total size of the files under `path` (not following symlinks).
 fn tree_size(path: &Path) -> u64 {
     match fs::symlink_metadata(path) {
-        Ok(m) if m.is_dir() => fs::read_dir(path).map(|rd| rd.flatten().map(|d| tree_size(&d.path())).sum()).unwrap_or(0),
+        Ok(m) if m.is_dir() => fs::read_dir(path)
+            .map(|rd| rd.flatten().map(|d| tree_size(&d.path())).sum())
+            .unwrap_or(0),
         Ok(m) => m.len(),
         Err(_) => 0,
     }
@@ -865,7 +1051,10 @@ fn archive_stem(path: &Path) -> String {
 pub fn archive_base_name(srcs: &[PathBuf]) -> String {
     match srcs {
         [one] if one.is_dir() => file_name(one),
-        [one] => one.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| file_name(one)),
+        [one] => one
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| file_name(one)),
         _ => "Archive".into(),
     }
 }
@@ -884,19 +1073,30 @@ fn untrash(paths: &[PathBuf], done: &mut Done) {
     let mut restore = Vec::new();
     for p in paths {
         if fs::symlink_metadata(p).is_ok() {
-            done.errors.push(format!("Can't undo: \"{}\" already exists", file_name(p)));
+            done.errors
+                .push(format!("Can't undo: \"{}\" already exists", file_name(p)));
             continue;
         }
-        match items.iter().filter(|i| i.original_path() == *p).max_by_key(|i| i.time_deleted) {
+        match items
+            .iter()
+            .filter(|i| i.original_path() == *p)
+            .max_by_key(|i| i.time_deleted)
+        {
             Some(item) => restore.push(item.clone()),
-            None => done.errors.push(format!("\"{}\" is no longer in the trash", file_name(p))),
+            None => done
+                .errors
+                .push(format!("\"{}\" is no longer in the trash", file_name(p))),
         }
     }
     let restored: Vec<PathBuf> = restore.iter().map(|i| i.original_path()).collect();
     if let Err(e) = trash::os_limited::restore_all(restore) {
         done.errors.push(format!("Restore failed: {e}"));
     }
-    done.created.extend(restored.into_iter().filter(|p| fs::symlink_metadata(p).is_ok()));
+    done.created.extend(
+        restored
+            .into_iter()
+            .filter(|p| fs::symlink_metadata(p).is_ok()),
+    );
 }
 
 #[cfg(test)]
@@ -920,7 +1120,9 @@ mod tests {
     fn dropped_image_preserves_bytes_handles_collisions_and_supports_undo() {
         let dir = tmpdir("dropped-image");
         let mut encoded = std::io::Cursor::new(Vec::new());
-        image::DynamicImage::new_rgba8(2, 2).write_to(&mut encoded, image::ImageFormat::Png).unwrap();
+        image::DynamicImage::new_rgba8(2, 2)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
         let bytes = encoded.into_inner();
         fs::write(dir.join("image.png"), b"existing image").unwrap();
         let mut job = Job::new(JobKind::SaveImage, Vec::new(), Some(dir.clone()));
@@ -963,7 +1165,11 @@ mod tests {
                 job.name = Some(format!("out-{}-{level:?}{}", format.label(), format.ext()));
                 (job.format, job.level) = (format, level);
                 let done = run(job);
-                assert!(done.errors.is_empty(), "{format:?} {level:?}: {:?}", done.errors);
+                assert!(
+                    done.errors.is_empty(),
+                    "{format:?} {level:?}: {:?}",
+                    done.errors
+                );
                 let archive = done.created[0].clone();
                 assert!(is_archive(&archive), "{archive:?}");
                 // Extract into a folder named after the archive, whatever the layout.
@@ -973,12 +1179,19 @@ mod tests {
                 assert!(done.errors.is_empty(), "{format:?}: {:?}", done.errors);
                 let out = done.created[0].clone();
                 assert_eq!(out, d.join(archive_stem(&archive)));
-                assert_eq!(fs::read_to_string(out.join("proj/a.txt")).unwrap().len(), 6000);
+                assert_eq!(
+                    fs::read_to_string(out.join("proj/a.txt")).unwrap().len(),
+                    6000
+                );
             }
         }
         // Extracting into another folder.
         fs::create_dir(d.join("elsewhere")).unwrap();
-        let mut job = Job::new(JobKind::Extract, vec![d.join("out-zip-Normal.zip")], Some(d.join("elsewhere")));
+        let mut job = Job::new(
+            JobKind::Extract,
+            vec![d.join("out-zip-Normal.zip")],
+            Some(d.join("elsewhere")),
+        );
         job.extract_to = ExtractTo::Dir;
         let done = run(job);
         assert_eq!(done.created, vec![d.join("elsewhere/proj")]);
@@ -1033,20 +1246,39 @@ mod tests {
         let dst = d.join("dst");
         fs::create_dir(&dst).unwrap();
 
-        let done = run(Job::new(JobKind::Copy, vec![src.clone()], Some(dst.clone())));
+        let done = run(Job::new(
+            JobKind::Copy,
+            vec![src.clone()],
+            Some(dst.clone()),
+        ));
         assert!(done.errors.is_empty(), "{:?}", done.errors);
-        assert_eq!(fs::read_to_string(dst.join("src/sub/f.txt")).unwrap(), "hello");
+        assert_eq!(
+            fs::read_to_string(dst.join("src/sub/f.txt")).unwrap(),
+            "hello"
+        );
         assert!(dst.join("src/link").is_symlink());
 
         // Copying again must not overwrite.
-        let done = run(Job::new(JobKind::Copy, vec![src.clone()], Some(dst.clone())));
+        let done = run(Job::new(
+            JobKind::Copy,
+            vec![src.clone()],
+            Some(dst.clone()),
+        ));
         assert_eq!(done.created, vec![dst.join("src (2)")]);
 
         // Into itself is refused.
-        let done = run(Job::new(JobKind::Copy, vec![src.clone()], Some(src.join("sub"))));
+        let done = run(Job::new(
+            JobKind::Copy,
+            vec![src.clone()],
+            Some(src.join("sub")),
+        ));
         assert_eq!(done.errors.len(), 1);
 
-        let done = run(Job::new(JobKind::Move, vec![src.clone()], Some(dst.clone())));
+        let done = run(Job::new(
+            JobKind::Move,
+            vec![src.clone()],
+            Some(dst.clone()),
+        ));
         assert!(done.errors.is_empty());
         assert!(!src.exists());
         assert!(dst.join("src (3)/sub/f.txt").exists());
@@ -1061,12 +1293,23 @@ mod tests {
         fs::create_dir_all(&b).unwrap();
         fs::write(a.join("f.txt"), "hi").unwrap();
 
-        let done = run(Job::new(JobKind::Copy, vec![a.join("f.txt")], Some(b.clone())));
+        let done = run(Job::new(
+            JobKind::Copy,
+            vec![a.join("f.txt")],
+            Some(b.clone()),
+        ));
         assert_eq!(done.undo, Some(Undo::TrashCreated(vec![b.join("f.txt")])));
 
-        let done = run(Job::new(JobKind::Move, vec![a.join("f.txt")], Some(b.clone())));
+        let done = run(Job::new(
+            JobKind::Move,
+            vec![a.join("f.txt")],
+            Some(b.clone()),
+        ));
         let undo = done.undo.unwrap();
-        assert_eq!(undo, Undo::MoveBack(vec![(a.join("f.txt"), b.join("f (2).txt"))]));
+        assert_eq!(
+            undo,
+            Undo::MoveBack(vec![(a.join("f.txt"), b.join("f (2).txt"))])
+        );
 
         let done = run(Job::undo(undo.clone()));
         assert!(done.undoing && done.undo.is_none());
@@ -1102,22 +1345,43 @@ mod tests {
         let done = run(Job::new(JobKind::Extract, vec![d.join("proj.zip")], None));
         assert!(done.errors.is_empty(), "{:?}", done.errors);
         assert_eq!(done.created, vec![d.join("proj (2)")]);
-        assert_eq!(fs::read_to_string(d.join("proj (2)/src/main.rs")).unwrap(), "fn main() {}");
+        assert_eq!(
+            fs::read_to_string(d.join("proj (2)/src/main.rs")).unwrap(),
+            "fn main() {}"
+        );
 
         // Loose files go into a folder named after the archive.
-        let mut job = Job::new(JobKind::Compress, vec![d.join("-dash.txt"), d.join("b.txt")], Some(d.clone()));
+        let mut job = Job::new(
+            JobKind::Compress,
+            vec![d.join("-dash.txt"), d.join("b.txt")],
+            Some(d.clone()),
+        );
         job.name = Some(zip_name(&job.srcs));
         assert!(run(job).errors.is_empty());
-        let done = run(Job::new(JobKind::Extract, vec![d.join("Archive.zip")], None));
+        let done = run(Job::new(
+            JobKind::Extract,
+            vec![d.join("Archive.zip")],
+            None,
+        ));
         assert_eq!(done.created, vec![d.join("Archive")]);
         assert!(d.join("Archive/-dash.txt").exists() && d.join("Archive/b.txt").exists());
-        assert!(fs::read_dir(&d).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().starts_with(".kestrel")));
+        assert!(
+            fs::read_dir(&d)
+                .unwrap()
+                .flatten()
+                .all(|e| !e.file_name().to_string_lossy().starts_with(".kestrel"))
+        );
 
         // A broken archive reports an error and leaves no temp folder.
         fs::write(d.join("bad.zip"), "not a zip").unwrap();
         let done = run(Job::new(JobKind::Extract, vec![d.join("bad.zip")], None));
         assert_eq!(done.errors.len(), 1);
-        assert!(fs::read_dir(&d).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().starts_with(".kestrel")));
+        assert!(
+            fs::read_dir(&d)
+                .unwrap()
+                .flatten()
+                .all(|e| !e.file_name().to_string_lossy().starts_with(".kestrel"))
+        );
         fs::remove_dir_all(d).unwrap();
     }
 
@@ -1126,6 +1390,9 @@ mod tests {
         assert!(is_archive(Path::new("/x/Photos.TAR.GZ")));
         assert!(!is_archive(Path::new("/x/.zip")));
         assert_eq!(archive_stem(Path::new("/x/photos.tar.gz")), "photos");
-        assert_eq!(zip_name(&[PathBuf::from("/nonexistent/report.pdf")]), "report.zip");
+        assert_eq!(
+            zip_name(&[PathBuf::from("/nonexistent/report.pdf")]),
+            "report.zip"
+        );
     }
 }

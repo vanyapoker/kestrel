@@ -62,7 +62,11 @@ pub const COMMANDS: &[(Cmd, &str, &str)] = &[
     (Cmd::ToggleSplit, "Toggle split view", "F6"),
     (Cmd::ToggleColumns, "Toggle Miller columns", "Ctrl+Shift+M"),
     (Cmd::ToggleGrid, "Toggle icons / details view", "Ctrl+G"),
-    (Cmd::ZoomIn, "Larger view (details → list → icons)", "Ctrl+Wheel up"),
+    (
+        Cmd::ZoomIn,
+        "Larger view (details → list → icons)",
+        "Ctrl+Wheel up",
+    ),
     (Cmd::ZoomOut, "Smaller view", "Ctrl+Wheel down"),
     (Cmd::TogglePreview, "Toggle preview panel", "Space / F3"),
     (Cmd::ToggleSidebar, "Toggle sidebar", "Ctrl+B"),
@@ -78,7 +82,11 @@ pub const COMMANDS: &[(Cmd, &str, &str)] = &[
     (Cmd::Paste, "Paste", "Ctrl+V"),
     (Cmd::Duplicate, "Duplicate", "Ctrl+D"),
     (Cmd::Extract, "Extract here", ""),
-    (Cmd::ExtractFolder, "Extract to a folder named after the archive", ""),
+    (
+        Cmd::ExtractFolder,
+        "Extract to a folder named after the archive",
+        "",
+    ),
     (Cmd::ExtractOther, "Extract to the other pane's folder", ""),
     (Cmd::Compress, "Compress to .zip", ""),
     (Cmd::CompressAs, "Compress… (format, level, name)", ""),
@@ -161,7 +169,10 @@ mod tests {
 
     #[test]
     fn fuzzy() {
-        assert!(fuzzy_score("nf", "New folder").unwrap() > fuzzy_score("nf", "Cancel file operation").unwrap_or(0));
+        assert!(
+            fuzzy_score("nf", "New folder").unwrap()
+                > fuzzy_score("nf", "Cancel file operation").unwrap_or(0)
+        );
         assert!(fuzzy_score("xyz", "New folder").is_none());
         assert!(fuzzy_score("split", "Toggle split view").is_some());
     }

@@ -46,7 +46,11 @@ impl FileChooser {
         title: &str,
         options: HashMap<String, OwnedValue>,
     ) -> (u32, Results) {
-        let kind = if flag(&options, "directory") { Kind::Folder } else { Kind::Open };
+        let kind = if flag(&options, "directory") {
+            Kind::Folder
+        } else {
+            Kind::Open
+        };
         let req = request(kind, title, &options);
         serve(conn, handle, req).await
     }
@@ -66,11 +70,19 @@ impl FileChooser {
 }
 
 fn flag(options: &HashMap<String, OwnedValue>, key: &str) -> bool {
-    options.get(key).and_then(|v| bool::try_from(&**v).ok()).unwrap_or(false)
+    options
+        .get(key)
+        .and_then(|v| bool::try_from(&**v).ok())
+        .unwrap_or(false)
 }
 
 fn request(kind: Kind, title: &str, options: &HashMap<String, OwnedValue>) -> Request {
-    let text = |key: &str| options.get(key).and_then(|v| <&str>::try_from(&**v).ok()).map(str::to_owned);
+    let text = |key: &str| {
+        options
+            .get(key)
+            .and_then(|v| <&str>::try_from(&**v).ok())
+            .map(str::to_owned)
+    };
     // `current_folder` is a NUL-terminated byte string.
     let dir = options.get("current_folder").and_then(|v| {
         let bytes: Vec<u8> = <Vec<u8>>::try_from((**v).try_clone().ok()?).ok()?;
@@ -93,7 +105,15 @@ fn request(kind: Kind, title: &str, options: &HashMap<String, OwnedValue>) -> Re
 async fn serve(conn: &zbus::Connection, handle: ObjectPath<'_>, req: Request) -> (u32, Results) {
     let handle = handle.to_string();
     // Registered for the length of the request so the portal can cancel it.
-    let _ = conn.object_server().at(handle.as_str(), RequestObj { handle: handle.clone() }).await;
+    let _ = conn
+        .object_server()
+        .at(
+            handle.as_str(),
+            RequestObj {
+                handle: handle.clone(),
+            },
+        )
+        .await;
     let (tx, rx) = async_channel::bounded(1);
     let key = handle.clone();
     std::thread::spawn(move || {
@@ -101,7 +121,10 @@ async fn serve(conn: &zbus::Connection, handle: ObjectPath<'_>, req: Request) ->
     });
     let paths = rx.recv().await.unwrap_or_default();
     running().lock().unwrap().remove(&handle);
-    let _ = conn.object_server().remove::<RequestObj, _>(handle.as_str()).await;
+    let _ = conn
+        .object_server()
+        .remove::<RequestObj, _>(handle.as_str())
+        .await;
 
     if paths.is_empty() {
         return (1, Results::new());
@@ -130,7 +153,9 @@ fn run_picker(req: &Request, key: &str) -> Vec<PathBuf> {
         return Vec::new();
     };
     running().lock().unwrap().insert(key.to_owned(), child.id());
-    let Ok(out) = child.wait_with_output() else { return Vec::new() };
+    let Ok(out) = child.wait_with_output() else {
+        return Vec::new();
+    };
     String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter(|l| l.starts_with('/'))

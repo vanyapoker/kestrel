@@ -100,8 +100,8 @@ pub fn category(ext: &str, is_dir: bool) -> Category {
         return Category::Folder;
     }
     match ext {
-        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "ico" | "tif" | "tiff" | "tga" | "qoi"
-        | "svg" | "avif" | "heic" => Category::Image,
+        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "ico" | "tif" | "tiff" | "tga"
+        | "qoi" | "svg" | "avif" | "heic" => Category::Image,
         "mp4" | "mkv" | "webm" | "avi" | "mov" | "wmv" | "flv" | "m4v" => Category::Video,
         "mp3" | "flac" | "wav" | "ogg" | "opus" | "m4a" | "aac" => Category::Audio,
         "zip" | "tar" | "gz" | "xz" | "zst" | "bz2" | "7z" | "rar" | "tgz" | "deb" | "rpm" => {
@@ -120,11 +120,57 @@ pub fn category(ext: &str, is_dir: bool) -> Category {
 pub fn is_code_ext(ext: &str) -> bool {
     matches!(
         ext,
-        "rs" | "c" | "h" | "cpp" | "hpp" | "cc" | "cs" | "go" | "py" | "js" | "ts" | "jsx" | "tsx"
-            | "java" | "kt" | "rb" | "php" | "lua" | "sh" | "bash" | "zsh" | "fish" | "zig"
-            | "odin" | "json" | "toml" | "yaml" | "yml" | "xml" | "html" | "css" | "scss" | "sql"
-            | "swift" | "hs" | "ml" | "ex" | "exs" | "erl" | "clj" | "scala" | "dart" | "vue"
-            | "svelte" | "nix" | "cmake" | "mk" | "dockerfile" | "glsl" | "hlsl" | "wgsl" | "lock"
+        "rs" | "c"
+            | "h"
+            | "cpp"
+            | "hpp"
+            | "cc"
+            | "cs"
+            | "go"
+            | "py"
+            | "js"
+            | "ts"
+            | "jsx"
+            | "tsx"
+            | "java"
+            | "kt"
+            | "rb"
+            | "php"
+            | "lua"
+            | "sh"
+            | "bash"
+            | "zsh"
+            | "fish"
+            | "zig"
+            | "odin"
+            | "json"
+            | "toml"
+            | "yaml"
+            | "yml"
+            | "xml"
+            | "html"
+            | "css"
+            | "scss"
+            | "sql"
+            | "swift"
+            | "hs"
+            | "ml"
+            | "ex"
+            | "exs"
+            | "erl"
+            | "clj"
+            | "scala"
+            | "dart"
+            | "vue"
+            | "svelte"
+            | "nix"
+            | "cmake"
+            | "mk"
+            | "dockerfile"
+            | "glsl"
+            | "hlsl"
+            | "wgsl"
+            | "lock"
     )
 }
 
