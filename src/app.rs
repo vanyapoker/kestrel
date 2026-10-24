@@ -947,6 +947,9 @@ impl App {
         for p in self.watcher.drain() {
             self.size_service.invalidate(&p, &mut self.sizes);
             self.thumbs.invalidate(&p);
+            if let Some(parent) = p.parent() {
+                self.thumbs.invalidate(parent); // a folder tile previews its children
+            }
             if self
                 .preview
                 .path

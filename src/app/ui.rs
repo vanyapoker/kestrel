@@ -1776,6 +1776,13 @@ fn paint_tile(
         thumbs::renderer_for(&e.ext)
     };
     let mut drew = false;
+    if e.is_dir
+        && side >= PEEK_MIN_SIDE
+        && let Some(items) = thumbs.peek(&e.path)
+    {
+        paint_folder_peek(painter, thumbs, thumb_area.center(), side, &items, alpha);
+        drew = true;
+    }
     if let Some(r) = renderer
         && let Some(tex) = thumbs.get(&e.path, r)
     {
@@ -1817,6 +1824,50 @@ fn paint_tile(
         galley,
         color,
     );
+}
+
+/// Folder tiles at least this wide show their first children inside the folder.
+const PEEK_MIN_SIDE: f32 = 64.0;
+
+/// A folder with a 2×2 preview of its first children. Only cheap image kinds get real
+/// thumbnails here; everything else is a type badge so a screen of folders stays light.
+fn paint_folder_peek(
+    painter: &Painter,
+    thumbs: &mut Thumbs,
+    center: Pos2,
+    side: f32,
+    items: &[thumbs::PeekItem],
+    alpha: f32,
+) {
+    let s = side / 18.0;
+    draw_folder(painter, center, s);
+    let cell = 3.5 * s;
+    let gap = s;
+    let origin = center + vec2(0.0, s) - vec2(cell + gap / 2.0, cell + gap / 2.0);
+    for (i, item) in items.iter().enumerate().take(thumbs::PEEK_COUNT) {
+        let (col, row) = ((i % 2) as f32, (i / 2) as f32);
+        let slot = Rect::from_min_size(origin + vec2(col, row) * (cell + gap), vec2(cell, cell));
+        painter.rect_filled(
+            slot,
+            CornerRadius::same((0.6 * s) as u8),
+            Color32::BLACK.gamma_multiply(0.16),
+        );
+        let texture = match thumbs::renderer_for(&item.ext) {
+            Some(r @ (thumbs::Renderer::Raster | thumbs::Renderer::Svg)) if !item.is_dir => {
+                thumbs.get(&item.path, r).map(|t| (t.id(), t.size_vec2()))
+            }
+            _ => None,
+        };
+        if let Some((id, size)) = texture {
+            let scale = (cell / size.x).min(cell / size.y);
+            let rect = Rect::from_center_size(slot.center(), size * scale);
+            painter.image(id, rect, UV, Color32::WHITE.gamma_multiply(alpha));
+        } else {
+            let cat = util::category(&item.ext, item.is_dir);
+            let k = cell / if item.is_dir { 17.0 } else { 16.0 };
+            draw_icon_scaled(painter, slot.center(), cat, k);
+        }
+    }
 }
 
 /// Decorative document content: tile responses continue to own every interaction.
