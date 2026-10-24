@@ -271,7 +271,7 @@ impl App {
         if let Some(file) = &app.workspace_file {
             match crate::workspaces::load(file) {
                 Ok(workspaces) => app.workspaces = workspaces,
-                Err(error) => app.toast(format!("Could not load workspaces: {error}"), true),
+                Err(error) => app.toast_error(format!("Could not load workspaces: {error}")),
             }
         }
         app.devices = crate::devices::scan();
@@ -391,10 +391,18 @@ impl App {
         }
     }
 
-    fn toast(&mut self, text: impl Into<String>, error: bool) {
+    fn toast(&mut self, text: impl Into<String>) {
+        self.push_toast(text.into(), false);
+    }
+
+    fn toast_error(&mut self, text: impl Into<String>) {
+        self.push_toast(text.into(), true);
+    }
+
+    fn push_toast(&mut self, text: String, error: bool) {
         let secs = if error { 6 } else { 3 };
         self.toasts.push(Toast {
-            text: text.into(),
+            text,
             error,
             until: Instant::now() + Duration::from_secs(secs),
         });
@@ -1094,14 +1102,14 @@ impl App {
             return; // `undo` already announced it
         }
         if done.cancelled {
-            self.toast("Operation cancelled", false);
+            self.toast("Operation cancelled");
         } else if let Some(first) = done.errors.first() {
             let more = if done.errors.len() > 1 {
                 format!(" (+{} more errors)", done.errors.len() - 1)
             } else {
                 String::new()
             };
-            self.toast(format!("{first}{more}"), true);
+            self.toast_error(format!("{first}{more}"));
         } else if matches!(
             done.kind,
             JobKind::Copy
@@ -1113,7 +1121,7 @@ impl App {
                 | JobKind::Compress
                 | JobKind::SaveImage
         ) {
-            self.toast(done.summary, false);
+            self.toast(done.summary);
         }
     }
 
@@ -1129,9 +1137,9 @@ impl App {
 
     fn undo(&mut self) {
         let Some(u) = self.undo.pop() else {
-            return self.toast("Nothing to undo", false);
+            return self.toast("Nothing to undo");
         };
-        self.toast(u.describe(), false);
+        self.toast(u.describe());
         self.ops.submit(Job::undo(u));
     }
 
@@ -1159,10 +1167,7 @@ impl App {
         } else {
             format!("{n} items")
         };
-        self.toast(
-            format!("{} {what}", if cut { "Cut" } else { "Copied" }),
-            false,
-        );
+        self.toast(format!("{} {what}", if cut { "Cut" } else { "Copied" }));
     }
 
     fn set_text_clipboard(&mut self, text: String) {
@@ -1189,7 +1194,7 @@ impl App {
                     return;
                 }
                 crate::wl_dnd::ClipRead::Nothing => {
-                    self.toast("Clipboard has no files to paste", false);
+                    self.toast("Clipboard has no files to paste");
                     return;
                 }
             }
@@ -1239,7 +1244,7 @@ impl App {
             paths = wl_paste_uri_list();
         }
         if paths.is_empty() {
-            self.toast("Clipboard has no files to paste", false);
+            self.toast("Clipboard has no files to paste");
         } else {
             self.ops.submit(Job::new(JobKind::Copy, paths, Some(dest)));
         }
@@ -1247,7 +1252,7 @@ impl App {
 
     fn paste_target(&mut self) -> Option<PathBuf> {
         if self.tab().search.is_some() {
-            self.toast("Can't paste into search results", true);
+            self.toast_error("Can't paste into search results");
             return None;
         }
         Some(self.tab().path.clone())
@@ -1279,14 +1284,14 @@ impl App {
     fn rename(&mut self, path: &Path, name: &str) {
         let name = name.trim();
         if name.is_empty() || name.contains('/') || name == "." || name == ".." {
-            return self.toast("Invalid name", true);
+            return self.toast_error("Invalid name");
         }
         let target = path.with_file_name(name);
         if target == path {
             return;
         }
         if std::fs::symlink_metadata(&target).is_ok() {
-            return self.toast(format!("\"{name}\" already exists"), true);
+            return self.toast_error(format!("\"{name}\" already exists"));
         }
         match std::fs::rename(path, &target) {
             Ok(()) => {
@@ -1303,14 +1308,14 @@ impl App {
                     self.reload_active(true);
                 }
             }
-            Err(e) => self.toast(format!("Rename failed: {e}"), true),
+            Err(e) => self.toast_error(format!("Rename failed: {e}")),
         }
     }
 
     fn create(&mut self, dir: &Path, name: &str, folder: bool) {
         let name = name.trim();
         if name.is_empty() || name.contains('/') || name == "." || name == ".." {
-            return self.toast("Invalid name", true);
+            return self.toast_error("Invalid name");
         }
         let target = dir.join(name);
         let res = if folder {
@@ -1330,7 +1335,7 @@ impl App {
                 tab.select_after_load = Some(target);
                 self.reload_active(true);
             }
-            Err(e) => self.toast(format!("Couldn't create \"{name}\": {e}"), true),
+            Err(e) => self.toast_error(format!("Couldn't create \"{name}\": {e}")),
         }
     }
 
@@ -1425,9 +1430,9 @@ impl App {
                 let other = (self.panes.len() > 1)
                     .then(|| self.tab_in_pane(1 - self.active_pane).path.clone());
                 if archives.is_empty() {
-                    self.toast("Select an archive to extract", false);
+                    self.toast("Select an archive to extract");
                 } else if cmd == Cmd::ExtractOther && other.is_none() {
-                    self.toast("Open split view (F6) to extract into the other pane", false);
+                    self.toast("Open split view (F6) to extract into the other pane");
                 } else {
                     let mut job = Job::new(JobKind::Extract, archives, None);
                     match cmd {
@@ -1530,7 +1535,7 @@ impl App {
                     .join("\n");
                 if !text.is_empty() {
                     self.set_text_clipboard(text);
-                    self.toast("Path copied", false);
+                    self.toast("Path copied");
                 }
             }
             Cmd::OpenTerminal => fsops::open_terminal(&self.tab().path.clone()),
@@ -1739,13 +1744,13 @@ impl App {
             Action::Zoom(steps) => self.zoom(steps),
             Action::OpenWith(app, paths) => {
                 if let Err(e) = crate::apps::launch(&app, &paths) {
-                    self.toast(e, true);
+                    self.toast_error(e);
                 }
             }
             Action::SetDefaultApp(app, mime, what) => {
                 match crate::apps::set_default(&app.id, &mime) {
-                    Ok(()) => self.toast(format!("{what} now open with {}", app.name), false),
-                    Err(e) => self.toast(format!("Couldn't set the default app: {e}"), true),
+                    Ok(()) => self.toast(format!("{what} now open with {}", app.name)),
+                    Err(e) => self.toast_error(format!("Couldn't set the default app: {e}")),
                 }
             }
             Action::ToggleSection(s) => {
@@ -1759,28 +1764,25 @@ impl App {
                     match fsops::add_bookmark(p) {
                         Ok(true) => added += 1,
                         Ok(false) => {}
-                        Err(e) => self.toast(format!("Could not save bookmark: {e}"), true),
+                        Err(e) => self.toast_error(format!("Could not save bookmark: {e}")),
                     }
                 }
                 self.places = fsops::places();
                 self.collapsed.remove("BOOKMARKS");
                 match (added, paths.first()) {
-                    (0, Some(_)) => self.toast("Already bookmarked", false),
-                    (1, Some(p)) => self.toast(
-                        format!(
-                            "Bookmarked {}",
-                            p.file_name().unwrap_or(p.as_os_str()).to_string_lossy()
-                        ),
-                        false,
-                    ),
-                    (n, _) if n > 1 => self.toast(format!("Bookmarked {n} folders"), false),
+                    (0, Some(_)) => self.toast("Already bookmarked"),
+                    (1, Some(p)) => self.toast(format!(
+                        "Bookmarked {}",
+                        p.file_name().unwrap_or(p.as_os_str()).to_string_lossy()
+                    )),
+                    (n, _) if n > 1 => self.toast(format!("Bookmarked {n} folders")),
                     _ => {}
                 }
             }
             Action::Device(op, dev) => self.device_op(op, &dev),
             Action::Unbookmark(p) => {
                 if let Err(e) = fsops::remove_bookmark(&p) {
-                    self.toast(format!("Could not remove bookmark: {e}"), true);
+                    self.toast_error(format!("Could not remove bookmark: {e}"));
                 }
                 self.places = fsops::places();
             }
@@ -1826,15 +1828,17 @@ impl App {
             DevOp::Eject => "eject",
         };
         match r.result {
-            Err(e) => self.toast(format!("Could not {verb} {}: {e}", r.name), true),
+            Err(e) => self.toast_error(format!("Could not {verb} {}: {e}", r.name)),
             Ok(mounted) => {
                 match r.op {
-                    DevOp::Mount if r.read_only => {
-                        self.toast(format!("{} was not safely removed, so it is read-only. Run ntfsfix -d {} to fix", r.name, r.dev.display()), true)
-                    }
+                    DevOp::Mount if r.read_only => self.toast_error(format!(
+                        "{} was not safely removed, so it is read-only. Run ntfsfix -d {} to fix",
+                        r.name,
+                        r.dev.display()
+                    )),
                     DevOp::Mount => {}
-                    DevOp::Unmount => self.toast(format!("Unmounted {}", r.name), false),
-                    DevOp::Eject => self.toast(format!("{} can be unplugged", r.name), false),
+                    DevOp::Unmount => self.toast(format!("Unmounted {}", r.name)),
+                    DevOp::Eject => self.toast(format!("{} can be unplugged", r.name)),
                 }
                 if let Some(p) = mounted {
                     self.navigate(p, true);
@@ -2189,7 +2193,7 @@ impl App {
                 crate::wl_dnd::DndEvent::Leave => self.ext_hover = None,
                 crate::wl_dnd::DndEvent::Error(error) => {
                     self.ext_hover = None;
-                    self.toast(error, true);
+                    self.toast_error(error);
                 }
                 crate::wl_dnd::DndEvent::Image { name, bytes, pos } => {
                     self.ext_hover = None;

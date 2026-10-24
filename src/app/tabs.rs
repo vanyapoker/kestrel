@@ -122,7 +122,7 @@ impl App {
     pub(super) fn save_workspace(&mut self, name: &str) {
         let name = name.trim();
         if name.is_empty() {
-            self.toast("Give the workspace a name", true);
+            self.toast_error("Give the workspace a name");
             return;
         }
         let mut session = self.session();
@@ -139,10 +139,10 @@ impl App {
                     self.workspaces.remove(name);
                 }
             }
-            self.toast(format!("Could not save workspace: {error}"), true);
+            self.toast_error(format!("Could not save workspace: {error}"));
             return;
         }
-        self.toast(format!("Saved workspace “{name}”"), false);
+        self.toast(format!("Saved workspace “{name}”"));
     }
 
     pub(super) fn load_workspace(&mut self, name: &str) {
@@ -158,7 +158,7 @@ impl App {
         self.inspector.clear();
         self.path_edit = None;
         self.preview.invalidate();
-        self.toast(format!("Loaded workspace “{name}”"), false);
+        self.toast(format!("Loaded workspace “{name}”"));
     }
 
     pub(super) fn delete_workspace(&mut self, name: &str) {
@@ -169,7 +169,7 @@ impl App {
             && let Err(error) = crate::workspaces::save(path, &self.workspaces)
         {
             self.workspaces.insert(name.to_string(), previous);
-            self.toast(format!("Could not delete workspace: {error}"), true);
+            self.toast_error(format!("Could not delete workspace: {error}"));
         }
     }
 }
