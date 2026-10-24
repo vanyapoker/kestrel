@@ -1,5 +1,5 @@
 use super::icons::*;
-use super::{Action, App, Dialog, DragPaths, TabDrag};
+use super::{Action, App, Dialog, DragPaths, NewKind, TabDrag};
 use crate::complete;
 use crate::devices::DevOp;
 use crate::fsops::{self, Entry};
@@ -2787,8 +2787,8 @@ impl App {
                     name_field(ui, "Rename", name, focus, stem, &mut confirm);
                     dialog_buttons(ui, "Rename", false, &mut confirm, &mut cancel);
                 }
-                Dialog::Create { name, folder, focus, .. } => {
-                    let title = if *folder { "New folder" } else { "New file" };
+                Dialog::Create { name, kind, focus, .. } => {
+                    let title = if *kind == NewKind::Folder { "New folder" } else { "New file" };
                     let all = name.chars().count();
                     name_field(ui, title, name, focus, all, &mut confirm);
                     dialog_buttons(ui, "Create", false, &mut confirm, &mut cancel);
@@ -2870,8 +2870,8 @@ impl App {
                 }
                 Some(Dialog::Rename { path, name, .. }) => self.rename(&path, &name),
                 Some(Dialog::Create {
-                    dir, name, folder, ..
-                }) => self.create(&dir, &name, folder),
+                    dir, name, kind, ..
+                }) => self.create(&dir, &name, kind),
                 Some(Dialog::Compress {
                     srcs,
                     dest,

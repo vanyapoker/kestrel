@@ -64,7 +64,7 @@ enum Dialog {
     Create {
         dir: PathBuf,
         name: String,
-        folder: bool,
+        kind: NewKind,
         focus: bool,
     },
     ConfirmDelete {
@@ -91,6 +91,13 @@ struct DragPaths(Vec<PathBuf>);
 
 struct TabDrag {
     id: u64,
+}
+
+/// What the "new" dialog creates.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NewKind {
+    File,
+    Folder,
 }
 
 enum Action {
@@ -1304,13 +1311,13 @@ impl App {
         }
     }
 
-    fn create(&mut self, dir: &Path, name: &str, folder: bool) {
+    fn create(&mut self, dir: &Path, name: &str, kind: NewKind) {
         let name = name.trim();
         if name.is_empty() || name.contains('/') || name == "." || name == ".." {
             return self.toast_error("Invalid name");
         }
         let target = dir.join(name);
-        let res = if folder {
+        let res = if kind == NewKind::Folder {
             std::fs::create_dir(&target)
         } else {
             std::fs::OpenOptions::new()
@@ -1365,14 +1372,21 @@ impl App {
                 if self.tab().search.is_some() {
                     return;
                 }
-                let folder = cmd == Cmd::NewFolder;
+                let kind = if cmd == Cmd::NewFolder {
+                    NewKind::Folder
+                } else {
+                    NewKind::File
+                };
                 let dir = self.tab().path.clone();
-                let base = if folder { "New folder" } else { "New file.txt" };
+                let base = match kind {
+                    NewKind::Folder => "New folder",
+                    NewKind::File => "New file.txt",
+                };
                 let name = ops::file_name(&ops::unique_dest(&dir, base));
                 self.dialog = Some(Dialog::Create {
                     dir,
                     name,
-                    folder,
+                    kind,
                     focus: true,
                 });
                 self.ctx
