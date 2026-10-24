@@ -18,6 +18,7 @@ const MAX_TEXT_LINES: usize = 3000;
 const MAX_IMAGE_SIDE: u32 = 1600;
 const MAX_TABLE_ROWS: usize = 5000;
 const MAX_CELL_CHARS: usize = 200;
+const LOAD_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Extra metadata rows shown under the preview (dimensions, duration, pages…).
 pub type Info = Vec<(String, String)>;
@@ -315,6 +316,8 @@ pub struct Preview {
     next_id: u64,
     generation: Arc<AtomicU64>,
     pub path: Option<PathBuf>,
+    /// Path being reloaded in place; its old content stays visible meanwhile.
+    reloading: Option<PathBuf>,
     pub state: State,
 }
 
@@ -333,7 +336,32 @@ impl Preview {
                     }
                     let cancelled = || worker_generation.load(Ordering::Relaxed) != req.id;
                     if cancelled() { continue; }
-                    let payload = load_cancellable(&req.path, req.is_dir, &cancelled);
+                    // Loads run on their own thread so a stuck read or tool can never
+                    // block later previews; an abandoned load just finishes unseen.
+                    let (done_tx, done_rx) = channel();
+                    let (path, is_dir, id, generation) = (req.path.clone(), req.is_dir, req.id, worker_generation.clone());
+                    let spawned = std::thread::Builder::new().name("preview-load".into()).spawn(move || {
+                        let for_tools = generation.clone();
+                        thumbs::set_cancel(Box::new(move || for_tools.load(Ordering::Relaxed) != id));
+                        let cancelled = move || generation.load(Ordering::Relaxed) != id;
+                        let _ = done_tx.send(load_cancellable(&path, is_dir, &cancelled));
+                    });
+                    let started = Instant::now();
+                    let payload = loop {
+                        if spawned.is_err() { break Some(Payload::Error("Could not start preview".into())); }
+                        if cancelled() { break None; }
+                        match done_rx.recv_timeout(Duration::from_millis(50)) {
+                            Ok(payload) => break Some(payload),
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) if started.elapsed() > LOAD_TIMEOUT => {
+                                break Some(Payload::Error("Preview timed out".into()));
+                            }
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                                break Some(Payload::Error("Preview failed".into()));
+                            }
+                        }
+                    };
+                    let Some(payload) = payload else { continue };
                     if cancelled() { continue; }
                     if res_tx.send(Response { id: req.id, payload }).is_err() {
                         break;
@@ -342,7 +370,7 @@ impl Preview {
                 }
             })
             .expect("spawn preview thread");
-        Self { req_tx, res_rx, next_id: 0, generation, path: None, state: State::Loading }
+        Self { req_tx, res_rx, next_id: 0, generation, path: None, reloading: None, state: State::Loading }
     }
 
     pub fn request(&mut self, path: Option<(&Path, bool)>) {
@@ -350,6 +378,7 @@ impl Preview {
             self.generation.fetch_add(1, Ordering::Relaxed);
             self.next_id = self.generation.load(Ordering::Relaxed);
             self.path = None;
+            self.reloading = None;
             return;
         };
         if self.path.as_deref() == Some(path) {
@@ -357,14 +386,16 @@ impl Preview {
         }
         self.next_id = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
         self.path = Some(path.to_path_buf());
-        self.state = State::Loading;
+        if self.reloading.take().as_deref() != Some(path) {
+            self.state = State::Loading;
+        }
         let _ = self.req_tx.send(Request { id: self.next_id, path: path.to_path_buf(), is_dir });
     }
 
     /// Forces a reload of the current path (e.g. after refresh).
     pub fn invalidate(&mut self) {
         self.next_id = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
-        self.path = None;
+        if let Some(path) = self.path.take() { self.reloading = Some(path); }
     }
 
     pub fn poll(&mut self, ctx: &egui::Context) {
@@ -433,6 +464,17 @@ fn load_cancellable(path: &Path, is_dir: bool, cancelled: &dyn Fn() -> bool) -> 
         return table;
     }
     load_text_cancellable(path, cancelled)
+}
+
+/// Opens only regular files, without blocking on FIFOs, devices or dead mounts' open path.
+fn open_regular(path: &Path) -> Result<std::fs::File, String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(path)
+        .map_err(|e| e.to_string())?;
+    if !file.metadata().map_err(|e| e.to_string())?.is_file() {
+        return Err("Not a regular file".into());
+    }
+    Ok(file)
 }
 
 /// Human-friendly rows from ffprobe output.
@@ -529,7 +571,7 @@ fn load_text(path: &Path) -> Payload { load_text_cancellable(path, &|| false) }
 fn load_text_cancellable(path: &Path, cancelled: &dyn Fn() -> bool) -> Payload {
     let mut buf = Vec::new();
     let file_len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    match std::fs::File::open(path) {
+    match open_regular(path) {
         Ok(f) => {
             if let Err(e) = f.take(MAX_TEXT_BYTES as u64).read_to_end(&mut buf) {
                 return Payload::Error(e.to_string());
@@ -625,7 +667,7 @@ fn highlight_bounded(path: &Path, text: &str, max_lines: usize, font: FontId, ca
 fn load_table(path: &Path, tsv: bool) -> Option<Payload> {
     let file_len = std::fs::metadata(path).ok()?.len();
     let mut buf = Vec::new();
-    std::fs::File::open(path).ok()?.take(MAX_TEXT_BYTES as u64).read_to_end(&mut buf).ok()?;
+    open_regular(path).ok()?.take(MAX_TEXT_BYTES as u64).read_to_end(&mut buf).ok()?;
     if buf[..buf.len().min(8192)].contains(&0) {
         return None;
     }
@@ -746,4 +788,20 @@ fn syntax_theme() -> Arc<Theme> {
     let t = Arc::new(t);
     *cache = Some((generation, t.clone()));
     t
+}
+
+#[cfg(test)]
+mod hang_tests {
+    use super::*;
+
+    #[test]
+    fn fifo_preview_fails_fast_instead_of_blocking() {
+        let path = std::env::temp_dir().join(format!("kestrel-fifo-{}", std::process::id()));
+        let c = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let started = Instant::now();
+        assert!(matches!(load_text(&path), Payload::Error(_)));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        std::fs::remove_file(path).unwrap();
+    }
 }

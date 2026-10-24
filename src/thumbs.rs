@@ -143,6 +143,19 @@ pub fn pdf_pages(path: &Path) -> Option<u32> {
         .find_map(|l| l.strip_prefix("Pages:").and_then(|v| v.trim().parse().ok()))
 }
 
+thread_local! {
+    static CANCEL: std::cell::RefCell<Option<Box<dyn Fn() -> bool>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Lets the current thread's tool runs be killed as soon as `cancelled` turns true.
+pub fn set_cancel(cancelled: Box<dyn Fn() -> bool>) {
+    CANCEL.with(|c| *c.borrow_mut() = Some(cancelled));
+}
+
+fn is_cancelled() -> bool {
+    CANCEL.with(|c| c.borrow().as_ref().is_some_and(|f| f()))
+}
+
 /// Runs a tool, returning stdout. Killed after a timeout so corrupt files can't hang us.
 fn run_tool(cmd: &mut Command) -> Result<Vec<u8>, String> {
     let mut child = cmd
@@ -161,7 +174,7 @@ fn run_tool(cmd: &mut Command) -> Result<Vec<u8>, String> {
     loop {
         match child.try_wait() {
             Ok(Some(_)) => break,
-            Ok(None) if start.elapsed() > TOOL_TIMEOUT => {
+            Ok(None) if start.elapsed() > TOOL_TIMEOUT || is_cancelled() => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err("Timed out".into());
