@@ -10,9 +10,9 @@ use eframe::egui::{
 };
 
 use super::{
-    Columns, ROW_H, background_drop, chevron, drag_autoscroll, drop_hover, empty_state, paint_cell,
-    paint_name, paint_row, paint_tile, record_folder, row_interactions, rubber_band, scroll_area,
-    sort_arrow,
+    Columns, ROW_H, RowEnv, RowPaint, background_drop, chevron, drag_autoscroll, drop_hover,
+    empty_state, paint_cell, paint_name, paint_row, paint_tile, record_folder, row_interactions,
+    rubber_band, scroll_area, sort_arrow,
 };
 
 impl App {
@@ -186,8 +186,17 @@ impl App {
                                                 rect.intersect(ui.clip_rect()),
                                             );
                                             row_interactions(
-                                                ui, &resp, directory, vi, e, modifiers, &mut local,
-                                                p, bookmarks,
+                                                ui,
+                                                &resp,
+                                                RowEnv {
+                                                    tab: directory,
+                                                    pane: p,
+                                                    modifiers,
+                                                    bookmarks,
+                                                },
+                                                vi,
+                                                e,
+                                                &mut local,
                                             );
                                         }
                                     },
@@ -389,11 +398,23 @@ impl App {
                 }
                 let faded = cut.is_some_and(|c| c.contains(&e.path))
                     || dragging.is_some_and(|d| d.0.contains(&e.path));
-                paint_row(painter, rect, &cols, e, sizes, sizing, faded, &query);
+                let style = RowPaint {
+                    cols: &cols,
+                    sizes,
+                    sizing,
+                    query: &query,
+                };
+                paint_row(painter, rect, &style, e, faded);
                 #[cfg(test)]
                 row_rects.insert(e.path.clone(), rect);
 
-                row_interactions(ui, &resp, tab, vi, e, ctrl_shift, actions, p, bookmarks);
+                let env = RowEnv {
+                    tab,
+                    pane: p,
+                    modifiers: ctrl_shift,
+                    bookmarks,
+                };
+                row_interactions(ui, &resp, env, vi, e, actions);
             }
         });
         tab.scroll_offset = out.state.offset.y;
@@ -515,7 +536,13 @@ impl App {
                         }
                         #[cfg(test)]
                         row_rects.insert(e.path.clone(), rect);
-                        row_interactions(ui, &resp, tab, vi, e, ctrl_shift, actions, p, bookmarks);
+                        let env = RowEnv {
+                            tab,
+                            pane: p,
+                            modifiers: ctrl_shift,
+                            bookmarks,
+                        };
+                        row_interactions(ui, &resp, env, vi, e, actions);
                     }
                 });
             }

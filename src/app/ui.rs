@@ -1421,21 +1421,30 @@ fn background_drop(ui: &mut Ui, tab: &Tab, rect: Rect, actions: &mut Vec<Action>
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "immediate-mode paint helper; a parameter struct would just mirror the call site"
-)]
+/// What every row of one list shares when handling interaction.
+#[derive(Clone, Copy)]
+struct RowEnv<'a> {
+    tab: &'a Tab,
+    pane: usize,
+    /// (ctrl, shift) as held this frame.
+    modifiers: (bool, bool),
+    bookmarks: &'a [(String, PathBuf)],
+}
+
 fn row_interactions(
     ui: &Ui,
     resp: &egui::Response,
-    tab: &Tab,
+    env: RowEnv,
     vi: usize,
     e: &Entry,
-    (ctrl, shift): (bool, bool),
     actions: &mut Vec<Action>,
-    p: usize,
-    bookmarks: &[(String, PathBuf)],
 ) {
+    let RowEnv {
+        tab,
+        pane: p,
+        modifiers: (ctrl, shift),
+        bookmarks,
+    } = env;
     if resp.drag_started_by(egui::PointerButton::Primary) {
         let paths = if tab.is_selected(vi) {
             tab.targets()
@@ -1621,20 +1630,21 @@ fn open_with_menu(
     });
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "immediate-mode paint helper; a parameter struct would just mirror the call site"
-)]
-fn paint_row(
-    painter: &Painter,
-    rect: Rect,
-    cols: &Columns,
-    e: &Entry,
-    sizes: &HashMap<PathBuf, u64>,
-    sizing: &std::collections::HashSet<PathBuf>,
-    faded: bool,
-    query: &crate::search::Query,
-) {
+/// What every row of one detail list shares when painting.
+struct RowPaint<'a> {
+    cols: &'a Columns,
+    sizes: &'a HashMap<PathBuf, u64>,
+    sizing: &'a std::collections::HashSet<PathBuf>,
+    query: &'a crate::search::Query,
+}
+
+fn paint_row(painter: &Painter, rect: Rect, style: &RowPaint, e: &Entry, faded: bool) {
+    let RowPaint {
+        cols,
+        sizes,
+        sizing,
+        query,
+    } = *style;
     let cy = rect.center().y;
     let alpha = if faded { 0.45 } else { 1.0 };
     let cat = util::category(&e.ext, e.is_dir);
