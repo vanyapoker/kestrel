@@ -19,6 +19,9 @@ use std::time::Instant;
 
 const ROW_H: f32 = 26.0;
 
+/// Preferred tile width for a folder shown in the inspector.
+const INSPECTOR_TILE: f32 = 112.0;
+
 mod drag;
 mod glyphs;
 mod inspector;

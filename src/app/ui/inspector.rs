@@ -9,7 +9,7 @@ use eframe::egui::{
 };
 use std::path::PathBuf;
 
-use super::{ROW_H, UV, draw_checker, paint_cell, preview_code_cached, preview_table};
+use super::{INSPECTOR_TILE, UV, draw_checker, paint_tile, preview_code_cached, preview_table};
 
 impl App {
     pub(in crate::app) fn sync_inspector(&mut self) {
@@ -224,32 +224,59 @@ impl App {
                     if entries.is_empty() {
                         ui.label(RichText::new("Empty folder").color(pal().faint));
                     }
+                    let gap = 6.0;
+                    let width = ui.available_width();
+                    let columns = ((width / (INSPECTOR_TILE + gap)) as usize).max(1);
+                    let tile_w = (width / columns as f32 - gap).min(INSPECTOR_TILE * 1.4);
+                    // `paint_tile` reserves 48px under the icon for the name.
+                    let tile_h = tile_w + 48.0;
+                    let query = crate::search::Query::new("");
                     ScrollArea::vertical()
                         .id_salt(("inspector", &e.path))
                         .auto_shrink([false; 2])
-                        .show_rows(ui, ROW_H, entries.len(), |ui, range| {
-                            for i in range {
-                                let entry = entries[i];
-                                let (rect, resp) = ui.allocate_exact_size(
-                                    vec2(ui.available_width(), ROW_H),
-                                    Sense::click(),
-                                );
-                                if resp.hovered() {
-                                    ui.painter().rect_filled(rect, 4.0, pal().hover);
+                        .show_rows(
+                            ui,
+                            tile_h + gap,
+                            entries.len().div_ceil(columns),
+                            |ui, rows| {
+                                for row in rows {
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = gap;
+                                        for entry in
+                                            entries.iter().skip(row * columns).take(columns)
+                                        {
+                                            let (rect, resp) = ui.allocate_exact_size(
+                                                vec2(tile_w, tile_h),
+                                                Sense::click(),
+                                            );
+                                            if resp.hovered() {
+                                                ui.painter().rect_filled(
+                                                    rect,
+                                                    CornerRadius::same(6),
+                                                    pal().hover,
+                                                );
+                                            }
+                                            paint_tile(
+                                                ui.painter(),
+                                                &mut self.thumbs,
+                                                rect,
+                                                entry,
+                                                false,
+                                                &query,
+                                            );
+                                            if resp.clicked() {
+                                                inspect = Some((*entry).clone());
+                                            }
+                                            resp.on_hover_text(format!(
+                                                "Inspect {}",
+                                                entry.path.display()
+                                            ));
+                                        }
+                                    });
+                                    ui.add_space(gap);
                                 }
-                                paint_cell(
-                                    ui.painter(),
-                                    rect,
-                                    entry,
-                                    false,
-                                    &crate::search::Query::new(""),
-                                );
-                                if resp.clicked() {
-                                    inspect = Some(entry.clone());
-                                }
-                                resp.on_hover_text(format!("Inspect {}", entry.path.display()));
-                            }
-                        });
+                            },
+                        );
                 }
                 State::Ready(Content::Binary { .. }) => {
                     ui.add_space(40.0);
