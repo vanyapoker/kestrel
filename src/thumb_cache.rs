@@ -1,4 +1,4 @@
-//! Disk cache for thumbnails that are slow to render (SVG, PDF, video), stored in the
+//! Disk cache for thumbnails that are slow to render (SVG, PDF, video, large photos), stored in the
 //! shared freedesktop.org location so other file managers can reuse them:
 //! `$XDG_CACHE_HOME/thumbnails/large/<md5 of the file URI>.png`.
 
@@ -7,6 +7,7 @@ use std::fs;
 use std::io::{Cursor, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::UNIX_EPOCH;
 
 /// "large" thumbnails are 256 px, which is `thumbs::THUMB_SIZE`.
@@ -121,7 +122,12 @@ fn try_store(path: &Path, image: &ColorImage) -> Option<()> {
         .ok()?;
 
     // Write beside the target, then rename, so readers never see a partial file.
-    let tmp = dir.join(format!(".tmp-{}-{}", std::process::id(), md5_hex(&pixels)));
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let tmp = dir.join(format!(
+        ".tmp-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create(true)

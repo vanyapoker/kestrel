@@ -16,6 +16,8 @@ const MAX_IMAGE_FILE: u64 = 256 * 1024 * 1024;
 const TOOL_TIMEOUT: Duration = Duration::from_secs(8);
 pub const THUMB_SIZE: u32 = 256;
 const CACHE_CAP: usize = 600;
+/// Raster images at least this big get a thumbnail on disk.
+const CACHE_MIN_IMAGE: u64 = 2 * 1024 * 1024;
 const WORKERS: usize = 4;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -107,7 +109,10 @@ pub fn render(path: &Path, renderer: Renderer, max: u32) -> Result<Rendered, Str
 
 /// Grid thumbnail, reusing the shared disk cache for the renderers that are slow.
 fn render_cached(path: &Path, renderer: Renderer) -> Option<ColorImage> {
-    if renderer == Renderer::Raster {
+    // Small images decode about as fast as a cache file loads; camera photos don't.
+    let slow = renderer != Renderer::Raster
+        || std::fs::metadata(path).is_ok_and(|m| m.len() >= CACHE_MIN_IMAGE);
+    if !slow {
         return render(path, renderer, THUMB_SIZE).ok().map(|r| r.image);
     }
     if let Some(image) = crate::thumb_cache::load(path) {
