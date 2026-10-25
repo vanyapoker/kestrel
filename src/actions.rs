@@ -105,10 +105,11 @@ impl CustomAction {
                 .map(|t| quote(t))
                 .collect::<Vec<_>>()
                 .join(" ");
-            let cmd = self
-                .run
-                .replace("{files}", &files)
-                .replace("{dir}", &quote(dir));
+            let cmd = expand(&self.run, |key| match key {
+                "files" => Some(files.clone()),
+                "dir" => Some(quote(dir)),
+                _ => None,
+            });
             return vec![(cmd, dir.to_path_buf())];
         }
         targets
@@ -120,18 +121,44 @@ impl CustomAction {
                     Some(i) if i > 0 => (&name[..i], &name[i + 1..]),
                     _ => (name.as_str(), ""),
                 };
-                let cmd = self
-                    .run
-                    .replace("{files}", &quote(t))
-                    .replace("{file}", &quote(t))
-                    .replace("{name}", &quote(Path::new(&name)))
-                    .replace("{stem}", &quote(Path::new(stem)))
-                    .replace("{ext}", &quote(Path::new(ext)))
-                    .replace("{dir}", &quote(parent));
+                let cmd = expand(&self.run, |key| match key {
+                    "files" | "file" => Some(quote(t)),
+                    "name" => Some(quote(Path::new(&name))),
+                    "stem" => Some(quote(Path::new(stem))),
+                    "ext" => Some(quote(Path::new(ext))),
+                    "dir" => Some(quote(parent)),
+                    _ => None,
+                });
                 (cmd, parent.to_path_buf())
             })
             .collect()
     }
+}
+
+/// Fills `{key}` placeholders in one left-to-right pass, so text that comes from a
+/// value (a file name containing `{dir}`) is never expanded again.
+fn expand(template: &str, value: impl Fn(&str) -> Option<String>) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(start) = rest.find('{') {
+        out.push_str(&rest[..start]);
+        rest = &rest[start..];
+        match rest
+            .find('}')
+            .and_then(|end| value(&rest[1..end]).map(|v| (end, v)))
+        {
+            Some((end, v)) => {
+                out.push_str(&v);
+                rest = &rest[end + 1..];
+            }
+            None => {
+                out.push('{');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn file_name(p: &Path) -> String {
@@ -223,6 +250,21 @@ mod tests {
         assert!(!actions[0].applies(&txt));
         assert!(!actions[0].applies(&[]));
         assert!(actions[1].applies(&txt));
+    }
+
+    #[test]
+    fn names_that_look_like_placeholders_are_not_expanded_again() {
+        let action = CustomAction {
+            name: "x".into(),
+            run: "echo {file} {dir}".into(),
+            ..Default::default()
+        };
+        let evil = PathBuf::from("/tmp/a;echo INJECTED;/{dir}.png");
+        let cmds = action.commands(&[evil], Path::new("/cwd"));
+        assert_eq!(
+            cmds[0].0,
+            "echo '/tmp/a;echo INJECTED;/{dir}.png' '/tmp/a;echo INJECTED;'"
+        );
     }
 
     #[test]

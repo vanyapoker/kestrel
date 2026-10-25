@@ -172,6 +172,8 @@ pub struct Job {
     /// Sources of a copy/move whose same-named item in `dest` is replaced (trashed first).
     pub replace: HashSet<PathBuf>,
     pub change: Option<crate::props::Change>,
+    /// Trash entries to put back once the job is done (undoing a replace).
+    pub restore: Vec<(PathBuf, std::ffi::OsString)>,
 }
 
 impl Job {
@@ -189,6 +191,7 @@ impl Job {
             image: None,
             replace: HashSet::new(),
             change: None,
+            restore: Vec::new(),
         }
     }
 
@@ -207,6 +210,10 @@ impl Job {
             },
             Undo::TrashCreated(paths) => Self::new(JobKind::Trash, paths, None),
             Undo::Untrash(paths) => Self::new(JobKind::Untrash, paths, None),
+            Undo::Replaced(inner, restore) => Self {
+                restore,
+                ..Self::undo(*inner)
+            },
         };
         Self {
             undoing: true,
@@ -226,6 +233,8 @@ pub enum Undo {
     TrashCreated(Vec<PathBuf>),
     /// Items that were trashed, by original path.
     Untrash(Vec<PathBuf>),
+    /// Undo the first, then bring back the items it replaced from the trash.
+    Replaced(Box<Undo>, Vec<(PathBuf, std::ffi::OsString)>),
 }
 
 impl Undo {
@@ -251,6 +260,7 @@ impl Undo {
                 "Moved {} to trash",
                 what(p.iter().map(PathBuf::as_path).collect())
             ),
+            Undo::Replaced(inner, _) => inner.describe(),
             Undo::Untrash(p) => format!(
                 "Restored {} from trash",
                 what(p.iter().map(PathBuf::as_path).collect())
@@ -271,6 +281,8 @@ pub struct Progress {
 
 pub struct Done {
     pub kind: JobKind,
+    /// Items a transfer replaced: (their path, id of the trash entry holding them).
+    pub replaced: Vec<(PathBuf, std::ffi::OsString)>,
     /// Folders whose contents changed.
     pub dirs: Vec<PathBuf>,
     /// Newly created top-level items, so the UI can select them.
@@ -398,6 +410,7 @@ impl Worker {
 
         let mut done = Done {
             kind: job.kind,
+            replaced: Vec::new(),
             dirs: Vec::new(),
             created: Vec::new(),
             errors: Vec::new(),
@@ -574,6 +587,12 @@ impl Worker {
                     }
                     _ => None,
                 };
+                if !done.replaced.is_empty() {
+                    done.undo = done
+                        .undo
+                        .take()
+                        .map(|u| Undo::Replaced(Box::new(u), done.replaced.clone()));
+                }
                 let verb = if job.kind == JobKind::Copy {
                     "Copied"
                 } else {
@@ -581,6 +600,9 @@ impl Worker {
                 };
                 done.summary = format!("{verb} {what} to {}", file_name(&dest));
             }
+        }
+        if !job.restore.is_empty() && done.errors.is_empty() {
+            restore_by_id(&job.restore, &mut done);
         }
         done.cancelled = self.cancelled();
         done
@@ -661,12 +683,13 @@ impl Worker {
                 .map(|m| Some(m.dev()) == dest_dev)
                 .unwrap_or(false);
             if kind == JobKind::Move && same_dev {
-                let target = transfer_target(dest, src, replace, done);
-                match fs::rename(src, &target) {
-                    Ok(()) => {
-                        moved.push((src.clone(), target.clone()));
-                        done.created.push(target);
+                let landing = Landing::new(dest, src, replace);
+                match fs::rename(src, &landing.work) {
+                    Ok(()) if landing.finish(done) => {
+                        moved.push((src.clone(), landing.target.clone()));
+                        done.created.push(landing.target);
                     }
+                    Ok(()) => {}
                     Err(e) => done.errors.push(format!("{}: {e}", src.display())),
                 }
             } else {
@@ -692,15 +715,24 @@ impl Worker {
             if self.cancelled() {
                 break;
             }
-            let target = transfer_target(dest, src, replace, done);
+            let landing = Landing::new(dest, src, replace);
             let errors_before = done.errors.len();
-            self.copy_tree(src, &target, &mut done.errors);
-            if self.cancelled() {
-                break;
+            self.copy_tree(src, &landing.work, &mut done.errors);
+            if self.cancelled() || done.errors.len() != errors_before {
+                landing.discard();
+                if self.cancelled() {
+                    break;
+                }
+                continue;
             }
+            if !landing.finish(done) {
+                continue;
+            }
+            let target = landing.target;
             done.created.push(target.clone());
-            // A cross-device move removes the source only if every file copied.
-            if kind == JobKind::Move && done.errors.len() == errors_before {
+            // A cross-device move removes the source only if every file copied. When
+            // the source sat inside the item it replaced, it's already in the trash.
+            if kind == JobKind::Move && fs::symlink_metadata(src).is_ok() {
                 let res = if src.is_dir() && !src.is_symlink() {
                     fs::remove_dir_all(src)
                 } else {
@@ -1076,25 +1108,77 @@ pub fn unique_dest(dir: &Path, name: &str) -> PathBuf {
         .expect("some free name")
 }
 
-/// Where `src` lands in `dest`: its own name when the user chose to replace the item
-/// already there (which goes to the trash), otherwise the first free name.
-fn transfer_target(
-    dest: &Path,
-    src: &Path,
-    replace: &HashSet<PathBuf>,
-    done: &mut Done,
-) -> PathBuf {
-    let name = file_name(src);
-    let target = dest.join(&name);
-    if replace.contains(src) && target != src && fs::symlink_metadata(&target).is_ok() {
-        match trash::delete(&target) {
-            Ok(()) => return target,
-            Err(e) => done
-                .errors
-                .push(format!("Could not replace \"{name}\": {e}")),
+/// Where a transferred item lands. When replacing, the item is first put under a
+/// temporary name, so the old item can go to the trash even if the new one came from
+/// inside it (cutting `foo/foo` into the folder holding `foo`).
+struct Landing {
+    target: PathBuf,
+    /// Where the data is written; differs from `target` only when replacing.
+    work: PathBuf,
+}
+
+impl Landing {
+    fn new(dest: &Path, src: &Path, replace: &HashSet<PathBuf>) -> Self {
+        let name = file_name(src);
+        let target = dest.join(&name);
+        if replace.contains(src) && target != src && fs::symlink_metadata(&target).is_ok() {
+            let work = unique_dest(dest, &format!(".{name}.replacing"));
+            return Self { target, work };
+        }
+        let target = unique_dest(dest, &name);
+        Self {
+            work: target.clone(),
+            target,
         }
     }
-    unique_dest(dest, &name)
+
+    fn replacing(&self) -> bool {
+        self.work != self.target
+    }
+
+    /// Swaps the finished `work` item in for the old `target`, which goes to the trash.
+    /// Returns whether `target` now holds the new item.
+    fn finish(&self, done: &mut Done) -> bool {
+        if !self.replacing() {
+            return true;
+        }
+        let name = file_name(&self.target);
+        if let Err(e) = trash::delete(&self.target) {
+            done.errors
+                .push(format!("Could not replace \"{name}\": {e}"));
+            self.discard();
+            return false;
+        }
+        // Remember the trashed item so undo can bring it back.
+        let id = trash::os_limited::list().ok().and_then(|items| {
+            items
+                .into_iter()
+                .filter(|i| i.original_path() == self.target)
+                .max_by_key(|i| i.time_deleted)
+                .map(|i| i.id)
+        });
+        if let Some(id) = id {
+            done.replaced.push((self.target.clone(), id));
+        }
+        if let Err(e) = fs::rename(&self.work, &self.target) {
+            done.errors.push(format!(
+                "Could not finish replacing \"{name}\": {e} (the new item is at {})",
+                self.work.display()
+            ));
+            return false;
+        }
+        true
+    }
+
+    /// Removes the temporary item after a failure.
+    fn discard(&self) {
+        if self.replacing() {
+            let _ = match fs::symlink_metadata(&self.work) {
+                Ok(m) if m.is_dir() => fs::remove_dir_all(&self.work),
+                _ => fs::remove_file(&self.work),
+            };
+        }
+    }
 }
 
 fn push_unique(v: &mut Vec<PathBuf>, p: PathBuf) {
@@ -1195,6 +1279,32 @@ fn trash_entries(paths: &[&PathBuf]) -> Result<Vec<trash::TrashItem>, String> {
         .into_iter()
         .filter(|i| ids.iter().any(|id| id.as_os_str() == i.id))
         .collect())
+}
+
+/// Puts back the trash entries with these ids (see `Done::replaced`).
+fn restore_by_id(wanted: &[(PathBuf, std::ffi::OsString)], done: &mut Done) {
+    let items = match trash::os_limited::list() {
+        Ok(items) => items,
+        Err(e) => return done.errors.push(format!("Can't read the trash: {e}")),
+    };
+    let mut restore = Vec::new();
+    for (path, id) in wanted {
+        match items.iter().find(|i| i.id == *id) {
+            Some(item) if fs::symlink_metadata(path).is_err() => restore.push(item.clone()),
+            Some(_) => done.errors.push(format!(
+                "Can't restore: \"{}\" already exists",
+                file_name(path)
+            )),
+            None => done
+                .errors
+                .push(format!("\"{}\" is no longer in the trash", file_name(path))),
+        }
+    }
+    let restored: Vec<PathBuf> = restore.iter().map(|i| i.original_path()).collect();
+    if let Err(e) = trash::os_limited::restore_all(restore) {
+        return done.errors.push(format!("Restore failed: {e}"));
+    }
+    done.created.extend(restored);
 }
 
 fn restore_from_trash(paths: &[PathBuf], done: &mut Done) {
@@ -1484,6 +1594,53 @@ mod tests {
         // Not marked for replacement, so it keeps both.
         assert_eq!(fs::read_to_string(b.join("g.txt")).unwrap(), "old g");
         assert_eq!(fs::read_to_string(b.join("g (2).txt")).unwrap(), "new g");
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    /// A scratch folder on the home filesystem, so trashing works like in real use.
+    fn home_tmp(name: &str) -> PathBuf {
+        let d =
+            crate::fsops::home_dir().join(format!(".cache/kestrel-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn replacing_a_folder_with_its_own_child_collapses_it() {
+        let d = home_tmp("collapse");
+        fs::create_dir_all(d.join("foo/foo")).unwrap();
+        fs::write(d.join("foo/foo/inner.txt"), "inner").unwrap();
+        fs::write(d.join("foo/outer.txt"), "outer").unwrap();
+        let mut job = Job::new(JobKind::Move, vec![d.join("foo/foo")], Some(d.clone()));
+        job.replace.insert(d.join("foo/foo"));
+        let done = run(job);
+        assert!(done.errors.is_empty(), "{:?}", done.errors);
+        assert_eq!(
+            fs::read_to_string(d.join("foo/inner.txt")).unwrap(),
+            "inner"
+        );
+        assert!(!d.join("foo/outer.txt").exists());
+        assert!(!d.join("foo/foo").exists());
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn undoing_a_replace_brings_back_the_old_item() {
+        let d = home_tmp("undo-replace");
+        let (a, b) = (d.join("a"), d.join("b"));
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        fs::write(a.join("f.txt"), "new").unwrap();
+        fs::write(b.join("f.txt"), "old").unwrap();
+        let mut job = Job::new(JobKind::Copy, vec![a.join("f.txt")], Some(b.clone()));
+        job.replace.insert(a.join("f.txt"));
+        let done = run(job);
+        assert_eq!(fs::read_to_string(b.join("f.txt")).unwrap(), "new");
+        let undo = done.undo.expect("undoable");
+        let done = run(Job::undo(undo));
+        assert!(done.errors.is_empty(), "{:?}", done.errors);
+        assert_eq!(fs::read_to_string(b.join("f.txt")).unwrap(), "old");
         fs::remove_dir_all(d).unwrap();
     }
 
