@@ -878,6 +878,7 @@ impl App {
             tab.apply_view(sizes, hidden);
             if let Some(p) = tab.select_after_load.take() {
                 tab.select_path(&p);
+                tab.center_cursor = std::mem::take(&mut tab.center_after_load);
             } else if l.soft {
                 tab.restore_selection(kept.0, kept.1);
             }
@@ -1368,6 +1369,7 @@ impl App {
                 let tab = self.tab_mut();
                 tab.marked.clear();
                 tab.select_after_load = Some(target);
+                tab.center_after_load = true;
                 self.reload_active(true);
             }
             Err(e) => self.toast_error(format!("Couldn't create \"{name}\": {e}")),

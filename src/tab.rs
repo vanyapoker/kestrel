@@ -118,6 +118,10 @@ pub struct Tab {
     pub cancel: Arc<AtomicBool>,
     pub select_after_load: Option<PathBuf>,
     pub scroll_to_cursor: bool,
+    /// Set with `select_after_load` to center the selected entry once it loads.
+    pub center_after_load: bool,
+    /// Makes the next `scroll_to_cursor` center the cursor row instead of just revealing it.
+    pub center_cursor: bool,
     pub force_offset: Option<f32>,
     pub scroll_offset: f32,
     pub viewport_h: f32,
@@ -153,6 +157,8 @@ impl Tab {
             cancel: Arc::new(AtomicBool::new(false)),
             select_after_load: None,
             scroll_to_cursor: false,
+            center_after_load: false,
+            center_cursor: false,
             force_offset: None,
             scroll_offset: 0.0,
             viewport_h: 0.0,

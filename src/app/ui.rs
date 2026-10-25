@@ -1130,7 +1130,9 @@ fn scroll_area(tab: &mut Tab, id: (&str, u64), row_h: f32, per_row: usize) -> Sc
             if let Some(c) = tab.cursor {
                 let top = (c / per_row.max(1)) as f32 * row_h;
                 let h = tab.viewport_h.max(row_h);
-                if top < off {
+                if std::mem::take(&mut tab.center_cursor) {
+                    off = (top + row_h / 2.0 - h / 2.0).max(0.0);
+                } else if top < off {
                     off = top;
                 } else if top + row_h > off + h {
                     off = top + row_h - h;
