@@ -1,4 +1,4 @@
-use crate::app::{Action, App, Dialog, NewKind};
+use crate::app::{Action, App, Dialog, NewKind, Resolution};
 use crate::devices::DevOp;
 use crate::palette::{self, COMMANDS};
 use crate::theme::*;
@@ -26,6 +26,16 @@ impl App {
                 path.display().to_string(),
                 Action::Navigate(path.clone()),
             ));
+        }
+        let targets = self.tab().targets();
+        for (i, a) in self.custom_actions.iter().enumerate() {
+            if a.applies(&targets) {
+                items.push((
+                    format!("Action: {}", a.name),
+                    String::new(),
+                    Action::Custom(i),
+                ));
+            }
         }
         for d in &self.devices {
             let action = match &d.mount {
@@ -204,6 +214,7 @@ impl App {
         };
         let (mut confirm, mut cancel) = (false, false);
         let (mut load_workspace, mut delete_workspace) = (None, None);
+        let mut resolved = None;
         let frame = Frame::new()
             .fill(pal().panel)
             .stroke(Stroke::new(1.0, pal().border))
@@ -339,6 +350,106 @@ impl App {
                     ui.label(RichText::new(format!("{}{}", name, format.ext())).size(12.0).color(pal().faint));
                     dialog_buttons(ui, "Compress", false, &mut confirm, &mut cancel);
                 }
+                Dialog::Permissions(edit) => {
+                    let title = match edit.paths.as_slice() {
+                        [one] => format!("Permissions of \"{}\"", ops_name(one)),
+                        many => format!("Permissions of {} items", many.len()),
+                    };
+                    ui.label(RichText::new(title).size(15.0).strong());
+                    ui.add_space(8.0);
+                    egui::Grid::new("permission_bits").spacing(vec2(16.0, 4.0)).show(ui, |ui| {
+                        ui.label("");
+                        for h in ["Read", "Write", "Execute"] {
+                            ui.label(RichText::new(h).size(12.0).color(pal().faint));
+                        }
+                        ui.end_row();
+                        for (who, shift) in [("Owner", 6), ("Group", 3), ("Others", 0)] {
+                            ui.label(RichText::new(who).color(pal().dim));
+                            for bit in [4u32, 2, 1] {
+                                let mask = bit << shift;
+                                let mut on = edit.mode & mask != 0;
+                                if ui.checkbox(&mut on, "").changed() {
+                                    edit.mode = if on { edit.mode | mask } else { edit.mode & !mask };
+                                }
+                            }
+                            ui.end_row();
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        for (label, mask) in [("Set user ID", 0o4000u32), ("Set group ID", 0o2000), ("Sticky", 0o1000)] {
+                            let mut on = edit.mode & mask != 0;
+                            if ui.checkbox(&mut on, label).changed() {
+                                edit.mode = if on { edit.mode | mask } else { edit.mode & !mask };
+                            }
+                        }
+                    });
+                    ui.label(RichText::new(format!("{}  ({:04o})", crate::util::fmt_mode(edit.mode, false), edit.mode)).size(12.0).color(pal().faint));
+                    ui.add_space(8.0);
+                    egui::Grid::new("permission_owner").spacing(vec2(12.0, 6.0)).show(ui, |ui| {
+                        ui.label(RichText::new("Owner").color(pal().dim));
+                        ui.add(egui::TextEdit::singleline(&mut edit.owner).desired_width(200.0));
+                        ui.end_row();
+                        ui.label(RichText::new("Group").color(pal().dim));
+                        ui.add(egui::TextEdit::singleline(&mut edit.group).desired_width(200.0));
+                        ui.end_row();
+                    });
+                    if edit.owner != edit.original_owner {
+                        ui.label(RichText::new("Changing the owner usually requires administrator rights.").size(12.0).color(pal().faint));
+                    }
+                    if edit.any_dir {
+                        ui.add_space(4.0);
+                        ui.checkbox(&mut edit.recursive, "Apply to contents")
+                            .on_hover_text("Files only keep an execute bit if they already had one");
+                    }
+                    dialog_buttons(ui, "Apply", false, &mut confirm, &mut cancel);
+                }
+                Dialog::SelectPattern { pattern, focus } => {
+                    let all = pattern.chars().count();
+                    name_field(ui, "Select by pattern", pattern, focus, all, &mut confirm);
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("Wildcards * and ?, separated by commas: *.jpg, IMG_??.png").size(12.0).color(pal().faint));
+                    dialog_buttons(ui, "Select", false, &mut confirm, &mut cancel);
+                    confirm &= !pattern.trim().is_empty();
+                }
+                Dialog::ConfirmEmptyTrash => {
+                    ui.label(RichText::new("Empty the trash?").size(15.0).strong());
+                    ui.add_space(6.0);
+                    ui.label(RichText::new("Everything in the trash will be deleted. This can't be undone.").color(pal().dim));
+                    dialog_buttons(ui, "Empty trash", true, &mut confirm, &mut cancel);
+                    ui.input_mut(|i| {
+                        confirm |= crate::app::take(i, Modifiers::NONE, Key::Enter);
+                        cancel |= crate::app::take(i, Modifiers::NONE, Key::Backspace);
+                    });
+                }
+                Dialog::Conflicts(c) => {
+                    let src = c.pending[c.current].clone();
+                    let target = c.job.dest.clone().unwrap_or_default().join(ops_name(&src));
+                    ui.label(RichText::new("Name already exists").size(15.0).strong());
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(format!("\"{}\" is already in this folder.", ops_name(&src))).color(pal().dim));
+                    ui.add_space(6.0);
+                    let describe = |label: &str, path: &std::path::Path| {
+                        let meta = std::fs::metadata(path).ok();
+                        let size = meta.as_ref().filter(|m| m.is_file()).map(|m| format!("{}, ", crate::util::human_size(m.len()))).unwrap_or_default();
+                        let time = meta.and_then(|m| m.modified().ok()).map(crate::util::fmt_time).unwrap_or_default();
+                        RichText::new(format!("{label}  {size}{time}")).color(pal().text)
+                    };
+                    ui.label(describe("Existing", &target));
+                    ui.label(describe("New     ", &src));
+                    if c.pending.len() > 1 {
+                        ui.add_space(6.0);
+                        let left = c.pending.len() - c.current;
+                        ui.checkbox(&mut c.apply_to_all, format!("Apply to all {left} remaining conflicts"));
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.button("Replace").on_hover_text("The existing item goes to the trash").clicked() { resolved = Some(Resolution::Replace); }
+                        if ui.button("Replace if newer").clicked() { resolved = Some(Resolution::ReplaceIfNewer); }
+                        if ui.button("Skip").clicked() { resolved = Some(Resolution::Skip); }
+                        if ui.button("Keep both").clicked() { resolved = Some(Resolution::KeepBoth); }
+                        if ui.button("Cancel").clicked() { cancel = true; }
+                    });
+                }
                 Dialog::ConfirmDelete { paths } => {
                     ui.label(RichText::new("Delete permanently?").size(15.0).strong());
                     ui.add_space(6.0);
@@ -363,6 +474,12 @@ impl App {
         });
         if modal.should_close() {
             cancel = true;
+        }
+        if let (Some(how), Some(Dialog::Conflicts(_))) = (resolved, &self.dialog) {
+            if let Some(Dialog::Conflicts(c)) = self.dialog.take() {
+                self.resolve_conflict(c, how);
+            }
+            return;
         }
         if let Some(name) = load_workspace {
             self.dialog = None;
@@ -418,7 +535,31 @@ impl App {
                     paths,
                     None,
                 )),
-                None => {}
+                Some(Dialog::Permissions(edit)) => {
+                    let change = crate::props::Change {
+                        mode: (edit.mode != edit.original_mode || edit.recursive)
+                            .then_some(edit.mode),
+                        owner: (edit.owner != edit.original_owner)
+                            .then(|| edit.owner.trim().to_string()),
+                        group: (edit.group != edit.original_group)
+                            .then(|| edit.group.trim().to_string()),
+                        recursive: edit.recursive,
+                    };
+                    if change.mode.is_some() || change.owner.is_some() || change.group.is_some() {
+                        let mut job =
+                            crate::ops::Job::new(crate::ops::JobKind::Properties, edit.paths, None);
+                        job.change = Some(change);
+                        self.ops.submit(job);
+                    }
+                    self.props_cache = None;
+                }
+                Some(Dialog::SelectPattern { pattern, .. }) => self.select_pattern(&pattern),
+                Some(Dialog::ConfirmEmptyTrash) => self.ops.submit(crate::ops::Job::new(
+                    crate::ops::JobKind::EmptyTrash,
+                    Vec::new(),
+                    None,
+                )),
+                Some(Dialog::Conflicts(_)) | None => {}
             }
         } else if cancel {
             self.dialog = None;

@@ -12,6 +12,7 @@ chrono = "0.4.45"
 eframe = { version = "0.36.2", default-features = false, features = ["glow", "wayland", "x11", "default_fonts", "links"] }
 ignore = "0.4.33"
 image = "0.25.10"
+png = "0.18.1"
 libc = "0.2.190"
 notify = "8.2.0"
 raw-window-handle = "0.6"

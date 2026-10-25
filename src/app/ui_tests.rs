@@ -3090,3 +3090,63 @@ fn folder_sizes_sort_refresh_and_update_passive_columns() {
     drop(d);
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn name_conflicts_ask_and_apply_the_chosen_resolution() {
+    let dir = sandbox("conflicts");
+    let (dest, a) = (dir.join("dest"), dir.join("a.txt"));
+    fs::write(dest.join("a.txt"), "existing").unwrap();
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| a.row_rects.contains_key(&dir.join("a.txt")));
+
+    d.app
+        .drop_paths(vec![a.clone()], dest.clone(), DropMode::Copy);
+    d.frame(Vec::new());
+    d.frame(Vec::new());
+    assert!(matches!(d.app.dialog, Some(Dialog::Conflicts(_))));
+    d.click_text("Skip");
+    d.frame(Vec::new());
+    assert!(d.app.dialog.is_none());
+    assert_eq!(fs::read_to_string(dest.join("a.txt")).unwrap(), "existing");
+    assert!(!dest.join("a (2).txt").exists());
+
+    d.app.drop_paths(vec![a], dest.clone(), DropMode::Copy);
+    d.frame(Vec::new());
+    d.frame(Vec::new());
+    d.click_text("Keep both");
+    d.until("copy", |_| dest.join("a (2).txt").exists());
+    assert_eq!(fs::read_to_string(dest.join("a.txt")).unwrap(), "existing");
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn permissions_dialog_changes_the_mode_and_select_pattern_marks_matches() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = sandbox("permissions");
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| a.row_rects.contains_key(&dir.join("a.txt")));
+    fs::set_permissions(dir.join("a.txt"), fs::Permissions::from_mode(0o644)).unwrap();
+
+    d.app.select_pattern("*.txt");
+    assert_eq!(d.app.tab().targets().len(), 2);
+    d.app.tab_mut().select_path(&dir.join("a.txt"));
+
+    d.app.run_cmd(Cmd::Properties);
+    d.frame(Vec::new());
+    d.frame(Vec::new());
+    let Some(Dialog::Permissions(edit)) = &mut d.app.dialog else {
+        panic!("no permissions dialog");
+    };
+    assert_eq!(edit.mode, 0o644);
+    edit.mode |= 0o100;
+    d.click_text("Apply");
+    d.until("chmod", |_| {
+        fs::metadata(dir.join("a.txt"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777
+            == 0o744
+    });
+    fs::remove_dir_all(dir).unwrap();
+}

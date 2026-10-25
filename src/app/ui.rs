@@ -51,6 +51,9 @@ impl App {
         self.dragging = DragAndDrop::payload::<DragPaths>(ui.ctx());
         ui.ctx()
             .data_mut(|d| d.insert_temp(egui::Id::new("is_split"), self.panes.len() > 1));
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(egui::Id::new("custom_actions"), self.custom_actions.clone())
+        });
 
         Panel::bottom("status")
             .exact_size(26.0)
@@ -1495,6 +1498,9 @@ fn row_interactions(
             }
         };
         item(ui, "Open", "Enter", Action::OpenEntry(vi));
+        if crate::fsops::in_trash(&tab.path) {
+            item(ui, "Restore", "", Action::Cmd(Cmd::Restore));
+        }
         let mut open_with = Vec::new();
         if !e.is_dir {
             open_with_menu(ui, tab, vi, e, p, &mut open_with);
@@ -1529,6 +1535,7 @@ fn row_interactions(
         }
         item(ui, "Duplicate", "Ctrl+D", Action::Cmd(Cmd::Duplicate));
         item(ui, "Rename", "F2", Action::Cmd(Cmd::Rename));
+        item(ui, "Permissions…", "", Action::Cmd(Cmd::Properties));
         ui.separator();
         let targets = if tab.is_selected(vi) {
             tab.targets()
@@ -1553,6 +1560,31 @@ fn row_interactions(
         }
         item(ui, "Compress to .zip", "", Action::Cmd(Cmd::Compress));
         item(ui, "Compress…", "", Action::Cmd(Cmd::CompressAs));
+        let custom = ui
+            .ctx()
+            .data(|d| {
+                d.get_temp::<Arc<Vec<crate::actions::CustomAction>>>(egui::Id::new(
+                    "custom_actions",
+                ))
+            })
+            .unwrap_or_default();
+        let custom: Vec<_> = custom
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.applies(&targets))
+            .collect();
+        let mut run_custom = Vec::new();
+        if !custom.is_empty() {
+            ui.menu_button("Actions", |ui| {
+                for (i, a) in custom {
+                    if ui.button(&a.name).clicked() {
+                        run_custom.push(Action::FocusPane(p));
+                        run_custom.push(Action::Custom(i));
+                        ui.close();
+                    }
+                }
+            });
+        }
         ui.separator();
         item(ui, "Copy path", "Alt+C", Action::CopyPath(e.path.clone()));
         let term = if e.is_dir {
@@ -1562,7 +1594,9 @@ fn row_interactions(
         };
         item(ui, "Open terminal here", "", Action::OpenTerminal(term));
         ui.separator();
-        item(ui, "Move to trash", "Delete", Action::Cmd(Cmd::Trash));
+        if !crate::fsops::in_trash(&tab.path) {
+            item(ui, "Move to trash", "Delete", Action::Cmd(Cmd::Trash));
+        }
         item(
             ui,
             "Delete permanently",
@@ -1570,6 +1604,7 @@ fn row_interactions(
             Action::Cmd(Cmd::DeletePermanently),
         );
         actions.extend(open_with);
+        actions.extend(run_custom);
     });
 }
 

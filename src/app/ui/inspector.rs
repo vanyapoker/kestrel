@@ -92,7 +92,36 @@ impl App {
         if let Some(m) = e.modified {
             rows.push(("Modified".into(), util::fmt_time(m)));
         }
-        rows.push(("Permissions".into(), util::fmt_mode(e.mode, e.is_dir)));
+        rows.push((
+            "Permissions".into(),
+            format!(
+                "{} ({:03o})",
+                util::fmt_mode(e.mode, e.is_dir),
+                e.mode & 0o7777
+            ),
+        ));
+        if self.props_cache.as_ref().map(|(p, _)| p) != Some(&e.path) {
+            self.props_cache = Some((e.path.clone(), crate::props::read(&e.path)));
+        }
+        if let Some((_, Some(props))) = &self.props_cache {
+            rows.push(("Owner".into(), format!("{}:{}", props.owner, props.group)));
+            if let Some((target, exists)) = &props.link {
+                let missing = if *exists { "" } else { " (missing)" };
+                rows.push(("Link to".into(), format!("{}{missing}", target.display())));
+            }
+        }
+        // Checksums of an older version of the file are stale.
+        let sums = self
+            .checksums
+            .get(&e.path)
+            .filter(|(modified, _)| *modified == e.modified);
+        for (algo, sum) in sums.into_iter().flat_map(|(_, s)| s) {
+            rows.push((
+                algo.label().into(),
+                sum.clone().unwrap_or_else(|err| format!("failed: {err}")),
+            ));
+        }
+        let hashing = self.checksums_pending.contains(&e.path);
         if let State::Ready(c) = &self.preview.state {
             match c {
                 Content::Image { info, .. } | Content::Binary { info } => {
@@ -125,6 +154,7 @@ impl App {
         }
         rows.push(("Path".into(), e.path.display().to_string()));
 
+        let (mut edit_permissions, mut hash) = (false, false);
         Panel::bottom("preview_info")
             .frame(Frame::new().inner_margin(Margin::symmetric(0, 8)))
             .resizable(false)
@@ -142,6 +172,22 @@ impl App {
                             ui.end_row();
                         }
                     });
+                ui.horizontal(|ui| {
+                    if ui.small_button("Edit permissions…").clicked() {
+                        edit_permissions = true;
+                    }
+                    if !e.is_dir && !e.is_link {
+                        if hashing {
+                            ui.label(
+                                RichText::new("Calculating checksums…")
+                                    .size(12.0)
+                                    .color(pal().faint),
+                            );
+                        } else if sums.is_none() && ui.small_button("Checksums").clicked() {
+                            hash = true;
+                        }
+                    }
+                });
             });
 
         let mut inspect = None;
@@ -294,6 +340,12 @@ impl App {
                     });
                 }
             });
+        if hash {
+            self.start_checksums(e.path.clone(), e.modified);
+        }
+        if edit_permissions {
+            self.edit_permissions();
+        }
         if let Some(entry) = inspect {
             self.inspector.push(entry);
             self.sync_inspector();

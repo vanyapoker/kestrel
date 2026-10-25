@@ -78,6 +78,47 @@ enum Dialog {
         level: ops::Level,
         focus: bool,
     },
+    ConfirmEmptyTrash,
+    Permissions(Box<PermissionsEdit>),
+    SelectPattern {
+        pattern: String,
+        focus: bool,
+    },
+    /// A copy or move whose items already exist in the destination.
+    Conflicts(Box<Conflicts>),
+}
+
+/// Editor for permissions and ownership of `paths`.
+struct PermissionsEdit {
+    paths: Vec<PathBuf>,
+    /// Mode bits as shown (rwx for owner/group/others, plus setuid/setgid/sticky).
+    mode: u32,
+    original_mode: u32,
+    owner: String,
+    group: String,
+    original_owner: String,
+    original_group: String,
+    recursive: bool,
+    any_dir: bool,
+}
+
+/// Asks, one item at a time, what to do with names that already exist in `job.dest`.
+struct Conflicts {
+    /// The transfer to run once every conflict is settled; its `srcs` shrink as items are skipped.
+    job: Job,
+    /// Sources whose target exists, in order.
+    pending: Vec<PathBuf>,
+    /// Index into `pending` of the item being asked about.
+    current: usize,
+    apply_to_all: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Resolution {
+    Replace,
+    ReplaceIfNewer,
+    Skip,
+    KeepBoth,
 }
 
 struct Toast {
@@ -162,6 +203,8 @@ enum Action {
     OpenTerminal(PathBuf),
     ClearFilter,
     Cmd(Cmd),
+    /// Run the custom action at this index on the selection.
+    Custom(usize),
     Drop {
         paths: Vec<PathBuf>,
         dest: PathBuf,
@@ -224,6 +267,15 @@ pub struct App {
     /// Rescans from the device watcher (`None` in tests).
     devices_rx: Option<Receiver<Vec<crate::devices::Device>>>,
     dev_tx: Sender<crate::devices::DevResult>,
+    custom_actions: Arc<Vec<crate::actions::CustomAction>>,
+    /// Owner and link info for the inspected item.
+    props_cache: Option<(PathBuf, Option<crate::props::Props>)>,
+    checksums: HashMap<PathBuf, crate::props::Sums>,
+    checksums_pending: HashSet<PathBuf>,
+    checksum_tx: Sender<(PathBuf, crate::props::Sums)>,
+    checksum_rx: Receiver<(PathBuf, crate::props::Sums)>,
+    action_tx: Sender<Result<String, String>>,
+    action_rx: Receiver<Result<String, String>>,
     dev_rx: Receiver<crate::devices::DevResult>,
     /// Devices with a mount, unmount or eject in progress.
     dev_busy: HashSet<PathBuf>,
@@ -324,6 +376,8 @@ impl App {
         let (list_tx, list_rx) = channel();
         let (search_tx, search_rx) = channel();
         let (dev_tx, dev_rx) = channel();
+        let (action_tx, action_rx) = channel();
+        let (checksum_tx, checksum_rx) = channel();
         let mut app = Self {
             preview: Preview::new(ctx.clone()),
             inspector: Vec::new(),
@@ -355,6 +409,14 @@ impl App {
             devices_rx: None,
             dev_tx,
             dev_rx,
+            custom_actions: Arc::new(crate::actions::load()),
+            props_cache: None,
+            checksums: HashMap::new(),
+            checksums_pending: HashSet::new(),
+            checksum_tx,
+            checksum_rx,
+            action_tx,
+            action_rx,
             dev_busy: HashSet::new(),
             show_hidden: false,
             show_preview: true,
@@ -827,6 +889,16 @@ impl App {
         while let Ok(r) = self.dev_rx.try_recv() {
             self.device_done(r);
         }
+        while let Ok((path, sums)) = self.checksum_rx.try_recv() {
+            self.checksums_pending.remove(&path);
+            self.checksums.insert(path, sums);
+        }
+        while let Ok(r) = self.action_rx.try_recv() {
+            match r {
+                Ok(text) => self.toast(text),
+                Err(text) => self.toast_error(text),
+            }
+        }
 
         while let Ok(l) = self.list_rx.try_recv() {
             if l.result.is_err() && self.repair_missing_column(l.listing_id, l.generation) {
@@ -1164,6 +1236,10 @@ impl App {
                 | JobKind::Extract
                 | JobKind::Compress
                 | JobKind::SaveImage
+                | JobKind::Restore
+                | JobKind::EmptyTrash
+                | JobKind::PasteImage
+                | JobKind::Properties
         ) {
             self.toast(done.summary);
         }
@@ -1218,6 +1294,63 @@ impl App {
     }
 
     /// Pastes the app's own clipboard. A copy stays available for further pastes, a cut is consumed.
+    /// Submits a copy or move, first asking about items that already exist in the destination.
+    fn submit_transfer(&mut self, job: Job) {
+        let dest = job.dest.clone().unwrap_or_default();
+        let pending: Vec<PathBuf> = job
+            .srcs
+            .iter()
+            .filter(|src| {
+                let target = dest.join(ops::file_name(src));
+                // Copying next to the original duplicates it; moving there is a no-op.
+                src.parent() != Some(dest.as_path()) && std::fs::symlink_metadata(&target).is_ok()
+            })
+            .cloned()
+            .collect();
+        if pending.is_empty() {
+            return self.ops.submit(job);
+        }
+        self.dialog = Some(Dialog::Conflicts(Box::new(Conflicts {
+            job,
+            pending,
+            current: 0,
+            apply_to_all: false,
+        })));
+    }
+
+    /// Records the answer for the current conflict (and the rest, if applying to all);
+    /// submits the job once none are left.
+    fn resolve_conflict(&mut self, mut c: Box<Conflicts>, how: Resolution) {
+        let end = if c.apply_to_all {
+            c.pending.len()
+        } else {
+            c.current + 1
+        };
+        let dest = c.job.dest.clone().unwrap_or_default();
+        for src in c.pending[c.current..end].iter().cloned() {
+            let newer = || {
+                let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+                modified(&src) > modified(&dest.join(ops::file_name(&src)))
+            };
+            match how {
+                Resolution::Replace => {
+                    c.job.replace.insert(src);
+                }
+                Resolution::ReplaceIfNewer if newer() => {
+                    c.job.replace.insert(src);
+                }
+                Resolution::ReplaceIfNewer | Resolution::Skip => c.job.srcs.retain(|s| *s != src),
+                Resolution::KeepBoth => {}
+            }
+        }
+        c.current = end;
+        if c.current < c.pending.len() {
+            self.dialog = Some(Dialog::Conflicts(c));
+        } else {
+            self.ops.submit(c.job);
+        }
+    }
+
     fn paste_internal(&mut self, dest: PathBuf) {
         let Some(clip) = self.clip.take() else {
             return;
@@ -1229,8 +1362,81 @@ impl App {
                 text: clip.text,
             });
         }
-        self.ops
-            .submit(Job::new(clip.op.job_kind(), clip.paths, Some(dest)));
+        self.submit_transfer(Job::new(clip.op.job_kind(), clip.paths, Some(dest)));
+    }
+
+    /// Computes checksums of `path` in the background.
+    fn start_checksums(&mut self, path: PathBuf, modified: Option<std::time::SystemTime>) {
+        if !self.checksums_pending.insert(path.clone()) {
+            return;
+        }
+        let (tx, ctx) = (self.checksum_tx.clone(), self.ctx.clone());
+        std::thread::spawn(move || {
+            let sums = crate::props::Algo::ALL
+                .into_iter()
+                .map(|a| (a, crate::props::checksum(&path, a)))
+                .collect();
+            let _ = tx.send((path, (modified, sums)));
+            ctx.request_repaint();
+        });
+    }
+
+    fn edit_permissions(&mut self) {
+        let paths = self.tab().targets();
+        let Some(first) = paths.first() else { return };
+        let Some(meta) = std::fs::metadata(first).ok() else {
+            return self.toast_error("Can't read the permissions");
+        };
+        let props = crate::props::read(first);
+        let (owner, group) = props.map(|p| (p.owner, p.group)).unwrap_or_default();
+        let mode = std::os::unix::fs::MetadataExt::mode(&meta) & 0o7777;
+        self.dialog = Some(Dialog::Permissions(Box::new(PermissionsEdit {
+            any_dir: paths.iter().any(|p| p.is_dir()),
+            paths,
+            mode,
+            original_mode: mode,
+            original_owner: owner.clone(),
+            original_group: group.clone(),
+            owner,
+            group,
+            recursive: false,
+        })));
+    }
+
+    fn run_custom(&mut self, index: usize) {
+        let Some(action) = self.custom_actions.get(index).cloned() else {
+            return;
+        };
+        let targets = self.tab().targets();
+        if !action.applies(&targets) {
+            return self.toast(format!(
+                "\"{}\" doesn't apply to this selection",
+                action.name
+            ));
+        }
+        let dir = self.tab().path.clone();
+        crate::actions::spawn(
+            &action,
+            &targets,
+            &dir,
+            self.action_tx.clone(),
+            self.ctx.clone(),
+        );
+    }
+
+    fn select_pattern(&mut self, pattern: &str) {
+        if pattern.trim().is_empty() {
+            return;
+        }
+        if self.tab_mut().select_matching(pattern) == 0 {
+            self.toast("No items match the pattern");
+        }
+    }
+
+    fn paste_image(&mut self, dest: PathBuf, mime: impl Into<String>) {
+        let mut job = Job::new(JobKind::PasteImage, Vec::new(), Some(dest));
+        job.name = Some(mime.into());
+        self.ops.submit(job);
     }
 
     fn set_text_clipboard(&mut self, text: String) {
@@ -1253,6 +1459,10 @@ impl App {
                 crate::wl_dnd::ClipRead::Ours => {}
                 crate::wl_dnd::ClipRead::Files { paths, op } => {
                     self.ops.submit(Job::new(op.job_kind(), paths, Some(dest)));
+                    return;
+                }
+                crate::wl_dnd::ClipRead::Image(mime) => {
+                    self.paste_image(dest, mime);
                     return;
                 }
                 crate::wl_dnd::ClipRead::Nothing => {
@@ -1279,13 +1489,20 @@ impl App {
             paths = wl_paste_uri_list();
         }
         if paths.is_empty() {
-            self.toast("Clipboard has no files to paste");
+            match wl_paste_image_type() {
+                Some(mime) => self.paste_image(dest, mime),
+                None => self.toast("Clipboard has no files to paste"),
+            }
         } else {
-            self.ops.submit(Job::new(JobKind::Copy, paths, Some(dest)));
+            self.submit_transfer(Job::new(JobKind::Copy, paths, Some(dest)));
         }
     }
 
     fn paste_target(&mut self) -> Option<PathBuf> {
+        if fsops::in_trash(&self.tab().path) {
+            self.toast_error("Can't paste into the trash");
+            return None;
+        }
         if self.tab().search.is_some() {
             self.toast_error("Can't paste into search results");
             return None;
@@ -1297,6 +1514,14 @@ impl App {
         let paths: Vec<PathBuf> = paths.into_iter().filter(|p| *p != dest).collect();
         if paths.is_empty() || !dest.is_dir() {
             return;
+        }
+        // Dropping on the trash folder trashes properly (with restore info).
+        if dest == fsops::trash_dir() {
+            let paths = paths.into_iter().filter(|p| !fsops::in_trash(p)).collect();
+            return self.ops.submit(Job::new(JobKind::Trash, paths, None));
+        }
+        if fsops::in_trash(&dest) {
+            return self.toast_error("Can't move files into the trash folder; drop on Trash");
         }
         // Like other file managers: move within a filesystem, copy across.
         let dest_dev = std::fs::metadata(&dest).map(|m| m.dev()).ok();
@@ -1314,7 +1539,7 @@ impl App {
         if kind == JobKind::Move && paths.iter().all(|p| p.parent() == Some(dest.as_path())) {
             return;
         }
-        self.ops.submit(Job::new(kind, paths, Some(dest)));
+        self.submit_transfer(Job::new(kind, paths, Some(dest)));
     }
 
     fn rename(&mut self, path: &Path, name: &str) {
@@ -1453,10 +1678,26 @@ impl App {
                     });
                 }
             }
+            // Inside the trash, "trash" can only mean deleting for good.
+            Cmd::Trash if fsops::in_trash(&self.tab().path) => self.run_cmd(Cmd::DeletePermanently),
             Cmd::Trash => {
                 let srcs = self.tab().targets();
                 self.ops.submit(Job::new(JobKind::Trash, srcs, None));
             }
+            Cmd::Restore => {
+                let srcs: Vec<PathBuf> = self
+                    .tab()
+                    .targets()
+                    .into_iter()
+                    .filter(|p| fsops::in_trash(p))
+                    .collect();
+                if srcs.is_empty() {
+                    self.toast("Select items in the trash to restore");
+                } else {
+                    self.ops.submit(Job::new(JobKind::Restore, srcs, None));
+                }
+            }
+            Cmd::EmptyTrash => self.dialog = Some(Dialog::ConfirmEmptyTrash),
             Cmd::DeletePermanently => {
                 let paths = self.tab().targets();
                 if !paths.is_empty() {
@@ -1527,6 +1768,14 @@ impl App {
                 }
             }
             Cmd::SelectAll => self.tab_mut().select_all(),
+            Cmd::Properties => self.edit_permissions(),
+            Cmd::InvertSelection => self.tab_mut().invert_selection(),
+            Cmd::SelectPattern => {
+                self.dialog = Some(Dialog::SelectPattern {
+                    pattern: "*.".into(),
+                    focus: true,
+                })
+            }
             Cmd::Search => self.start_search(),
             Cmd::Flatten => {
                 if self.tab().search.as_ref().is_some_and(|s| s.flatten) {
@@ -1539,7 +1788,10 @@ impl App {
                     self.restart_search();
                 }
             }
-            Cmd::Refresh => self.refresh(),
+            Cmd::Refresh => {
+                self.custom_actions = Arc::new(crate::actions::load());
+                self.refresh()
+            }
             Cmd::ToggleHidden => {
                 self.show_hidden = !self.show_hidden;
                 self.refilter_all();
@@ -1773,10 +2025,11 @@ impl App {
                 let (sizes, hidden) = (&self.sizes, self.show_hidden);
                 let pane = &mut self.panes[self.active_pane];
                 let tab = &mut pane.tabs[pane.active];
-                tab.apply_view(sizes, hidden);
+                tab.refilter(sizes, hidden);
                 tab.scroll_to_cursor = true;
             }
             Action::Cmd(c) => self.run_cmd(c),
+            Action::Custom(i) => self.run_custom(i),
             Action::Drop { paths, dest, mode } => self.drop_paths(paths, dest, mode),
             Action::Reveal(p) => {
                 if let Some(parent) = p.parent().map(Path::to_path_buf) {
@@ -2110,6 +2363,8 @@ impl App {
                 (none, Key::Delete, Trash),
                 (cs, Key::N, NewFolder),
                 (ctrl, Key::A, SelectAll),
+                (cs, Key::A, InvertSelection),
+                (ctrl, Key::S, SelectPattern),
                 (ctrl, Key::Z, Cmd::Undo),
                 (ctrl, Key::D, Duplicate),
                 (ctrl, Key::F, Cmd::Search),
@@ -2163,7 +2418,7 @@ impl App {
             let (sizes, hidden) = (&self.sizes, self.show_hidden);
             let pane = &mut self.panes[self.active_pane];
             let tab = &mut pane.tabs[pane.active];
-            tab.apply_view(sizes, hidden);
+            tab.refilter(sizes, hidden);
             tab.select_best_match();
             tab.scroll_to_cursor = true;
         }
@@ -2381,16 +2636,29 @@ pub(crate) fn parse_path_list(text: &str) -> Vec<PathBuf> {
         .collect()
 }
 
+/// The first image type the clipboard offers, if any.
+fn wl_paste_image_type() -> Option<&'static str> {
+    let out = crate::thumbs::run_tool_for(
+        std::process::Command::new("wl-paste").arg("--list-types"),
+        std::time::Duration::from_secs(2),
+    )
+    .ok()?;
+    let types = String::from_utf8_lossy(&out);
+    ops::CLIPBOARD_IMAGES
+        .iter()
+        .find(|(m, _)| types.lines().any(|t| t.trim() == *m))
+        .map(|(m, _)| *m)
+}
+
 /// Files copied in GTK/Qt file managers are offered as text/uri-list.
 fn wl_paste_uri_list() -> Vec<PathBuf> {
-    let out = std::process::Command::new("wl-paste")
-        .args(["--no-newline", "--type", "text/uri-list"])
-        .stderr(std::process::Stdio::null())
-        .output();
-    match out {
-        Ok(o) if o.status.success() => parse_path_list(&String::from_utf8_lossy(&o.stdout)),
-        _ => Vec::new(),
-    }
+    // The clipboard owner may be unresponsive, so don't wait on it forever.
+    let out = crate::thumbs::run_tool_for(
+        std::process::Command::new("wl-paste").args(["--no-newline", "--type", "text/uri-list"]),
+        std::time::Duration::from_secs(2),
+    );
+    out.map(|o| parse_path_list(&String::from_utf8_lossy(&o)))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

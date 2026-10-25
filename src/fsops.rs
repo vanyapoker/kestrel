@@ -9,6 +9,8 @@ use std::time::SystemTime;
 #[derive(Clone)]
 pub struct Entry {
     pub name: String,
+    /// Case-folded `name`, computed once so sorting never has to lowercase.
+    pub sort_name: String,
     pub path: PathBuf,
     pub ext: String,
     pub is_dir: bool,
@@ -54,6 +56,7 @@ pub fn make_entry(path: PathBuf, name: String, lmeta: fs::Metadata) -> Entry {
     };
     Entry {
         hidden: name.starts_with('.'),
+        sort_name: name.chars().flat_map(char::to_lowercase).collect(),
         name,
         path,
         ext,
@@ -141,6 +144,19 @@ pub struct Places {
     pub bookmarks: Vec<(String, PathBuf)>,
 }
 
+/// The home trash's `files` folder, where trashed items live.
+pub fn trash_dir() -> PathBuf {
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| home_dir().join(".local/share"))
+        .join("Trash/files")
+}
+
+pub fn in_trash(path: &Path) -> bool {
+    path.starts_with(trash_dir())
+}
+
 pub fn home_dir() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -164,6 +180,7 @@ pub enum Special {
     Root,
     Drive,
     Bookmark,
+    Trash,
 }
 
 const XDG_DIRS: [(&str, &str, Special); 9] = [
@@ -204,6 +221,7 @@ pub fn special(path: &Path) -> Option<Special> {
         // Unused XDG dirs often point at $HOME itself.
         m.insert(home, Special::Home);
         m.insert(PathBuf::from("/"), Special::Root);
+        m.insert(trash_dir(), Special::Trash);
         m
     })
     .get(path)
@@ -220,6 +238,14 @@ pub fn places() -> Places {
         }
     }
     places.push(("Root".to_string(), PathBuf::from("/")));
+    // Make sure there is a trash to open, even before anything has been trashed.
+    let trash = trash_dir();
+    if let Some(root) = trash.parent() {
+        let _ = fs::create_dir_all(root.join("info"));
+    }
+    if fs::create_dir_all(&trash).is_ok() {
+        places.push(("Trash".to_string(), trash));
+    }
 
     let mut bookmarks = Vec::new();
     if let Ok(s) = fs::read_to_string(bookmarks_file()) {

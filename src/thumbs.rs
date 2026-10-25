@@ -105,6 +105,20 @@ pub fn render(path: &Path, renderer: Renderer, max: u32) -> Result<Rendered, Str
     }
 }
 
+/// Grid thumbnail, reusing the shared disk cache for the renderers that are slow.
+fn render_cached(path: &Path, renderer: Renderer) -> Option<ColorImage> {
+    if renderer == Renderer::Raster {
+        return render(path, renderer, THUMB_SIZE).ok().map(|r| r.image);
+    }
+    if let Some(image) = crate::thumb_cache::load(path) {
+        return Some(image);
+    }
+    let image = render(path, renderer, THUMB_SIZE).ok()?.image;
+    // A cancelled render fails above, so only complete thumbnails reach the disk.
+    crate::thumb_cache::store(path, &image);
+    Some(image)
+}
+
 fn render_raster(path: &Path, max: u32) -> Result<Rendered, String> {
     if std::fs::metadata(path)
         .map(|m| m.len() > MAX_IMAGE_FILE)
@@ -190,6 +204,11 @@ fn is_cancelled() -> bool {
 
 /// Runs a tool, returning stdout. Killed after a timeout so corrupt files can't hang us.
 fn run_tool(cmd: &mut Command) -> Result<Vec<u8>, String> {
+    run_tool_for(cmd, TOOL_TIMEOUT)
+}
+
+/// `run_tool` with a custom time limit.
+pub fn run_tool_for(cmd: &mut Command, timeout: Duration) -> Result<Vec<u8>, String> {
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -206,7 +225,7 @@ fn run_tool(cmd: &mut Command) -> Result<Vec<u8>, String> {
     loop {
         match child.try_wait() {
             Ok(Some(_)) => break,
-            Ok(None) if start.elapsed() > TOOL_TIMEOUT || is_cancelled() => {
+            Ok(None) if start.elapsed() > timeout || is_cancelled() => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err("Timed out".into());
@@ -363,6 +382,7 @@ impl Thumbs {
             ready: Condvar::new(),
         });
         let (tx, rx) = channel();
+        std::thread::spawn(crate::thumb_cache::prune);
         for i in 0..WORKERS {
             let (queue, tx, ctx): (_, Sender<ResultMsg>, _) =
                 (queue.clone(), tx.clone(), ctx.clone());
@@ -380,9 +400,9 @@ impl Thumbs {
                             }
                         };
                         let payload = match request.kind {
-                            Kind::Image(renderer) => render(&request.path, renderer, THUMB_SIZE)
-                                .ok()
-                                .map(|r| Payload::Image(r.image)),
+                            Kind::Image(renderer) => {
+                                render_cached(&request.path, renderer).map(Payload::Image)
+                            }
                             Kind::Text(_) => text_thumbnail(&request.path).map(Payload::Text),
                             Kind::Peek => peek_dir(&request.path).map(Payload::Peek),
                         };

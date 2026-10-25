@@ -102,6 +102,8 @@ pub struct Tab {
     pub entries: Vec<Entry>,
     /// Indices into `entries`, filtered and sorted.
     pub view: Vec<usize>,
+    /// Indices into `entries`, all of them, in column order; `view` filters this.
+    base: Vec<usize>,
     /// Keyboard cursor, index into `view`.
     pub cursor: Option<usize>,
     /// Explicit multi-selection. When empty, the cursor item is the selection.
@@ -144,6 +146,7 @@ impl Tab {
             fwd: Vec::new(),
             entries: Vec::new(),
             view: Vec::new(),
+            base: Vec::new(),
             cursor: None,
             marked: HashSet::new(),
             anchor: None,
@@ -305,6 +308,42 @@ impl Tab {
             .collect();
     }
 
+    /// Marks the visible items whose names match `patterns` (see `util::glob_any`),
+    /// replacing the selection. Returns how many matched.
+    pub fn select_matching(&mut self, patterns: &str) -> usize {
+        if let Some(s) = &mut self.search {
+            s.follow_best = false;
+        }
+        let matches: Vec<usize> = (0..self.view.len())
+            .filter(|&vi| util::glob_any(patterns, &self.entries[self.view[vi]].name))
+            .collect();
+        self.marked = matches
+            .iter()
+            .map(|&vi| self.entries[self.view[vi]].path.clone())
+            .collect();
+        if let Some(&first) = matches.first() {
+            self.cursor = Some(first);
+            self.anchor = Some(first);
+            self.scroll_to_cursor = true;
+        }
+        matches.len()
+    }
+
+    /// Selects exactly the visible items that aren't selected now.
+    pub fn invert_selection(&mut self) {
+        if let Some(s) = &mut self.search {
+            s.follow_best = false;
+        }
+        let current: HashSet<PathBuf> = self.targets().into_iter().collect();
+        self.marked = self
+            .view
+            .iter()
+            .map(|&i| &self.entries[i].path)
+            .filter(|p| !current.contains(*p))
+            .cloned()
+            .collect();
+    }
+
     pub fn move_cursor(&mut self, delta: isize, select: Select) {
         if self.view.is_empty() {
             return;
@@ -346,7 +385,66 @@ impl Tab {
         })
     }
 
+    /// Re-sorts every entry, then rebuilds `view`. Call after entries, sort order,
+    /// folder sizes or the hidden-files setting change.
     pub fn apply_view(&mut self, sizes: &HashMap<PathBuf, u64>, show_hidden: bool) {
+        self.sort_base(sizes);
+        self.rebuild_view(show_hidden);
+    }
+
+    /// Rebuilds `view` after only the filter changed, reusing the sorted order.
+    pub fn refilter(&mut self, sizes: &HashMap<PathBuf, u64>, show_hidden: bool) {
+        if self.base.len() != self.entries.len() {
+            return self.apply_view(sizes, show_hidden);
+        }
+        self.rebuild_view(show_hidden);
+    }
+
+    /// Orders all entries by folders first, then the chosen column.
+    fn sort_base(&mut self, sizes: &HashMap<PathBuf, u64>) {
+        let entries = &self.entries;
+        let (sort, asc) = (self.sort, self.ascending);
+        let size_of: Vec<u64> = if sort == SortKey::Size {
+            entries
+                .iter()
+                .map(|e| {
+                    if e.is_dir {
+                        sizes.get(&e.path).copied().unwrap_or(0)
+                    } else {
+                        e.size
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut base: Vec<usize> = (0..entries.len()).collect();
+        base.sort_by(|&a, &b| {
+            let (x, y) = (&entries[a], &entries[b]);
+            y.is_dir.cmp(&x.is_dir).then_with(|| {
+                let ord = match sort {
+                    SortKey::Name => util::natural_cmp_folded(&x.sort_name, &y.sort_name),
+                    SortKey::Size => size_of[a].cmp(&size_of[b]),
+                    SortKey::Modified => x.modified.cmp(&y.modified),
+                    SortKey::Kind => x.ext.cmp(&y.ext),
+                };
+                let ord = if asc { ord } else { ord.reverse() };
+                ord.then_with(|| util::natural_cmp_folded(&x.sort_name, &y.sort_name))
+                    .then_with(|| {
+                        x.path
+                            .components()
+                            .count()
+                            .cmp(&y.path.components().count())
+                    })
+                    .then_with(|| x.path.cmp(&y.path))
+            })
+        });
+        self.base = base;
+    }
+
+    /// Filters the sorted order. Better matches come first; the sort is stable, so
+    /// equally good matches keep the column order.
+    fn rebuild_view(&mut self, show_hidden: bool) {
         let keep = self.cursor_entry().map(|e| e.path.clone());
         let anchor = self
             .anchor
@@ -355,8 +453,10 @@ impl Tab {
         let query = self.query();
         let entries = &self.entries;
         let in_search = self.search.is_some();
-        let mut ranked: Vec<_> = (0..entries.len())
-            .filter_map(|i| {
+        let mut ranked: Vec<_> = self
+            .base
+            .iter()
+            .filter_map(|&i| {
                 let e = &entries[i];
                 if !show_hidden && !in_search && e.hidden {
                     return None;
@@ -364,37 +464,7 @@ impl Tab {
                 query.score_name(&e.name, e.is_dir).map(|score| (i, score))
             })
             .collect();
-        let size_of = |e: &Entry| {
-            if e.is_dir {
-                sizes.get(&e.path).copied().unwrap_or(0)
-            } else {
-                e.size
-            }
-        };
-        let (sort, asc) = (self.sort, self.ascending);
-        ranked.sort_by(|&(a, a_score), &(b, b_score)| {
-            let (x, y) = (&entries[a], &entries[b]);
-            b_score
-                .cmp(&a_score)
-                .then_with(|| y.is_dir.cmp(&x.is_dir))
-                .then_with(|| {
-                    let ord = match sort {
-                        SortKey::Name => util::natural_cmp(&x.name, &y.name),
-                        SortKey::Size => size_of(x).cmp(&size_of(y)),
-                        SortKey::Modified => x.modified.cmp(&y.modified),
-                        SortKey::Kind => x.ext.cmp(&y.ext),
-                    };
-                    let ord = if asc { ord } else { ord.reverse() };
-                    ord.then_with(|| util::natural_cmp(&x.name, &y.name))
-                        .then_with(|| {
-                            x.path
-                                .components()
-                                .count()
-                                .cmp(&y.path.components().count())
-                        })
-                        .then_with(|| x.path.cmp(&y.path))
-                })
-        });
+        ranked.sort_by_key(|&(_, score)| std::cmp::Reverse(score));
         self.view = ranked.into_iter().map(|(i, _)| i).collect();
         let visible: HashSet<&PathBuf> = self.view.iter().map(|&i| &entries[i].path).collect();
         self.marked.retain(|p| visible.contains(p));
@@ -448,6 +518,22 @@ mod tests {
     }
 
     #[test]
+    fn select_by_pattern_and_invert() {
+        let mut t = tab_with(&["a.jpg", "b.JPG", "c.txt", "d.png"]);
+        assert_eq!(t.select_matching("*.jpg"), 2);
+        let names = |t: &Tab| -> Vec<String> {
+            t.targets()
+                .iter()
+                .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+                .collect()
+        };
+        assert_eq!(names(&t), ["a.jpg", "b.JPG"]);
+        t.invert_selection();
+        assert_eq!(names(&t), ["c.txt", "d.png"]);
+        assert_eq!(t.select_matching("*.zip"), 0);
+    }
+
+    #[test]
     fn zoom_levels() {
         let m = ViewMode::Details;
         assert_eq!(m.zoom(-1), ViewMode::Details);
@@ -488,6 +574,20 @@ mod tests {
         assert_eq!(names, ["NaDya01", "NaDya02", "NaDya10"]);
         t.apply_view(&HashMap::new(), true);
         assert_eq!(t.entry(0).unwrap().name, ".nd");
+    }
+
+    #[test]
+    fn refilter_matches_a_full_rebuild() {
+        let mut t = tab_with(&["b10", "B2", "a", "Bz", "c1", "bb"]);
+        t.sort = SortKey::Name;
+        t.apply_view(&HashMap::new(), true);
+        for filter in ["b", "bb", "", "z"] {
+            t.filter = filter.into();
+            t.refilter(&HashMap::new(), true);
+            let fast = t.view.clone();
+            t.apply_view(&HashMap::new(), true);
+            assert_eq!(fast, t.view, "filter {filter:?}");
+        }
     }
 
     #[test]

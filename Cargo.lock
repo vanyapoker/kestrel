@@ -1765,6 +1765,7 @@ dependencies = [
  "image",
  "libc",
  "notify",
+ "png",
  "raw-window-handle",
  "rayon",
  "serde_json",

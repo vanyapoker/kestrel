@@ -36,49 +36,95 @@ pub fn fmt_mode(mode: u32, is_dir: bool) -> String {
     s
 }
 
+/// Whether `name` matches any of the shell-style patterns in `patterns`, separated by
+/// `,` or `;`. `*` and `?` are wildcards and case is ignored. A pattern without
+/// wildcards matches names containing it.
+pub fn glob_any(patterns: &str, name: &str) -> bool {
+    let name: Vec<char> = name.chars().flat_map(char::to_lowercase).collect();
+    patterns
+        .split([',', ';'])
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .any(|p| {
+            let p: Vec<char> = p.chars().flat_map(char::to_lowercase).collect();
+            if p.iter().any(|&c| c == '*' || c == '?') {
+                glob(&p, &name)
+            } else {
+                name.windows(p.len()).any(|w| w == p.as_slice())
+            }
+        })
+}
+
+fn glob(p: &[char], s: &[char]) -> bool {
+    let (mut pi, mut si) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while si < s.len() {
+        match p.get(pi) {
+            Some('*') => {
+                star = Some((pi, si));
+                pi += 1;
+            }
+            Some(&c) if c == '?' || c == s[si] => {
+                pi += 1;
+                si += 1;
+            }
+            _ => match star {
+                Some((sp, ss)) => {
+                    pi = sp + 1;
+                    si = ss + 1;
+                    star = Some((sp, ss + 1));
+                }
+                None => return false,
+            },
+        }
+    }
+    p[pi..].iter().all(|&c| c == '*')
+}
+
 /// Case-insensitive natural ordering: "file2" < "file10".
 pub fn natural_cmp(a: &str, b: &str) -> Ordering {
-    let (mut a, mut b) = (a.chars().peekable(), b.chars().peekable());
+    natural_cmp_impl(a, b, false)
+}
+
+/// `natural_cmp` for names already case-folded (`Entry::sort_name`).
+pub fn natural_cmp_folded(a: &str, b: &str) -> Ordering {
+    natural_cmp_impl(a, b, true)
+}
+
+fn natural_cmp_impl(mut a: &str, mut b: &str, folded: bool) -> Ordering {
     loop {
-        match (a.peek().copied(), b.peek().copied()) {
+        match (a.chars().next(), b.chars().next()) {
             (None, None) => return Ordering::Equal,
             (None, Some(_)) => return Ordering::Less,
             (Some(_), None) => return Ordering::Greater,
             (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
-                let na = take_number(&mut a);
-                let nb = take_number(&mut b);
+                let (na, rest_a) = split_digits(a);
+                let (nb, rest_b) = split_digits(b);
                 // Compare by length first (no overflow on huge numbers), then lexically.
-                let ord = na
-                    .trim_start_matches('0')
-                    .len()
-                    .cmp(&nb.trim_start_matches('0').len())
-                    .then_with(|| na.trim_start_matches('0').cmp(nb.trim_start_matches('0')));
+                let (na, nb) = (na.trim_start_matches('0'), nb.trim_start_matches('0'));
+                let ord = na.len().cmp(&nb.len()).then_with(|| na.cmp(nb));
                 if ord != Ordering::Equal {
                     return ord;
                 }
+                (a, b) = (rest_a, rest_b);
             }
             (Some(x), Some(y)) => {
-                let ord = x.to_lowercase().cmp(y.to_lowercase());
+                let ord = if folded {
+                    x.cmp(&y)
+                } else {
+                    x.to_lowercase().cmp(y.to_lowercase())
+                };
                 if ord != Ordering::Equal {
                     return ord;
                 }
-                a.next();
-                b.next();
+                (a, b) = (&a[x.len_utf8()..], &b[y.len_utf8()..]);
             }
         }
     }
 }
 
-fn take_number(it: &mut std::iter::Peekable<std::str::Chars>) -> String {
-    let mut s = String::new();
-    while let Some(c) = it.peek().copied() {
-        if !c.is_ascii_digit() {
-            break;
-        }
-        s.push(c);
-        it.next();
-    }
-    s
+fn split_digits(s: &str) -> (&str, &str) {
+    s.split_at(s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len()))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -183,6 +229,15 @@ mod tests {
         assert_eq!(natural_cmp("file2", "file10"), Ordering::Less);
         assert_eq!(natural_cmp("File", "file"), Ordering::Equal);
         assert_eq!(natural_cmp("a", "b"), Ordering::Less);
+        assert!(glob_any("*.jpg", "Photo.JPG"));
+        assert!(!glob_any("*.jpg", "photo.jpeg"));
+        assert!(glob_any("img_??.png; *.txt", "IMG_01.png"));
+        assert!(glob_any("*.txt, *.md", "notes.md"));
+        assert!(glob_any("report", "Annual report 2025.pdf"));
+        assert!(glob_any("a*b*c", "a--b--c"));
+        assert!(!glob_any("a*b*c", "a--c--b"));
+        assert!(!glob_any("", "x"));
+        assert!(glob_any("*", ""));
         assert_eq!(natural_cmp("x007", "x7"), Ordering::Equal);
     }
 

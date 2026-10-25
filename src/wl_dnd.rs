@@ -164,6 +164,8 @@ pub enum ClipRead {
         paths: Vec<PathBuf>,
         op: ClipOp,
     },
+    /// An image (MIME type) with no file list, such as a screenshot.
+    Image(String),
     Nothing,
 }
 
@@ -611,6 +613,15 @@ impl WlDnd {
             .data::<OfferData>()
             .map(|d| d.mimes.lock().expect("lock poisoned").clone())
             .unwrap_or_default();
+        if ![GNOME_FILES, URI_LIST]
+            .iter()
+            .any(|m| mimes.iter().any(|x| x == m))
+            && let Some((mime, _)) = crate::ops::CLIPBOARD_IMAGES
+                .iter()
+                .find(|(m, _)| mimes.iter().any(|x| x == m))
+        {
+            return ClipRead::Image(mime.to_string());
+        }
         let pick = [
             GNOME_FILES,
             URI_LIST,

@@ -1,8 +1,9 @@
 //! Background file operations. Jobs run one at a time on a worker thread, in
-//! the order they were queued. Nothing is ever overwritten: name clashes get a
-//! " (2)" style suffix.
+//! the order they were queued. Nothing is overwritten silently: name clashes get a
+//! " (2)" style suffix, unless the user chose to replace (the old item goes to the trash).
 
 use eframe::egui;
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
@@ -30,6 +31,14 @@ pub enum JobKind {
     Compress,
     /// Save image bytes received from another application.
     SaveImage,
+    /// Put items in the trash folder back where they came from.
+    Restore,
+    /// Permanently delete everything in the trash.
+    EmptyTrash,
+    /// Save the clipboard's image (MIME type in `Job::name`) into `dest` as a new file.
+    PasteImage,
+    /// Change permissions and/or ownership of `srcs` as described by `Job::change`.
+    Properties,
 }
 
 /// Archive format for `Compress`.
@@ -160,6 +169,9 @@ pub struct Job {
     pub level: Level,
     pub extract_to: ExtractTo,
     pub image: Option<(String, Vec<u8>)>,
+    /// Sources of a copy/move whose same-named item in `dest` is replaced (trashed first).
+    pub replace: HashSet<PathBuf>,
+    pub change: Option<crate::props::Change>,
 }
 
 impl Job {
@@ -175,6 +187,8 @@ impl Job {
             level: Level::Normal,
             extract_to: ExtractTo::Here,
             image: None,
+            replace: HashSet::new(),
+            change: None,
         }
     }
 
@@ -305,7 +319,10 @@ impl Ops {
     }
 
     pub fn submit(&self, job: Job) {
-        if job.srcs.is_empty() && job.image.is_none() {
+        if job.srcs.is_empty()
+            && job.image.is_none()
+            && !matches!(job.kind, JobKind::EmptyTrash | JobKind::PasteImage)
+        {
             return;
         }
         self.queued.fetch_add(1, Ordering::Relaxed);
@@ -368,6 +385,10 @@ impl Worker {
             JobKind::Extract => format!("Extracting {what}"),
             JobKind::Compress => format!("Compressing {what}"),
             JobKind::SaveImage => "Saving dropped image".into(),
+            JobKind::Restore => format!("Restoring {what}"),
+            JobKind::EmptyTrash => "Emptying the trash".into(),
+            JobKind::PasteImage => "Pasting image".into(),
+            JobKind::Properties => format!("Changing properties of {what}"),
         };
         *self.progress.lock().expect("lock poisoned") = Some(Progress {
             title,
@@ -413,6 +434,30 @@ impl Worker {
                     }
                 }
                 done.summary = "Saved dropped image".into();
+            }
+            JobKind::Properties => {
+                if let Some(change) = &job.change {
+                    for src in &job.srcs {
+                        if self.cancelled() {
+                            break;
+                        }
+                        self.update(|p| p.current = file_name(src));
+                        done.errors.extend(crate::props::apply(src, change));
+                    }
+                }
+                done.summary = format!("Updated properties of {what}");
+            }
+            JobKind::PasteImage => {
+                if let (Some(dest), Some(mime)) = (job.dest.as_deref(), job.name.as_deref()) {
+                    match self.paste_image(dest, mime) {
+                        Ok(path) => {
+                            done.created.push(path);
+                            done.undo = Some(Undo::TrashCreated(done.created.clone()));
+                        }
+                        Err(e) => done.errors.push(format!("Could not paste image: {e}")),
+                    }
+                }
+                done.summary = "Pasted image".into();
             }
             JobKind::Rename => {
                 if self.cancelled() {
@@ -488,8 +533,26 @@ impl Worker {
                     done.created.first().map(|p| file_name(p)).unwrap_or(name)
                 );
             }
+            JobKind::Restore => {
+                restore_from_trash(&job.srcs, &mut done);
+                if !done.created.is_empty() {
+                    done.undo = Some(Undo::TrashCreated(done.created.clone()));
+                }
+                done.summary = format!("Restored {what}");
+            }
+            JobKind::EmptyTrash => {
+                match trash::os_limited::list().and_then(trash::os_limited::purge_all) {
+                    Ok(()) => {}
+                    Err(e) => done.errors.push(format!("Could not empty the trash: {e}")),
+                }
+                done.dirs.push(crate::fsops::trash_dir());
+                done.summary = "Emptied the trash".into();
+            }
             JobKind::Delete => {
-                for src in &job.srcs {
+                let (trashed, plain): (Vec<_>, Vec<_>) =
+                    job.srcs.iter().partition(|p| crate::fsops::in_trash(p));
+                purge_from_trash(&trashed, &mut done);
+                for src in plain {
                     let res = match fs::symlink_metadata(src) {
                         Ok(m) if m.is_dir() => fs::remove_dir_all(src),
                         Ok(_) => fs::remove_file(src),
@@ -503,7 +566,7 @@ impl Worker {
             }
             JobKind::Copy | JobKind::Move => {
                 let dest = job.dest.clone().expect("copy/move needs a destination");
-                let moved = self.transfer(job.kind, &job.srcs, &dest, &mut done);
+                let moved = self.transfer(job.kind, &job.srcs, &dest, &job.replace, &mut done);
                 done.undo = match job.kind {
                     JobKind::Move if !moved.is_empty() => Some(Undo::MoveBack(moved)),
                     JobKind::Copy if !done.created.is_empty() => {
@@ -521,6 +584,20 @@ impl Worker {
         }
         done.cancelled = self.cancelled();
         done
+    }
+
+    /// Saves the clipboard's image as `Screenshot-<date>.<ext>`.
+    fn paste_image(&mut self, dest: &Path, mime: &str) -> io::Result<PathBuf> {
+        let ext = image_ext(mime).ok_or_else(|| io::Error::other(format!("unsupported {mime}")))?;
+        let mut cmd = std::process::Command::new("wl-paste");
+        cmd.args(["--no-newline", "--type", mime]);
+        let bytes = crate::thumbs::run_tool_for(&mut cmd, Duration::from_secs(10))
+            .map_err(io::Error::other)?;
+        let name = format!(
+            "Screenshot-{}.{ext}",
+            chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
+        );
+        self.save_image(dest, &name, &bytes)
     }
 
     /// Saves a browser's encoded image without overwriting existing files.
@@ -564,6 +641,7 @@ impl Worker {
         kind: JobKind,
         srcs: &[PathBuf],
         dest: &Path,
+        replace: &HashSet<PathBuf>,
         done: &mut Done,
     ) -> Vec<(PathBuf, PathBuf)> {
         let mut moved = Vec::new();
@@ -583,7 +661,7 @@ impl Worker {
                 .map(|m| Some(m.dev()) == dest_dev)
                 .unwrap_or(false);
             if kind == JobKind::Move && same_dev {
-                let target = unique_dest(dest, &file_name(src));
+                let target = transfer_target(dest, src, replace, done);
                 match fs::rename(src, &target) {
                     Ok(()) => {
                         moved.push((src.clone(), target.clone()));
@@ -614,7 +692,7 @@ impl Worker {
             if self.cancelled() {
                 break;
             }
-            let target = unique_dest(dest, &file_name(src));
+            let target = transfer_target(dest, src, replace, done);
             let errors_before = done.errors.len();
             self.copy_tree(src, &target, &mut done.errors);
             if self.cancelled() {
@@ -960,6 +1038,22 @@ fn measure(path: &Path) -> (u64, u64) {
     total
 }
 
+/// Clipboard image types we can save, with their file extensions.
+pub const CLIPBOARD_IMAGES: [(&str, &str); 5] = [
+    ("image/png", "png"),
+    ("image/jpeg", "jpg"),
+    ("image/webp", "webp"),
+    ("image/bmp", "bmp"),
+    ("image/gif", "gif"),
+];
+
+fn image_ext(mime: &str) -> Option<&'static str> {
+    CLIPBOARD_IMAGES
+        .iter()
+        .find(|(m, _)| *m == mime)
+        .map(|(_, e)| *e)
+}
+
 pub fn file_name(p: &Path) -> String {
     p.file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -980,6 +1074,27 @@ pub fn unique_dest(dir: &Path, name: &str) -> PathBuf {
         .map(|n| dir.join(format!("{stem} ({n}){ext}")))
         .find(|p| fs::symlink_metadata(p).is_err())
         .expect("some free name")
+}
+
+/// Where `src` lands in `dest`: its own name when the user chose to replace the item
+/// already there (which goes to the trash), otherwise the first free name.
+fn transfer_target(
+    dest: &Path,
+    src: &Path,
+    replace: &HashSet<PathBuf>,
+    done: &mut Done,
+) -> PathBuf {
+    let name = file_name(src);
+    let target = dest.join(&name);
+    if replace.contains(src) && target != src && fs::symlink_metadata(&target).is_ok() {
+        match trash::delete(&target) {
+            Ok(()) => return target,
+            Err(e) => done
+                .errors
+                .push(format!("Could not replace \"{name}\": {e}")),
+        }
+    }
+    unique_dest(dest, &name)
 }
 
 fn push_unique(v: &mut Vec<PathBuf>, p: PathBuf) {
@@ -1068,6 +1183,64 @@ pub fn zip_name(srcs: &[PathBuf]) -> String {
 
 /// Restores each of `paths` (original locations) from the trash, taking the
 /// most recently trashed item when the trash holds several from one path.
+/// The trash entries for items inside the trash folder (the entry is named after its info file).
+fn trash_entries(paths: &[&PathBuf]) -> Result<Vec<trash::TrashItem>, String> {
+    let info = crate::fsops::trash_dir().with_file_name("info");
+    let ids: Vec<PathBuf> = paths
+        .iter()
+        .map(|p| info.join(format!("{}.trashinfo", file_name(p))))
+        .collect();
+    let items = trash::os_limited::list().map_err(|e| format!("Can't read the trash: {e}"))?;
+    Ok(items
+        .into_iter()
+        .filter(|i| ids.iter().any(|id| id.as_os_str() == i.id))
+        .collect())
+}
+
+fn restore_from_trash(paths: &[PathBuf], done: &mut Done) {
+    let paths: Vec<&PathBuf> = paths.iter().collect();
+    let items = match trash_entries(&paths) {
+        Ok(items) => items,
+        Err(e) => return done.errors.push(e),
+    };
+    let mut restore = Vec::new();
+    for item in items {
+        let original = item.original_path();
+        if fs::symlink_metadata(&original).is_ok() {
+            done.errors.push(format!(
+                "Can't restore: \"{}\" already exists in {}",
+                file_name(&original),
+                item.original_parent.display()
+            ));
+        } else {
+            restore.push(item);
+        }
+    }
+    let restored: Vec<PathBuf> = restore.iter().map(|i| i.original_path()).collect();
+    if let Err(e) = trash::os_limited::restore_all(restore) {
+        done.errors.push(format!("Restore failed: {e}"));
+        return;
+    }
+    for p in restored {
+        if let Some(parent) = p.parent() {
+            push_unique(&mut done.dirs, parent.to_path_buf());
+        }
+        done.created.push(p);
+    }
+}
+
+fn purge_from_trash(paths: &[&PathBuf], done: &mut Done) {
+    if paths.is_empty() {
+        return;
+    }
+    match trash_entries(paths).and_then(|items| {
+        trash::os_limited::purge_all(items).map_err(|e| format!("Could not delete: {e}"))
+    }) {
+        Ok(()) => {}
+        Err(e) => done.errors.push(e),
+    }
+}
+
 fn untrash(paths: &[PathBuf], done: &mut Done) {
     let items = match trash::os_limited::list() {
         Ok(items) => items,
@@ -1285,6 +1458,72 @@ mod tests {
         assert!(done.errors.is_empty());
         assert!(!src.exists());
         assert!(dst.join("src (3)/sub/f.txt").exists());
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn replace_trashes_the_existing_item_and_keeps_the_name() {
+        let d = tmpdir("replace");
+        let (a, b) = (d.join("a"), d.join("b"));
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        fs::write(a.join("f.txt"), "new").unwrap();
+        fs::write(a.join("g.txt"), "new g").unwrap();
+        fs::write(b.join("f.txt"), "old").unwrap();
+        fs::write(b.join("g.txt"), "old g").unwrap();
+
+        let mut job = Job::new(
+            JobKind::Copy,
+            vec![a.join("f.txt"), a.join("g.txt")],
+            Some(b.clone()),
+        );
+        job.replace.insert(a.join("f.txt"));
+        let done = run(job);
+        assert!(done.errors.is_empty(), "{:?}", done.errors);
+        assert_eq!(fs::read_to_string(b.join("f.txt")).unwrap(), "new");
+        // Not marked for replacement, so it keeps both.
+        assert_eq!(fs::read_to_string(b.join("g.txt")).unwrap(), "old g");
+        assert_eq!(fs::read_to_string(b.join("g (2).txt")).unwrap(), "new g");
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn trashed_items_restore_and_purge_by_their_trash_path() {
+        // Must share a filesystem with the home trash, which /tmp usually doesn't.
+        let d = crate::fsops::home_dir()
+            .join(format!(".cache/kestrel-trash-test-{}", std::process::id()));
+        fs::create_dir_all(&d).unwrap();
+        let in_trash = |orig: &Path| {
+            let item = trash::os_limited::list()
+                .unwrap()
+                .into_iter()
+                .filter(|i| i.original_path() == orig)
+                .max_by_key(|i| i.time_deleted)
+                .expect("in trash");
+            let id = PathBuf::from(&item.id);
+            crate::fsops::trash_dir().join(id.file_stem().unwrap())
+        };
+        let (a, b) = (d.join("a.txt"), d.join("b.txt"));
+        fs::write(&a, "a").unwrap();
+        fs::write(&b, "b").unwrap();
+        run(Job::new(JobKind::Trash, vec![a.clone(), b.clone()], None));
+        assert!(!a.exists() && !b.exists());
+
+        let (ta, tb) = (in_trash(&a), in_trash(&b));
+        let done = run(Job::new(JobKind::Restore, vec![ta], None));
+        assert!(done.errors.is_empty(), "{:?}", done.errors);
+        assert_eq!(fs::read_to_string(&a).unwrap(), "a");
+        assert_eq!(done.undo, Some(Undo::TrashCreated(vec![a.clone()])));
+
+        let done = run(Job::new(JobKind::Delete, vec![tb.clone()], None));
+        assert!(done.errors.is_empty(), "{:?}", done.errors);
+        assert!(!tb.exists());
+        assert!(
+            trash::os_limited::list()
+                .unwrap()
+                .iter()
+                .all(|i| i.original_path() != b)
+        );
         fs::remove_dir_all(d).unwrap();
     }
 

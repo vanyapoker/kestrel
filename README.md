@@ -145,8 +145,40 @@ template. Numbering supports a starting value and zero padding. Conflicts block 
   previews, and file operations run in the background. Listings refresh when files change.
 - **Copy, move, and undo.** File operations show byte progress and can be cancelled
   from the status bar or command palette. Delete sends files to the trash;
-  permanent deletion asks for confirmation. Existing destination names get numbered
-  alternatives. Undo supports renames, moves, copies, new folders, and trashing.
+  permanent deletion asks for confirmation. When a pasted, dropped, or moved item
+  already exists in the destination, Kestrel asks whether to replace it (the old one
+  goes to the trash), skip it, keep both as a numbered copy, or replace only if newer,
+  and can apply the answer to every remaining conflict. Undo supports renames, moves,
+  copies, new folders, and trashing.
+- **Trash.** The sidebar's Trash opens the trash as a folder. Restore items from the
+  context menu or palette, delete them for good, or **Empty trash…**. Dropping files on
+  Trash moves them to the trash.
+- **Paste an image.** When the clipboard holds an image (a screenshot, say) and no files,
+  **Ctrl+V** saves it as `Screenshot-<date>.png` in the current folder.
+- **Select by pattern.** **Ctrl+S** selects names matching wildcards such as
+  `*.jpg, IMG_??.png`; **Ctrl+Shift+A** inverts the selection.
+- **Properties.** The inspector shows the owner, a symlink's target, and on request
+  SHA-256 and MD5 checksums. **Edit permissions…** (or **Permissions…** in the context
+  menu) changes the mode bits, owner and group, optionally for a folder's contents.
+- **Custom actions.** Define your own commands in `~/.config/kestrel/actions.conf`; they
+  appear in the palette (as *Action: …*) and the context menu's **Actions** submenu.
+  Press **F5** to reload the file.
+
+  ```ini
+  [Convert to WebP]
+  match = *.png, *.jpg
+  run = magick {file} {dir}/{stem}.webp
+
+  [Edit in Neovim]
+  run = nvim {files}
+  terminal = true
+  ```
+
+  `run` goes to `sh -c` in the current folder. Placeholders are replaced by quoted paths,
+  so don't add quotes: `{file}`, `{name}`, `{stem}`, `{ext}` (the command runs once per
+  selected item, with `{dir}` that item's folder), `{files}` (all selected paths) and
+  `{dir}`. `match` limits the action to selections whose names all match. `terminal = true`
+  runs it through `xdg-terminal-exec`.
 - **Drag and drop.** Move files between panes or other apps; hold Ctrl to copy. Copy and
   paste files to and from other file managers, too.
 - **Archives.** Extract beside the archive, into a folder named after it, or into the
@@ -189,6 +221,7 @@ template. Numbering supports a starting value and zero padding. Conflicts block 
 | <kbd>Ctrl</kbd>+<kbd>Z</kbd> | Undo (rename, move, copy, new folder, move to trash) |
 | <kbd>Ctrl</kbd>+<kbd>D</kbd> | Duplicate |
 | <kbd>Ctrl</kbd>+<kbd>A</kbd> / <kbd>Ctrl</kbd>+<kbd>Space</kbd> | Select all / toggle the current item |
+| <kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>A</kbd> | Select by pattern / invert selection |
 | <kbd>F2</kbd> | Rename |
 | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd> | New folder |
 | <kbd>Delete</kbd> / <kbd>Shift</kbd>+<kbd>Delete</kbd> | Move to trash / delete permanently (confirm with <kbd>Enter</kbd>, cancel with <kbd>Esc</kbd> or <kbd>Backspace</kbd>) |
