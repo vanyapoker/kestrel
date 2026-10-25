@@ -22,35 +22,112 @@ pub fn read(path: &Path) -> Option<Props> {
         (target, fs::metadata(path).is_ok())
     });
     Some(Props {
-        owner: name_of("/etc/passwd", meta.uid()),
-        group: name_of("/etc/group", meta.gid()),
+        owner: user_name(meta.uid()),
+        group: group_name(meta.gid()),
         link,
     })
 }
 
-/// Looks `id` up in a passwd- or group-style file (`name:x:id:…`), falling back to the number.
-fn name_of(file: &str, id: u32) -> String {
-    fs::read_to_string(file)
-        .ok()
-        .and_then(|text| {
-            text.lines().find_map(|l| {
-                let mut f = l.split(':');
-                let name = f.next()?;
-                (f.nth(1)? == id.to_string()).then(|| name.to_string())
-            })
-        })
-        .unwrap_or_else(|| id.to_string())
+/// Starting size for the buffers `getpw*_r`/`getgr*_r` fill; they report ERANGE if too small.
+const LOOKUP_BUF: usize = 1024;
+
+/// Runs a reentrant libc lookup, growing the buffer while it reports ERANGE.
+fn lookup(mut call: impl FnMut(*mut libc::c_char, usize) -> libc::c_int) -> Option<()> {
+    let mut size = LOOKUP_BUF;
+    loop {
+        let mut buf = vec![0 as libc::c_char; size];
+        match call(buf.as_mut_ptr(), size) {
+            0 => return Some(()),
+            libc::ERANGE if size < 1 << 20 => size *= 4,
+            _ => return None,
+        }
+    }
 }
 
-/// The id for a user or group name (or a plain number).
-fn id_of(file: &str, name: &str) -> Option<u32> {
+/// The user name for `uid` from the system databases (passwd, homed, LDAP…), else the number.
+fn user_name(uid: u32) -> String {
+    let mut pwd: libc::passwd = unsafe_zeroed();
+    let mut result: *mut libc::passwd = std::ptr::null_mut();
+    let mut name = None;
+    lookup(|buf, len| {
+        // SAFETY: `pwd`, `buf` and `result` are valid for the call; `buf` holds `len` bytes.
+        let rc = unsafe { libc::getpwuid_r(uid, &mut pwd, buf, len, &mut result) };
+        if rc == 0 && !result.is_null() {
+            // SAFETY: on success `pw_name` is a NUL-terminated string inside `buf`.
+            name = Some(
+                unsafe { std::ffi::CStr::from_ptr(pwd.pw_name) }
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+        rc
+    });
+    name.unwrap_or_else(|| uid.to_string())
+}
+
+fn group_name(gid: u32) -> String {
+    let mut grp: libc::group = unsafe_zeroed();
+    let mut result: *mut libc::group = std::ptr::null_mut();
+    let mut name = None;
+    lookup(|buf, len| {
+        // SAFETY: `grp`, `buf` and `result` are valid for the call; `buf` holds `len` bytes.
+        let rc = unsafe { libc::getgrgid_r(gid, &mut grp, buf, len, &mut result) };
+        if rc == 0 && !result.is_null() {
+            // SAFETY: on success `gr_name` is a NUL-terminated string inside `buf`.
+            name = Some(
+                unsafe { std::ffi::CStr::from_ptr(grp.gr_name) }
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+        rc
+    });
+    name.unwrap_or_else(|| gid.to_string())
+}
+
+/// A zeroed libc record, to be filled in by a lookup call.
+fn unsafe_zeroed<T>() -> T {
+    // SAFETY: only used for the plain-old-data `passwd` and `group` structs, for which
+    // all-zero bytes (null pointers, zero ids) is a valid value.
+    unsafe { std::mem::zeroed() }
+}
+
+fn user_id(name: &str) -> Option<u32> {
     if let Ok(id) = name.parse() {
         return Some(id);
     }
-    fs::read_to_string(file).ok()?.lines().find_map(|l| {
-        let mut f = l.split(':');
-        (f.next()? == name).then(|| f.nth(1)?.parse().ok())?
-    })
+    let cname = std::ffi::CString::new(name).ok()?;
+    let mut pwd: libc::passwd = unsafe_zeroed();
+    let mut result: *mut libc::passwd = std::ptr::null_mut();
+    let mut found = None;
+    lookup(|buf, len| {
+        // SAFETY: as in `user_name`; `cname` is a valid C string.
+        let rc = unsafe { libc::getpwnam_r(cname.as_ptr(), &mut pwd, buf, len, &mut result) };
+        if rc == 0 && !result.is_null() {
+            found = Some(pwd.pw_uid);
+        }
+        rc
+    });
+    found
+}
+
+fn group_id(name: &str) -> Option<u32> {
+    if let Ok(id) = name.parse() {
+        return Some(id);
+    }
+    let cname = std::ffi::CString::new(name).ok()?;
+    let mut grp: libc::group = unsafe_zeroed();
+    let mut result: *mut libc::group = std::ptr::null_mut();
+    let mut found = None;
+    lookup(|buf, len| {
+        // SAFETY: as in `group_name`; `cname` is a valid C string.
+        let rc = unsafe { libc::getgrnam_r(cname.as_ptr(), &mut grp, buf, len, &mut result) };
+        if rc == 0 && !result.is_null() {
+            found = Some(grp.gr_gid);
+        }
+        rc
+    });
+    found
 }
 
 /// A permission/ownership change. `None` leaves that part alone.
@@ -66,8 +143,8 @@ pub struct Change {
 /// Applies `change` to `path`, returning one message per failure.
 pub fn apply(path: &Path, change: &Change) -> Vec<String> {
     let mut errors = Vec::new();
-    let uid = change.owner.as_deref().map(|o| id_of("/etc/passwd", o));
-    let gid = change.group.as_deref().map(|g| id_of("/etc/group", g));
+    let uid = change.owner.as_deref().map(user_id);
+    let gid = change.group.as_deref().map(group_id);
     if matches!(uid, Some(None)) {
         errors.push(format!(
             "Unknown user \"{}\"",

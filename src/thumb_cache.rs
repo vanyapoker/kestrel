@@ -27,9 +27,28 @@ fn uri(path: &Path) -> String {
     let mut s = String::from("file://");
     for &b in path.as_os_str().as_bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
-                s.push(b as char)
-            }
+            // What g_filename_to_uri leaves alone, so names hash like other file managers'.
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'~'
+            | b'/'
+            | b'!'
+            | b'$'
+            | b'&'
+            | b'\''
+            | b'('
+            | b')'
+            | b'*'
+            | b'+'
+            | b','
+            | b';'
+            | b'='
+            | b':'
+            | b'@' => s.push(b as char),
             _ => s.push_str(&format!("%{b:02X}")),
         }
     }
@@ -213,6 +232,10 @@ mod tests {
     #[test]
     fn uris_are_percent_encoded() {
         assert_eq!(uri(Path::new("/a b/ü.pdf")), "file:///a%20b/%C3%BC.pdf");
+        assert_eq!(
+            uri(Path::new("/d/report (2)'s!.pdf")),
+            "file:///d/report%20(2)'s!.pdf"
+        );
     }
 }
 
