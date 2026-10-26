@@ -25,28 +25,34 @@ struct Job {
     cancel: Arc<AtomicBool>,
 }
 
-enum Message {
-    Directory {
-        generation: u64,
-        path: PathBuf,
-        value: Cached,
-    },
-    Done(u64),
-}
+type Cache = Mutex<HashMap<PathBuf, Cached>>;
 
 pub struct Sizes {
     pool: rayon::ThreadPool,
-    cache: Arc<Mutex<HashMap<PathBuf, Cached>>>,
+    cache: Arc<Cache>,
     jobs: HashMap<u64, Job>,
     generation: u64,
-    tx: SyncSender<Message>,
-    rx: Receiver<Message>,
+    /// Finished job generations.
+    tx: SyncSender<u64>,
+    rx: Receiver<u64>,
     ctx: egui::Context,
     sweep_at: Instant,
 }
 
 fn overlaps(a: &Path, b: &Path) -> bool {
     a.starts_with(b) || b.starts_with(a)
+}
+
+/// Workers store totals directly, so a deep walk never waits for the UI to
+/// drain a queue. Checking `cancel` under the cache lock pairs with
+/// `invalidate`, which cancels while holding it: a stale total either lands
+/// before the purge or is refused. Past twice the history budget only the
+/// requested root is kept, so a huge walk cannot outgrow the next sweep.
+fn publish(cache: &Cache, cancel: &AtomicBool, root: &Path, path: &Path, value: Cached) {
+    let mut cache = cache.lock().expect("lock poisoned");
+    if !cancel.load(Ordering::Relaxed) && (path == root || cache.len() < 2 * MAX_CACHED) {
+        cache.insert(path.to_path_buf(), value);
+    }
 }
 
 impl Sizes {
@@ -73,21 +79,20 @@ impl Sizes {
     }
 
     /// Invalidate descendants as well as ancestors (rename, removal, refresh), and
-    /// reject all later messages from overlapping jobs, including queued messages.
+    /// refuse anything overlapping jobs publish later.
     pub fn invalidate(&mut self, path: &Path, sizes: &mut HashMap<PathBuf, u64>) {
-        self.cache
-            .lock()
-            .expect("lock poisoned")
-            .retain(|p, _| !overlaps(p, path));
-        sizes.retain(|p, _| !overlaps(p, path));
+        let mut cache = self.cache.lock().expect("lock poisoned");
         for job in self.jobs.values().filter(|j| overlaps(&j.path, path)) {
             job.cancel.store(true, Ordering::Relaxed);
         }
+        cache.retain(|p, _| !overlaps(p, path));
+        sizes.retain(|p, _| !overlaps(p, path));
     }
 
     /// Reconcile interests from all tabs/columns. An ancestor job covers child
     /// requests; an ancestor request waits for an existing child job, then reuses
     /// its cached total. Cancelled jobs retain their reservation until Done.
+    /// An expired total stays on screen while it is recomputed.
     pub fn sync(
         &mut self,
         mut wanted: Vec<PathBuf>,
@@ -108,34 +113,16 @@ impl Sizes {
                 job.cancel.store(true, Ordering::Relaxed);
             }
         }
+        for id in self.rx.try_iter() {
+            self.jobs.remove(&id);
+        }
         let mut changed = false;
+        let mut next_expiry = None::<Instant>;
         {
             let mut cache = self.cache.lock().expect("lock poisoned");
-            // Bound UI work per frame as well as the worker-to-UI queue.
-            for msg in self.rx.try_iter().take(1024) {
-                match msg {
-                    Message::Directory {
-                        generation,
-                        path,
-                        value,
-                    } if self
-                        .jobs
-                        .get(&generation)
-                        .is_some_and(|j| !j.cancel.load(Ordering::Relaxed)) =>
-                    {
-                        if let Some(size) = value.size {
-                            changed |= sizes.insert(path.clone(), size) != Some(size);
-                        }
-                        cache.insert(path, value);
-                    }
-                    Message::Done(id) => {
-                        self.jobs.remove(&id);
-                    }
-                    _ => {}
-                }
-            }
             if now >= self.sweep_at || cache.len() > MAX_CACHED.max(pinned.len()) {
-                cache.retain(|_, v| now.saturating_duration_since(v.at) < TTL);
+                cache
+                    .retain(|p, v| now.saturating_duration_since(v.at) < TTL || pinned.contains(p));
                 // Open rows stay pinned, even when a directory has more entries
                 // than the history budget. Otherwise eviction would cause an
                 // endless cycle of rescanning those rows. Evict history in chunks.
@@ -145,8 +132,12 @@ impl Sizes {
                         .filter(|(p, _)| !pinned.contains(*p))
                         .map(|(p, v)| (p.clone(), v.at))
                         .collect();
-                    oldest.sort_unstable_by_key(|(_, at)| *at);
-                    let remove = (cache.len() - MAX_CACHED.max(pinned.len())).max(MAX_CACHED / 8);
+                    let remove = (cache.len() - MAX_CACHED.max(pinned.len()))
+                        .max(MAX_CACHED / 8)
+                        .min(oldest.len());
+                    if remove < oldest.len() {
+                        oldest.select_nth_unstable_by_key(remove, |(_, at)| *at);
+                    }
                     for (p, _) in oldest.into_iter().take(remove) {
                         cache.remove(&p);
                     }
@@ -160,17 +151,20 @@ impl Sizes {
             }
             sizing.clear();
             for path in &wanted {
-                if let Some(value) = cache
-                    .get(path)
-                    .filter(|v| now.saturating_duration_since(v.at) < TTL)
-                {
-                    if let Some(size) = value.size {
-                        changed |= sizes.insert(path.clone(), size) != Some(size);
+                if let Some(value) = cache.get(path) {
+                    changed |= match value.size {
+                        Some(size) => sizes.insert(path.clone(), size) != Some(size),
+                        None => sizes.remove(path).is_some(),
+                    };
+                    let expiry = value.at + TTL;
+                    if now < expiry {
+                        next_expiry = Some(next_expiry.map_or(expiry, |t| t.min(expiry)));
+                        continue;
                     }
-                    continue;
+                } else {
+                    changed |= sizes.remove(path).is_some();
+                    sizing.insert(path.clone());
                 }
-                changed |= sizes.remove(path).is_some();
-                sizing.insert(path.clone());
                 if self.jobs.len() >= self.pool.current_num_threads()
                     || self.jobs.values().any(|j| overlaps(&j.path, path))
                 {
@@ -227,12 +221,10 @@ impl Sizes {
                                     device,
                                     at: *as_of.lock().expect("lock poisoned"),
                                 };
-                                let _ = tx.send(Message::Directory {
-                                    generation,
-                                    path: p.to_path_buf(),
-                                    value,
-                                });
-                                ctx.request_repaint();
+                                publish(&cache, &cancel, &path, p, value);
+                                // Coalesced: shows nested folders open in other
+                                // columns as they finish, without a frame each.
+                                ctx.request_repaint_after(Duration::from_millis(50));
                             },
                         );
                     } else {
@@ -241,21 +233,20 @@ impl Sizes {
                             device: device.unwrap_or(0),
                             at: Instant::now(),
                         };
-                        let _ = tx.send(Message::Directory {
-                            generation,
-                            path,
-                            value,
-                        });
+                        publish(&cache, &cancel, &path, &path, value);
                     }
-                    let _ = tx.send(Message::Done(generation));
+                    let _ = tx.send(generation);
                     ctx.request_repaint();
                 });
             }
         }
         // Nonrecursive watches cannot detect every descendant edit. Expiry is a
         // freshness backstop, including while the window is otherwise idle.
-        if !wanted.is_empty() {
-            self.ctx.request_repaint_after(Duration::from_secs(1));
+        if let Some(at) = next_expiry {
+            self.ctx.request_repaint_after(
+                at.saturating_duration_since(now)
+                    .max(Duration::from_secs(1)),
+            );
         }
         changed
     }
@@ -385,15 +376,15 @@ mod tests {
         );
         drop(gate);
         d.finish(std::slice::from_ref(&child));
-        assert_eq!(d.sizes[&parent], 20);
         assert_eq!(d.sizes[&child], 17);
-        assert_eq!(d.sizes[&grandchild], 17);
         let generations = d.service.generation;
-        d.finish(&[child, grandchild]);
+        d.finish(&[parent.clone(), child, grandchild.clone()]);
         assert_eq!(
             d.service.generation, generations,
             "opening a cached subtree must not spawn scans"
         );
+        assert_eq!(d.sizes[&parent], 20);
+        assert_eq!(d.sizes[&grandchild], 17);
     }
 
     #[test]
@@ -441,7 +432,7 @@ mod tests {
     }
 
     #[test]
-    fn invalidation_rejects_queued_and_late_generations() {
+    fn invalidation_rejects_late_totals() {
         let tree = Tree::new();
         tree.file("folder/data", 11);
         let path = tree.0.join("folder");
@@ -449,17 +440,17 @@ mod tests {
         let gate = Gate::new(&d.service);
         d.sync(std::slice::from_ref(&path));
         let generation = d.service.generation;
-        let stale = || Message::Directory {
-            generation,
-            path: path.clone(),
-            value: Cached {
+        let cancel = d.service.jobs[&generation].cancel.clone();
+        let stale = |cache: &Cache| {
+            let value = Cached {
                 size: Some(999),
                 device: fsops::device_of(&path).unwrap(),
                 at: Instant::now(),
-            },
+            };
+            publish(cache, &cancel, &path, &path, value);
         };
-        d.service.tx.send(stale()).unwrap();
         d.service.invalidate(&path, &mut d.sizes);
+        stale(&d.service.cache);
         d.sync(std::slice::from_ref(&path));
         assert!(!d.sizes.contains_key(&path));
         assert!(
@@ -478,7 +469,7 @@ mod tests {
         d.finish(std::slice::from_ref(&path));
         assert!(d.service.generation > generation);
         assert_eq!(d.sizes[&path], 11);
-        d.service.tx.send(stale()).unwrap();
+        stale(&d.service.cache);
         d.sync(std::slice::from_ref(&path));
         assert_eq!(d.sizes[&path], 11);
     }
@@ -496,6 +487,9 @@ mod tests {
         }
         d.service.sweep_at = Instant::now();
         let generations = d.service.generation;
+        d.sync(std::slice::from_ref(&path));
+        assert_eq!(d.sizes[&path], 11, "an expired total stays visible");
+        assert!(d.sizing.is_empty(), "a refresh shows no placeholder");
         d.finish(std::slice::from_ref(&path));
         assert_eq!(d.sizes[&path], 29);
         assert!(d.service.generation > generations);
