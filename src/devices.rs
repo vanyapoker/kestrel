@@ -1,4 +1,5 @@
 //! Drives for the sidebar: listed with lsblk, mounted and ejected through udisksctl.
+//! Cameras and phones (MTP, PTP) come from gvfs: listed and mounted through gio.
 
 use eframe::egui;
 use std::path::{Path, PathBuf};
@@ -24,7 +25,15 @@ impl Device {
     pub fn path(&self) -> &Path {
         self.mount.as_deref().unwrap_or(&self.dev)
     }
+
+    /// A gvfs device (camera, phone) is identified by its URI instead of a block device.
+    fn gvfs_uri(&self) -> Option<&str> {
+        self.dev.to_str().filter(|s| s.contains("://"))
+    }
 }
+
+/// gvfs backends that expose a device as a folder.
+const GVFS_SCHEMES: &[&str] = &["mtp", "gphoto2"];
 
 /// Filesystems that are never mounted as a folder.
 const NOT_MOUNTABLE: &[&str] = &[
@@ -62,10 +71,72 @@ pub fn scan() -> Vec<Device> {
             "PATH,PKNAME,TYPE,FSTYPE,LABEL,MOUNTPOINT,HOTPLUG,PARTTYPE,SIZE",
         ])
         .output();
-    match out {
+    let mut devices = match out {
         Ok(o) if o.status.success() => parse_lsblk(&String::from_utf8_lossy(&o.stdout)),
         _ => Vec::new(),
+    };
+    devices.extend(scan_gvfs());
+    devices
+}
+
+fn scan_gvfs() -> Vec<Device> {
+    let Ok(o) = Command::new("gio").args(["mount", "-l", "-i"]).output() else {
+        return Vec::new();
+    };
+    parse_gio(&String::from_utf8_lossy(&o.stdout))
+        .into_iter()
+        .map(|(name, uri, mounted)| Device {
+            name,
+            mount: mounted.then(|| gvfs_path(&uri)).flatten(),
+            dev: uri.into(),
+            disk: PathBuf::new(),
+            fstype: String::new(),
+            removable: true,
+        })
+        .collect()
+}
+
+/// (name, uri, mounted) of the cameras and phones in `gio mount -l -i`: a volume
+/// carries the URI it mounts at, a mount its own.
+fn parse_gio(text: &str) -> Vec<(String, String, bool)> {
+    let supported = |uri: &str| {
+        uri.split_once("://")
+            .is_some_and(|(scheme, _)| GVFS_SCHEMES.contains(&scheme))
+    };
+    let mut found: Vec<(String, String, bool)> = Vec::new();
+    let mut volume = String::new();
+    for line in text.lines().map(str::trim_start) {
+        if let Some(rest) = line.strip_prefix("Volume(") {
+            volume = rest
+                .split_once("): ")
+                .map(|(_, n)| n)
+                .unwrap_or("")
+                .to_string();
+        } else if let Some(uri) = line.strip_prefix("activation_root=") {
+            if supported(uri) && !found.iter().any(|f| f.1 == uri) {
+                found.push((volume.clone(), uri.to_string(), false));
+            }
+        } else if let Some(rest) = line.strip_prefix("Mount(")
+            && let Some((_, rest)) = rest.split_once("): ")
+            && let Some((name, uri)) = rest.rsplit_once(" -> ")
+            && supported(uri)
+        {
+            match found.iter_mut().find(|f| f.1 == uri) {
+                Some(f) => f.2 = true,
+                None => found.push((name.to_string(), uri.to_string(), true)),
+            }
+        }
     }
+    found
+}
+
+/// Where gvfs-fuse shows a mounted gvfs URI: $XDG_RUNTIME_DIR/gvfs/mtp:host=NAME.
+fn gvfs_path(uri: &str) -> Option<PathBuf> {
+    let (scheme, host) = uri.split_once("://")?;
+    let dir = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?)
+        .join("gvfs")
+        .join(format!("{scheme}:host={}", host.trim_end_matches('/')));
+    dir.exists().then_some(dir)
 }
 
 fn parse_lsblk(text: &str) -> Vec<Device> {
@@ -192,17 +263,26 @@ pub fn watch(ctx: egui::Context) -> Receiver<Vec<Device>> {
                 })
                 .unwrap_or_default();
             blocks.sort();
+            // Cameras and phones are not block devices: watch USB and the gvfs folder.
+            let mut others: Vec<String> = ["/sys/bus/usb/devices".into(), gvfs_root()]
+                .iter()
+                .flat_map(|d| std::fs::read_dir(d).into_iter().flatten().flatten())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect();
+            others.sort();
+            blocks.extend(others);
             (mounts, blocks)
         };
         let mut last = signature();
-        // A new disk shows up before udev has probed its label; look again shortly after.
+        // A new disk shows up before udev has probed its label, and gvfs takes a moment
+        // to notice a camera; look again shortly after.
         let mut recheck = 0;
         loop {
             std::thread::sleep(Duration::from_secs(1));
             let now = signature();
             if now != last {
                 last = now;
-                recheck = 2;
+                recheck = 3;
             } else if recheck == 0 {
                 continue;
             }
@@ -214,6 +294,11 @@ pub fn watch(ctx: egui::Context) -> Receiver<Vec<Device>> {
         }
     });
     rx
+}
+
+fn gvfs_root() -> String {
+    let run = std::env::var("XDG_RUNTIME_DIR").unwrap_or_default();
+    format!("{run}/gvfs")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -245,22 +330,26 @@ pub fn run(
     std::thread::spawn(move || {
         let dev = device.dev.to_string_lossy().into_owned();
         let mut read_only = false;
-        let result = match op {
-            DevOp::Mount => match udisks(&["mount", "-b", &dev]) {
-                Ok(out) => Ok(mounted_at(&out)),
-                // NTFS left dirty (unplugged without ejecting) only mounts read-only.
-                Err(_) if device.fstype == "ntfs" => {
-                    read_only = true;
-                    udisks(&["mount", "-b", &dev, "-o", "ro"]).map(|out| mounted_at(&out))
-                }
-                Err(e) => Err(e),
-            },
-            DevOp::Unmount => udisks(&["unmount", "-b", &dev]).map(|_| None),
-            DevOp::Eject => siblings
-                .iter()
-                .try_for_each(|p| udisks(&["unmount", "-b", &p.to_string_lossy()]).map(|_| ()))
-                .and_then(|_| udisks(&["power-off", "-b", &device.disk.to_string_lossy()]))
-                .map(|_| None),
+        let result = if let Some(uri) = device.gvfs_uri() {
+            run_gvfs(op, uri, device.mount.is_some())
+        } else {
+            match op {
+                DevOp::Mount => match udisks(&["mount", "-b", &dev]) {
+                    Ok(out) => Ok(mounted_at(&out)),
+                    // NTFS left dirty (unplugged without ejecting) only mounts read-only.
+                    Err(_) if device.fstype == "ntfs" => {
+                        read_only = true;
+                        udisks(&["mount", "-b", &dev, "-o", "ro"]).map(|out| mounted_at(&out))
+                    }
+                    Err(e) => Err(e),
+                },
+                DevOp::Unmount => udisks(&["unmount", "-b", &dev]).map(|_| None),
+                DevOp::Eject => siblings
+                    .iter()
+                    .try_for_each(|p| udisks(&["unmount", "-b", &p.to_string_lossy()]).map(|_| ()))
+                    .and_then(|_| udisks(&["power-off", "-b", &device.disk.to_string_lossy()]))
+                    .map(|_| None),
+            }
         };
         let _ = tx.send(DevResult {
             op,
@@ -271,6 +360,43 @@ pub fn run(
         });
         ctx.request_repaint();
     });
+}
+
+fn run_gvfs(op: DevOp, uri: &str, mounted: bool) -> Result<Option<PathBuf>, String> {
+    match op {
+        DevOp::Mount => {
+            gio(&["mount", uri])?;
+            // gvfs-fuse publishes the folder a moment after the mount.
+            for _ in 0..30 {
+                if let Some(p) = gvfs_path(uri) {
+                    return Ok(Some(p));
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err("mounted, but gvfs-fuse does not show it (is gvfs running?)".into())
+        }
+        DevOp::Unmount | DevOp::Eject if mounted => gio(&["mount", "-u", uri]).map(|_| None),
+        DevOp::Unmount | DevOp::Eject => Ok(None),
+    }
+}
+
+fn gio(args: &[&str]) -> Result<(), String> {
+    let out = Command::new("gio")
+        .args(args)
+        .output()
+        .map_err(|e| format!("gio: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let err = String::from_utf8_lossy(&out.stderr);
+    let line = err.lines().next().unwrap_or("failed").trim();
+    // "gio: mtp://host/: Unable to open…" → the part after the location.
+    let msg = line.strip_prefix("gio: ").unwrap_or(line);
+    Err(msg
+        .split_once("/: ")
+        .map(|(_, m)| m)
+        .unwrap_or(msg)
+        .to_string())
 }
 
 fn udisks(args: &[&str]) -> Result<String, String> {
@@ -346,6 +472,42 @@ PATH="/dev/sde1" PKNAME="sde" TYPE="part" FSTYPE="exfat" LABEL="" MOUNTPOINT="" 
         assert_eq!(t5.dev, PathBuf::from("/dev/sdc1"));
         assert_eq!(t5.disk, PathBuf::from("/dev/sdc"));
         assert!(t5.removable && !d[0].removable);
+    }
+
+    #[test]
+    fn lists_cameras_from_gio() {
+        let gio = "Drive(0): Samsung SSD 980 PRO 1TB
+  Type: GProxyDrive (GProxyVolumeMonitorUDisks2)
+Volume(0): Canon Digital Camera
+  Type: GDaemonVolume (GDaemonVolumeMonitor)
+  ids:
+   unix-device: '/dev/bus/usb/001/081'
+  activation_root=gphoto2://Canon_Inc._Canon_Digital_Camera/
+Volume(1): Pixel
+  Type: GDaemonVolume (GDaemonVolumeMonitor)
+  activation_root=mtp://Google_Pixel_ABC/
+  Mount(0): Pixel -> mtp://Google_Pixel_ABC/
+    Type: GDaemonMount (GDaemonVolumeMonitor)
+Volume(2): Share
+  activation_root=smb://nas/share/
+Mount(1): ssd t5 Portable -> file:///run/media/vp/ssd%20t5%20Portable
+";
+        let d = parse_gio(gio);
+        assert_eq!(
+            d,
+            [
+                (
+                    "Canon Digital Camera".to_string(),
+                    "gphoto2://Canon_Inc._Canon_Digital_Camera/".to_string(),
+                    false
+                ),
+                (
+                    "Pixel".to_string(),
+                    "mtp://Google_Pixel_ABC/".to_string(),
+                    true
+                ),
+            ]
+        );
     }
 
     #[test]

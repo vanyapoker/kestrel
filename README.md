@@ -204,6 +204,9 @@ template. Numbering supports a starting value and zero padding. Conflicts block 
   a streamed fallback. Copied files retain their permissions and modification times.
 - **Drives.** Mount, unmount, and eject drives from the Devices section. Mounted
   drives show usage bars; device changes appear automatically.
+- **Cameras and phones.** Devices that use MTP or PTP (a Canon EOS camera over
+  USB, an Android phone) are listed in Devices too. Click one to mount it and
+  browse its files. Cameras need `gvfs-gphoto2`, phones `gvfs-mtp`.
 - **Command palette.** **Ctrl+P** reaches every action, including creating an empty
   file, sorting, cancelling an operation, batch rename, and workspace management.
 - **Paths and terminals.** **Ctrl+L** edits the current path, with Tab completion for
@@ -271,7 +274,7 @@ to open it in a new tab. Navigation shortcuts leave text-field cursor movement i
   `about:config`. The installer registers Kestrel's portal backend; if a portal preference
   file already exists, follow the installer's instructions to select Kestrel.
 - **Archive and drive helpers:** archives use `bsdtar` from libarchive; drive
-  operations use `udisksctl` from udisks2.
+  operations use `udisksctl` from udisks2; cameras and phones use `gio` and gvfs.
 - **Picker window rules:** the file-dialog window class is `kestrel-picker`.
 - **Try a different theme for Kestrel:** use
   `KESTREL_OMARCHY_THEME=/usr/share/omarchy/themes/gruvbox kestrel` without changing
