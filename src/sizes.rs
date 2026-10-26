@@ -1,5 +1,5 @@
 //! Shared, bounded directory sizing, independent of listing cancellation and Rayon’s global pool.
-use crate::fsops;
+use crate::fsops::{self, Usage};
 use eframe::egui;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -10,14 +10,28 @@ use std::time::{Duration, Instant};
 
 const TTL: Duration = Duration::from_secs(30);
 const MAX_CACHED: usize = 32_768;
-const WORKERS: usize = 4;
+/// First line of the saved sizes file.
+const MAGIC: &[u8] = b"kestrel folder sizes 1\n";
 
-#[derive(Clone, Copy)]
+/// Walking is kernel-bound and scales with cores; leave half for everything else.
+fn workers() -> usize {
+    std::thread::available_parallelism()
+        .map_or(4, |n| n.get() / 2)
+        .clamp(2, 8)
+}
+
+#[derive(Clone)]
 struct Cached {
     // None records an excluded mount point, avoiding repeated attempts every frame.
-    size: Option<u64>,
+    usage: Option<Usage>,
     device: u64,
     at: Instant,
+}
+
+impl Cached {
+    fn size(&self) -> Option<u64> {
+        self.usage.as_ref().map(|u| u.size)
+    }
 }
 
 struct Job {
@@ -37,6 +51,49 @@ pub struct Sizes {
     rx: Receiver<u64>,
     ctx: egui::Context,
     sweep_at: Instant,
+    /// Totals from the last session, shown until they are recomputed.
+    previous: HashMap<PathBuf, u64>,
+    store: Option<PathBuf>,
+}
+
+pub fn store_file() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))?;
+    Some(base.join("kestrel/folder-sizes"))
+}
+
+fn encode(sizes: &[(&Path, u64)]) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut out = MAGIC.to_vec();
+    for (path, size) in sizes {
+        let bytes = path.as_os_str().as_bytes();
+        out.extend_from_slice(&size.to_le_bytes());
+        out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+        out.extend_from_slice(bytes);
+    }
+    out
+}
+
+/// Anything malformed yields what was read before it.
+fn decode(data: &[u8]) -> HashMap<PathBuf, u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut sizes = HashMap::new();
+    let Some(mut rest) = data.strip_prefix(MAGIC) else {
+        return sizes;
+    };
+    while let Some((size, tail)) = rest.split_first_chunk::<8>()
+        && let Some((len, tail)) = tail.split_first_chunk::<4>()
+        && let Some((path, tail)) = tail.split_at_checked(u32::from_le_bytes(*len) as usize)
+    {
+        let path = Path::new(std::ffi::OsStr::from_bytes(path));
+        if path.is_absolute() {
+            sizes.insert(path.to_path_buf(), u64::from_le_bytes(*size));
+        }
+        rest = tail;
+    }
+    sizes
 }
 
 fn overlaps(a: &Path, b: &Path) -> bool {
@@ -57,7 +114,7 @@ fn publish(cache: &Cache, cancel: &AtomicBool, root: &Path, path: &Path, value: 
 
 impl Sizes {
     pub fn new(ctx: egui::Context) -> Self {
-        Self::with_workers(ctx, WORKERS)
+        Self::with_workers(ctx, workers())
     }
 
     fn with_workers(ctx: egui::Context, workers: usize) -> Self {
@@ -75,6 +132,37 @@ impl Sizes {
             rx,
             ctx,
             sweep_at: Instant::now(),
+            previous: HashMap::new(),
+            store: None,
+        }
+    }
+
+    /// Shows the totals saved in `file` until they are recomputed, and saves
+    /// there on `save`.
+    pub fn persist(&mut self, file: PathBuf) {
+        self.previous = std::fs::read(&file).map(|d| decode(&d)).unwrap_or_default();
+        self.store = Some(file);
+    }
+
+    /// Keeps the newest totals, up to the history budget.
+    pub fn save(&self) {
+        let Some(file) = &self.store else { return };
+        let cache = self.cache.lock().expect("lock poisoned");
+        let mut fresh: Vec<_> = cache
+            .iter()
+            .filter_map(|(p, v)| Some((p.as_path(), v.size()?, v.at)))
+            .collect();
+        fresh.sort_unstable_by_key(|&(_, _, at)| std::cmp::Reverse(at));
+        let mut sizes: Vec<_> = fresh.into_iter().map(|(p, size, _)| (p, size)).collect();
+        sizes.extend(
+            self.previous
+                .iter()
+                .filter(|(p, _)| !cache.contains_key(*p))
+                .map(|(p, &size)| (p.as_path(), size)),
+        );
+        sizes.truncate(MAX_CACHED);
+        if let Err(e) = crate::session::save_bytes(file, &encode(&sizes)) {
+            eprintln!("kestrel: could not save folder sizes: {e}");
         }
     }
 
@@ -87,12 +175,14 @@ impl Sizes {
         }
         cache.retain(|p, _| !overlaps(p, path));
         sizes.retain(|p, _| !overlaps(p, path));
+        self.previous.retain(|p, _| !overlaps(p, path));
     }
 
     /// Reconcile interests from all tabs/columns. An ancestor job covers child
     /// requests; an ancestor request waits for an existing child job, then reuses
     /// its cached total. Cancelled jobs retain their reservation until Done.
-    /// An expired total stays on screen while it is recomputed.
+    /// An expired total, or one from the last session, stays on screen while
+    /// it is recomputed.
     pub fn sync(
         &mut self,
         mut wanted: Vec<PathBuf>,
@@ -152,15 +242,18 @@ impl Sizes {
             sizing.clear();
             for path in &wanted {
                 if let Some(value) = cache.get(path) {
-                    changed |= match value.size {
+                    changed |= match value.size() {
                         Some(size) => sizes.insert(path.clone(), size) != Some(size),
                         None => sizes.remove(path).is_some(),
                     };
+                    self.previous.remove(path);
                     let expiry = value.at + TTL;
                     if now < expiry {
                         next_expiry = Some(next_expiry.map_or(expiry, |t| t.min(expiry)));
                         continue;
                     }
+                } else if let Some(&size) = self.previous.get(path) {
+                    changed |= sizes.insert(path.clone(), size) != Some(size);
                 } else {
                     changed |= sizes.remove(path).is_some();
                     sizing.insert(path.clone());
@@ -206,18 +299,16 @@ impl Sizes {
                                     .expect("lock poisoned")
                                     .get(p)
                                     .filter(|v| v.device == device && v.at.elapsed() < TTL)
-                                    .copied();
-                                if let Some(value) = cached.filter(|v| v.size.is_some()) {
-                                    let mut oldest = as_of.lock().expect("lock poisoned");
-                                    *oldest = (*oldest).min(value.at);
-                                    value.size
-                                } else {
-                                    None
-                                }
+                                    .cloned();
+                                let value = cached?;
+                                let usage = value.usage?;
+                                let mut oldest = as_of.lock().expect("lock poisoned");
+                                *oldest = (*oldest).min(value.at);
+                                Some(usage)
                             },
-                            &|p, size| {
+                            &|p, usage| {
                                 let value = Cached {
-                                    size: Some(size),
+                                    usage: Some(usage.clone()),
                                     device,
                                     at: *as_of.lock().expect("lock poisoned"),
                                 };
@@ -229,7 +320,7 @@ impl Sizes {
                         );
                     } else {
                         let value = Cached {
-                            size: None,
+                            usage: None,
                             device: device.unwrap_or(0),
                             at: Instant::now(),
                         };
@@ -443,7 +534,10 @@ mod tests {
         let cancel = d.service.jobs[&generation].cancel.clone();
         let stale = |cache: &Cache| {
             let value = Cached {
-                size: Some(999),
+                usage: Some(Usage {
+                    size: 999,
+                    ..Default::default()
+                }),
                 device: fsops::device_of(&path).unwrap(),
                 at: Instant::now(),
             };
@@ -539,7 +633,10 @@ mod tests {
         d.finish(&paths);
         assert_eq!(d.sizes.len(), 8);
         let value = Cached {
-            size: Some(0),
+            usage: Some(Usage {
+                size: 0,
+                ..Default::default()
+            }),
             device: 0,
             at: Instant::now(),
         };
@@ -549,7 +646,7 @@ mod tests {
                 .cache
                 .lock()
                 .expect("lock poisoned")
-                .insert(path.clone(), value);
+                .insert(path.clone(), value.clone());
             d.sizes.insert(path, 0);
         }
         d.sync(&[]);
@@ -566,7 +663,10 @@ mod tests {
             .map(|i| tree.0.join(format!("row{i}")))
             .collect();
         let value = Cached {
-            size: Some(7),
+            usage: Some(Usage {
+                size: 7,
+                ..Default::default()
+            }),
             device: 0,
             at: Instant::now(),
         };
@@ -575,7 +675,7 @@ mod tests {
                 .cache
                 .lock()
                 .expect("lock poisoned")
-                .insert(path.clone(), value);
+                .insert(path.clone(), value.clone());
         }
         d.sync(&paths);
         assert_eq!(d.sizes.len(), paths.len());
@@ -610,7 +710,7 @@ mod tests {
                     .insert(p.to_path_buf());
             })
         });
-        assert_eq!(size, Some(16));
+        assert_eq!(size.map(|u| u.size), Some(16));
         assert_eq!(visited.into_inner().expect("lock poisoned").len(), 17);
         let link = tree.0.join("link");
         std::os::unix::fs::symlink(&path, &link).unwrap();
@@ -640,7 +740,7 @@ mod tests {
         let dev = fsops::device_of(&path).unwrap();
         let cancel = AtomicBool::new(false);
         assert_eq!(
-            fsops::dir_size(&path, dev, &cancel, &|_| None, &|_, _| {}),
+            fsops::dir_size(&path, dev, &cancel, &|_| None, &|_, _| {}).map(|u| u.size),
             Some(11)
         );
         assert_eq!(
@@ -666,5 +766,93 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn hard_links_count_once_even_across_cached_subtrees() {
+        let tree = Tree::new();
+        let x = tree.file("folder/a/x", 10);
+        tree.file("folder/c/z", 3);
+        fs::create_dir_all(tree.0.join("folder/b")).unwrap();
+        fs::hard_link(&x, tree.0.join("folder/b/y")).unwrap();
+        fs::hard_link(&x, tree.0.join("folder/a/twin")).unwrap();
+        let path = tree.0.join("folder");
+        let dev = fsops::device_of(&path).unwrap();
+        let cancel = AtomicBool::new(false);
+        let walked = Mutex::new(HashMap::new());
+        let usage = fsops::dir_size(&path, dev, &cancel, &|_| None, &|p, u| {
+            walked
+                .lock()
+                .expect("lock poisoned")
+                .insert(p.to_path_buf(), u.clone());
+        })
+        .unwrap();
+        assert_eq!(usage.size, 13);
+        assert!(usage.open.is_empty(), "every link of x is inside folder");
+        let walked = walked.into_inner().expect("lock poisoned");
+        let a = &walked[&path.join("a")];
+        assert_eq!((a.size, a.open.len()), (10, 1), "x has a link outside a");
+        assert_eq!(walked[&path.join("b")].size, 10);
+        // A parent reusing cached children still counts x once.
+        let reused = fsops::dir_size(
+            &path,
+            dev,
+            &cancel,
+            &|p| (p != path).then(|| walked[p].clone()),
+            &|_, _| {},
+        )
+        .unwrap();
+        assert_eq!(reused.size, 13);
+        // A link outside the walk keeps x open at the top.
+        fs::hard_link(&x, tree.0.join("outside")).unwrap();
+        let usage = fsops::dir_size(&path, dev, &cancel, &|_| None, &|_, _| {}).unwrap();
+        assert_eq!(usage.size, 13);
+        assert_eq!(usage.open.len(), 1);
+        assert_eq!(
+            fsops::dir_size(&tree.0, dev, &cancel, &|_| None, &|_, _| {})
+                .unwrap()
+                .size,
+            13
+        );
+    }
+
+    #[test]
+    fn saved_sizes_show_until_recomputed() {
+        let tree = Tree::new();
+        tree.file("folder/data", 11);
+        tree.file("other/data", 5);
+        let (path, other) = (tree.0.join("folder"), tree.0.join("other"));
+        let file = tree.0.join("cache/folder-sizes");
+        crate::session::save_bytes(&file, &encode(&[(&path, 99), (&other, 42)])).unwrap();
+        let mut d = Driver::new(1);
+        d.service.persist(file.clone());
+        let gate = Gate::new(&d.service);
+        d.sync(&[path.clone(), other.clone()]);
+        assert_eq!(d.sizes[&path], 99, "last session's total shows at once");
+        assert!(d.sizing.is_empty());
+        d.service.invalidate(&other, &mut d.sizes);
+        d.sync(&[path.clone(), other.clone()]);
+        assert!(
+            !d.sizes.contains_key(&other),
+            "an invalidated total is not shown"
+        );
+        drop(gate);
+        d.finish(&[path.clone(), other.clone()]);
+        assert_eq!((d.sizes[&path], d.sizes[&other]), (11, 5));
+        d.service.save();
+        let saved = decode(&fs::read(&file).unwrap());
+        assert_eq!((saved[&path], saved[&other]), (11, 5));
+    }
+
+    #[test]
+    fn saved_sizes_decode_what_is_intact() {
+        let data = encode(&[(Path::new("/a"), 1), (Path::new("/b"), 2)]);
+        assert_eq!(decode(&data).len(), 2);
+        assert_eq!(
+            decode(&data[..data.len() - 1]),
+            HashMap::from([("/a".into(), 1)])
+        );
+        assert!(decode(b"something else").is_empty());
+        assert!(decode(&encode(&[(Path::new("relative"), 1)])).is_empty());
     }
 }

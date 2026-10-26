@@ -1,8 +1,10 @@
 use rayon::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map};
+use std::ffi::CStr;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 
@@ -73,6 +75,48 @@ pub fn device_of(path: &Path) -> Option<u64> {
     fs::symlink_metadata(path).ok().map(|m| m.dev())
 }
 
+/// A file with several hard links, of which `seen` lie inside a folder. The
+/// folder counts it once; while links remain outside, a parent folder that
+/// reaches it through another path must not count it again.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Link {
+    pub ino: u64,
+    pub size: u64,
+    pub seen: u64,
+    pub nlink: u64,
+}
+
+/// Apparent size of a folder, counting each hard-linked file once, like `du`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Usage {
+    pub size: u64,
+    /// Hard-linked files with links outside the folder.
+    pub open: Arc<[Link]>,
+}
+
+/// Records a link; false when its file was already counted.
+fn add_link(links: &mut HashMap<u64, Link>, link: Link) -> bool {
+    match links.entry(link.ino) {
+        hash_map::Entry::Vacant(v) => {
+            v.insert(link);
+            true
+        }
+        hash_map::Entry::Occupied(mut o) => {
+            o.get_mut().seen += link.seen;
+            false
+        }
+    }
+}
+
+struct Dir(*mut libc::DIR);
+
+impl Drop for Dir {
+    fn drop(&mut self) {
+        // SAFETY: `self.0` came from a successful `fdopendir` and is closed only here.
+        unsafe { libc::closedir(self.0) };
+    }
+}
+
 /// Recursive apparent size of a directory. Does not follow symlinks or cross
 /// filesystem boundaries (so /proc, network mounts etc. are skipped).
 /// Reuses cached subtree totals and publishes each completed directory bottom-up.
@@ -81,48 +125,135 @@ pub fn dir_size(
     path: &Path,
     dev: u64,
     cancel: &AtomicBool,
-    cached: &(impl Fn(&Path) -> Option<u64> + Sync),
-    completed: &(impl Fn(&Path, u64) + Sync),
-) -> Option<u64> {
+    cached: &(impl Fn(&Path) -> Option<Usage> + Sync),
+    completed: &(impl Fn(&Path, &Usage) + Sync),
+) -> Option<Usage> {
+    use std::os::unix::ffi::OsStrExt;
+    let name = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    walk(libc::AT_FDCWD, &name, path, dev, cancel, cached, completed)
+}
+
+/// Opens folders relative to their parent and stats files relative to their
+/// folder, so the kernel never resolves a full path.
+fn walk(
+    parent: libc::c_int,
+    name: &CStr,
+    path: &Path,
+    dev: u64,
+    cancel: &AtomicBool,
+    cached: &(impl Fn(&Path) -> Option<Usage> + Sync),
+    completed: &(impl Fn(&Path, &Usage) + Sync),
+) -> Option<Usage> {
+    use std::os::unix::ffi::OsStrExt;
     if cancel.load(Ordering::Relaxed) {
         return None;
     }
-    if let Some(size) = cached(path) {
-        return Some(size);
+    if let Some(usage) = cached(path) {
+        return Some(usage);
     }
-    let Ok(rd) = fs::read_dir(path) else {
-        if cancel.load(Ordering::Relaxed) {
-            return None;
+    let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+    // SAFETY: `name` is NUL-terminated and `parent` is an open folder or AT_FDCWD.
+    let fd = unsafe { libc::openat(parent, name.as_ptr(), flags) };
+    let dirp = if fd < 0 {
+        std::ptr::null_mut()
+    } else {
+        // SAFETY: all-zero bytes are a valid `stat`.
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: `fd` is open and `st` is writable.
+        if unsafe { libc::fstat(fd, &mut st) } == 0 && st.st_dev != dev {
+            // SAFETY: `fd` is open and ours.
+            unsafe { libc::close(fd) };
+            return Some(Usage::default());
         }
-        completed(path, 0);
-        return Some(0);
+        // SAFETY: `fd` is open; on success the stream owns it.
+        let dirp = unsafe { libc::fdopendir(fd) };
+        if dirp.is_null() {
+            // SAFETY: fdopendir failed, so `fd` is still ours to close.
+            unsafe { libc::close(fd) };
+        }
+        dirp
     };
-    let mut total = 0u64;
-    let mut subdirs = Vec::new();
-    for de in rd.flatten() {
+    if dirp.is_null() {
         if cancel.load(Ordering::Relaxed) {
             return None;
         }
-        let Ok(ft) = de.file_type() else { continue };
-        if ft.is_dir() {
-            subdirs.push(de.path());
-        } else if ft.is_file()
-            && let Ok(m) = de.metadata()
-        {
-            total += m.len();
+        let usage = Usage::default();
+        completed(path, &usage);
+        return Some(usage);
+    }
+    let dir = Dir(dirp);
+    let mut total = 0u64;
+    let mut links = HashMap::new();
+    let mut subdirs = Vec::new();
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        // SAFETY: `dir` is open and only this thread reads it.
+        let ent = unsafe { libc::readdir64(dir.0) };
+        if ent.is_null() {
+            break;
+        }
+        // SAFETY: readdir returned an entry, valid until the next call.
+        let (kind, name) = unsafe { ((*ent).d_type, CStr::from_ptr((*ent).d_name.as_ptr())) };
+        if matches!(name.to_bytes(), b"." | b"..") {
+            continue;
+        }
+        if kind == libc::DT_DIR {
+            subdirs.push(name.to_owned());
+            continue;
+        }
+        if kind != libc::DT_REG && kind != libc::DT_UNKNOWN {
+            continue;
+        }
+        // SAFETY: all-zero bytes are a valid `stat`.
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: `name` is NUL-terminated, relative to the open folder `fd`.
+        if unsafe { libc::fstatat(fd, name.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) } != 0 {
+            continue;
+        }
+        match st.st_mode & libc::S_IFMT {
+            libc::S_IFDIR => subdirs.push(name.to_owned()),
+            libc::S_IFREG => {
+                let size = st.st_size as u64;
+                let link = Link {
+                    ino: st.st_ino,
+                    size,
+                    seen: 1,
+                    nlink: st.st_nlink,
+                };
+                if st.st_nlink < 2 || add_link(&mut links, link) {
+                    total += size;
+                }
+            }
+            _ => {}
         }
     }
-    let sub: Option<u64> = subdirs
+    let children: Option<Vec<Usage>> = subdirs
         .par_iter()
-        .filter(|d| !cancel.load(Ordering::Relaxed) && device_of(d) == Some(dev))
-        .map(|d| dir_size(d, dev, cancel, cached, completed))
-        .sum();
-    let total = total + sub?;
+        .map(|n| {
+            let child = path.join(std::ffi::OsStr::from_bytes(n.to_bytes()));
+            walk(fd, n, &child, dev, cancel, cached, completed)
+        })
+        .collect();
+    drop(dir);
+    for child in children? {
+        total += child.size;
+        for &link in child.open.iter() {
+            if !add_link(&mut links, link) {
+                total = total.saturating_sub(link.size);
+            }
+        }
+    }
     if cancel.load(Ordering::Relaxed) {
         return None;
     }
-    completed(path, total);
-    Some(total)
+    let usage = Usage {
+        size: total,
+        open: links.into_values().filter(|l| l.seen < l.nlink).collect(),
+    };
+    completed(path, &usage);
+    Some(usage)
 }
 
 /// (free, total) bytes of the filesystem containing `path`.
@@ -442,7 +573,8 @@ mod tests {
                 &|_| None,
                 &|_, _| {},
             )
-            .unwrap();
+            .unwrap()
+            .size;
             times.push(t.elapsed());
         }
         times.sort();

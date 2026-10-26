@@ -66,11 +66,15 @@ pub fn load() -> Option<Session> {
 
 /// Writes atomically, so a crash mid-write can't leave a truncated session.
 pub fn save(path: &Path, text: &str) -> std::io::Result<()> {
+    save_bytes(path, text.as_bytes())
+}
+
+pub fn save_bytes(path: &Path, data: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, text)?;
+    std::fs::write(&tmp, data)?;
     std::fs::rename(tmp, path)
 }
 

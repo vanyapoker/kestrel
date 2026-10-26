@@ -342,6 +342,9 @@ impl App {
             cc.egui_ctx.clone(),
             start.clone().unwrap_or_else(fsops::home_dir),
         );
+        if let Some(file) = crate::sizes::store_file() {
+            app.size_service.persist(file);
+        }
         if let Some(req) = picker {
             app.show_preview = false;
             app.picker = Some(Picker {
@@ -2531,6 +2534,7 @@ impl eframe::App for App {
             let _ = out.flush();
         }
         self.save_session(true);
+        self.size_service.save();
         // Stop the drag-and-drop thread while winit's display is still alive.
         self.wl = None;
     }
