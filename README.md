@@ -22,16 +22,16 @@
 
 ### Prebuilt release (no Rust compiler required)
 
-Download [Kestrel 0.7.1](https://github.com/vanyapoker/kestrel/releases/tag/v0.7.1)
+Download [Kestrel 0.8.0](https://github.com/vanyapoker/kestrel/releases/tag/v0.8.0)
 for **Linux x86_64 with glibc 2.43 or newer**, including current Omarchy/Arch Linux.
 The archive includes the compiled app, launcher, icon, and installer.
 
 ```sh
-curl -fLO https://github.com/vanyapoker/kestrel/releases/download/v0.7.1/kestrel-0.7.1-linux-x86_64.tar.gz
-curl -fLO https://github.com/vanyapoker/kestrel/releases/download/v0.7.1/SHA256SUMS
+curl -fLO https://github.com/vanyapoker/kestrel/releases/download/v0.8.0/kestrel-0.8.0-linux-x86_64.tar.gz
+curl -fLO https://github.com/vanyapoker/kestrel/releases/download/v0.8.0/SHA256SUMS
 sha256sum --check SHA256SUMS &&
-  tar -xzf kestrel-0.7.1-linux-x86_64.tar.gz &&
-  ./kestrel-0.7.1-linux-x86_64/install.sh
+  tar -xzf kestrel-0.8.0-linux-x86_64.tar.gz &&
+  ./kestrel-0.8.0-linux-x86_64/install.sh
 ```
 
 Open **Kestrel** from the app launcher, or run `kestrel ~/Downloads`.
