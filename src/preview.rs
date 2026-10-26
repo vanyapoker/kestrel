@@ -690,6 +690,9 @@ fn load_cancellable(path: &Path, is_dir: bool, cancelled: &dyn Fn() -> bool) -> 
             Err(error) => Payload::Error(error),
         };
     }
+    if crate::util::is_gvfs(path) {
+        return Payload::Binary(Info::new());
+    }
     let ext = path
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())

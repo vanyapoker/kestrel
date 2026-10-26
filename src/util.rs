@@ -1,6 +1,17 @@
 use std::cmp::Ordering;
 use std::time::SystemTime;
 
+/// Inside the gvfs-fuse folder (cameras, phones, network shares). Reading a file there
+/// downloads all of it, one request at a time, and stalls every other access meanwhile.
+pub fn is_gvfs(path: &std::path::Path) -> bool {
+    static ROOT: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| {
+        std::env::var_os("XDG_RUNTIME_DIR").map(|d| std::path::PathBuf::from(d).join("gvfs"))
+    })
+    .as_deref()
+    .is_some_and(|root| path.starts_with(root))
+}
+
 pub fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
     if bytes < 1024 {

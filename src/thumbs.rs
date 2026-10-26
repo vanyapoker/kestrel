@@ -450,6 +450,10 @@ impl Thumbs {
     }
 
     fn request(&mut self, path: &Path, kind: Kind) {
+        // Rendering reads the file, which on a camera means downloading it.
+        if crate::util::is_gvfs(path) {
+            return;
+        }
         self.touched.insert(path.to_path_buf());
         if self.cache.get(path).is_some_and(|c| c.kind == kind) {
             return;
