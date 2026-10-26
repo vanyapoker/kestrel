@@ -22,16 +22,16 @@
 
 ### Prebuilt release (no Rust compiler required)
 
-Download [Kestrel 0.7.0](https://github.com/vanyapoker/kestrel/releases/tag/v0.7.0)
+Download [Kestrel 0.7.1](https://github.com/vanyapoker/kestrel/releases/tag/v0.7.1)
 for **Linux x86_64 with glibc 2.43 or newer**, including current Omarchy/Arch Linux.
 The archive includes the compiled app, launcher, icon, and installer.
 
 ```sh
-curl -fLO https://github.com/vanyapoker/kestrel/releases/download/v0.7.0/kestrel-0.7.0-linux-x86_64.tar.gz
-curl -fLO https://github.com/vanyapoker/kestrel/releases/download/v0.7.0/SHA256SUMS
+curl -fLO https://github.com/vanyapoker/kestrel/releases/download/v0.7.1/kestrel-0.7.1-linux-x86_64.tar.gz
+curl -fLO https://github.com/vanyapoker/kestrel/releases/download/v0.7.1/SHA256SUMS
 sha256sum --check SHA256SUMS &&
-  tar -xzf kestrel-0.7.0-linux-x86_64.tar.gz &&
-  ./kestrel-0.7.0-linux-x86_64/install.sh
+  tar -xzf kestrel-0.7.1-linux-x86_64.tar.gz &&
+  ./kestrel-0.7.1-linux-x86_64/install.sh
 ```
 
 Open **Kestrel** from the app launcher, or run `kestrel ~/Downloads`.
@@ -146,11 +146,13 @@ template. Numbering supports a starting value and zero padding. Conflicts block 
 
 - **Folder sizes and sorting.** Folder sizes are calculated live. Sort by name, size,
   modified date, or type; click a Details header again to reverse the order. The status
-  bar shows selection totals and free disk space. Size scans use four dedicated workers,
-  share work across tabs and columns, and cache completed subfolder totals (a history
-  of up to 32,768 folders, with open rows retained). Cached sizes expire after 30
-  seconds; detected changes and manual refresh invalidate them sooner. Sizes sum
-  file lengths, skip symlinks and other
+  bar shows selection totals and free disk space. Size scans use half the CPU cores
+  (two to eight workers), share work across tabs and columns, and cache completed
+  subfolder totals (a history of up to 32,768 folders, with open rows retained).
+  Cached sizes are recomputed after 30 seconds while the old value stays on screen;
+  detected changes and manual refresh invalidate them sooner. Sizes are saved on quit,
+  so folders show their last known size at once on the next launch. Sizes sum file
+  lengths and count a hard-linked file once, like `du`; they skip symlinks and other
   filesystems, and may lag changes inside folders that are not directly watched.
 - **Background work and live updates.** Folder listings, size calculations, searches,
   previews, and file operations run in the background. Listings refresh when files change.
