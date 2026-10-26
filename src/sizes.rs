@@ -9,6 +9,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const TTL: Duration = Duration::from_secs(30);
+/// How soon a total that changed while it was computed is computed again, so a
+/// folder that keeps changing (a download, a running VM) is rescanned at this
+/// pace instead of back to back.
+const RETRY: Duration = Duration::from_secs(1);
 const MAX_CACHED: usize = 32_768;
 /// First line of the saved sizes file.
 const MAGIC: &[u8] = b"kestrel folder sizes 1\n";
@@ -37,9 +41,16 @@ impl Cached {
 struct Job {
     path: PathBuf,
     cancel: Arc<AtomicBool>,
+    /// Something inside changed after the job started.
+    stale: Arc<AtomicBool>,
 }
 
 type Cache = Mutex<HashMap<PathBuf, Cached>>;
+
+/// When an entry made at `now` counts as `wait` short of expiring.
+fn expiring(now: Instant, wait: Duration) -> Instant {
+    now.checked_sub(TTL - wait).unwrap_or(now)
+}
 
 pub struct Sizes {
     pool: rayon::ThreadPool,
@@ -101,12 +112,23 @@ fn overlaps(a: &Path, b: &Path) -> bool {
 }
 
 /// Workers store totals directly, so a deep walk never waits for the UI to
-/// drain a queue. Checking `cancel` under the cache lock pairs with
-/// `invalidate`, which cancels while holding it: a stale total either lands
-/// before the purge or is refused. Past twice the history budget only the
-/// requested root is kept, so a huge walk cannot outgrow the next sweep.
-fn publish(cache: &Cache, cancel: &AtomicBool, root: &Path, path: &Path, value: Cached) {
+/// drain a queue. Checking `stale` under the cache lock pairs with
+/// `invalidate`, which sets it while holding the lock: a total either lands
+/// before and is expired there, or lands after, already due for a retry. Past
+/// twice the history budget only the requested root is kept, so a huge walk
+/// cannot outgrow the next sweep.
+fn publish(
+    cache: &Cache,
+    job: (&AtomicBool, &AtomicBool),
+    root: &Path,
+    path: &Path,
+    mut value: Cached,
+) {
+    let (cancel, stale) = job;
     let mut cache = cache.lock().expect("lock poisoned");
+    if stale.load(Ordering::Relaxed) {
+        value.at = value.at.min(expiring(Instant::now(), RETRY));
+    }
     if !cancel.load(Ordering::Relaxed) && (path == root || cache.len() < 2 * MAX_CACHED) {
         cache.insert(path.to_path_buf(), value);
     }
@@ -166,16 +188,39 @@ impl Sizes {
         }
     }
 
-    /// Invalidate descendants as well as ancestors (rename, removal, refresh), and
-    /// refuse anything overlapping jobs publish later.
-    pub fn invalidate(&mut self, path: &Path, sizes: &mut HashMap<PathBuf, u64>) {
+    /// Expires the totals of `path`, its ancestors and its descendants (a
+    /// rename, removal or refresh). They stay on screen until recomputed.
+    /// Overlapping jobs run on, so a folder that keeps changing still gets a
+    /// total, and what they publish is due again after `RETRY`.
+    pub fn invalidate(&mut self, path: &Path) {
+        self.expire(path, true);
+    }
+
+    /// Like `invalidate`, for a change the file watcher reported. A file being
+    /// written reports one many times a second, so only a folder already sized
+    /// pays for finding its descendants.
+    pub fn changed(&mut self, path: &Path) {
+        self.expire(path, false);
+    }
+
+    fn expire(&mut self, path: &Path, deep: bool) {
         let mut cache = self.cache.lock().expect("lock poisoned");
         for job in self.jobs.values().filter(|j| overlaps(&j.path, path)) {
-            job.cancel.store(true, Ordering::Relaxed);
+            job.stale.store(true, Ordering::Relaxed);
         }
-        cache.retain(|p, _| !overlaps(p, path));
-        sizes.retain(|p, _| !overlaps(p, path));
-        self.previous.retain(|p, _| !overlaps(p, path));
+        let expired = expiring(Instant::now(), Duration::ZERO);
+        if deep || cache.contains_key(path) {
+            for (p, v) in cache.iter_mut() {
+                if p.starts_with(path) {
+                    v.at = v.at.min(expired);
+                }
+            }
+        }
+        for ancestor in path.ancestors() {
+            if let Some(v) = cache.get_mut(ancestor) {
+                v.at = v.at.min(expired);
+            }
+        }
     }
 
     /// Reconcile interests from all tabs/columns. An ancestor job covers child
@@ -266,11 +311,13 @@ impl Sizes {
                 self.generation += 1;
                 let generation = self.generation;
                 let cancel = Arc::new(AtomicBool::new(false));
+                let stale = Arc::new(AtomicBool::new(false));
                 self.jobs.insert(
                     generation,
                     Job {
                         path: path.clone(),
                         cancel: cancel.clone(),
+                        stale: stale.clone(),
                     },
                 );
                 let (path, cache, tx, ctx) = (
@@ -312,7 +359,7 @@ impl Sizes {
                                     device,
                                     at: *as_of.lock().expect("lock poisoned"),
                                 };
-                                publish(&cache, &cancel, &path, p, value);
+                                publish(&cache, (&cancel, &stale), &path, p, value);
                                 // Coalesced: shows nested folders open in other
                                 // columns as they finish, without a frame each.
                                 ctx.request_repaint_after(Duration::from_millis(50));
@@ -324,7 +371,7 @@ impl Sizes {
                             device: device.unwrap_or(0),
                             at: Instant::now(),
                         };
-                        publish(&cache, &cancel, &path, &path, value);
+                        publish(&cache, (&cancel, &stale), &path, &path, value);
                     }
                     let _ = tx.send(generation);
                     ctx.request_repaint();
@@ -516,56 +563,69 @@ mod tests {
             d.service.cache.lock().expect("lock poisoned")[&parent].at <= child_at,
             "aggregating a cached child must not extend its freshness"
         );
-        d.service.invalidate(&child, &mut d.sizes);
+        d.service.invalidate(&child);
         d.finish(&[parent.clone(), child.clone()]);
         assert_eq!(d.sizes[&parent], 32);
         assert_eq!(d.sizes[&child], 29);
     }
 
     #[test]
-    fn invalidation_rejects_late_totals() {
+    fn invalidation_expires_overlapping_totals_in_place() {
+        let tree = Tree::new();
+        tree.file("folder/child/grandchild/data", 11);
+        tree.file("folder/sibling/data", 3);
+        tree.file("folder/child-2/data", 5);
+        let path = tree.0.join("folder");
+        let child = path.join("child");
+        let mut d = Driver::new(1);
+        d.finish(std::slice::from_ref(&path));
+        d.service.invalidate(&child);
+        let now = Instant::now();
+        let cache = d.service.cache.lock().expect("lock poisoned");
+        let expired = |p: &Path| cache[p].at + TTL <= now;
+        assert!(expired(&path) && expired(&child) && expired(&child.join("grandchild")));
+        assert!(!expired(&path.join("sibling")) && !expired(&path.join("child-2")));
+        drop(cache);
+        // A watched file expires the folders above it.
+        d.finish(std::slice::from_ref(&path));
+        d.service.changed(&path.join("sibling/data"));
+        let now = Instant::now();
+        let cache = d.service.cache.lock().expect("lock poisoned");
+        let expired = |p: &Path| cache[p].at + TTL <= now;
+        assert!(expired(&path) && expired(&path.join("sibling")));
+        assert!(!expired(&child));
+    }
+
+    #[test]
+    fn a_folder_that_keeps_changing_still_gets_totals() {
         let tree = Tree::new();
         tree.file("folder/data", 11);
         let path = tree.0.join("folder");
         let mut d = Driver::new(1);
+        d.finish(std::slice::from_ref(&path));
         let gate = Gate::new(&d.service);
+        d.service.invalidate(&path);
         d.sync(std::slice::from_ref(&path));
-        let generation = d.service.generation;
-        let cancel = d.service.jobs[&generation].cancel.clone();
-        let stale = |cache: &Cache| {
-            let value = Cached {
-                usage: Some(Usage {
-                    size: 999,
-                    ..Default::default()
-                }),
-                device: fsops::device_of(&path).unwrap(),
-                at: Instant::now(),
-            };
-            publish(cache, &cancel, &path, &path, value);
-        };
-        d.service.invalidate(&path, &mut d.sizes);
-        stale(&d.service.cache);
-        d.sync(std::slice::from_ref(&path));
-        assert!(!d.sizes.contains_key(&path));
-        assert!(
-            !d.service
-                .cache
-                .lock()
-                .expect("lock poisoned")
-                .contains_key(&path)
-        );
         assert_eq!(
-            d.service.jobs.len(),
-            1,
-            "cancelled jobs must hold their reservation until they exit"
+            d.sizes[&path], 11,
+            "the old total stays while it is recomputed"
         );
+        assert!(d.sizing.is_empty());
+        let generation = d.service.generation;
+        // Changes during the scan neither cancel nor restart it.
+        tree.file("folder/data", 29);
+        d.service.invalidate(&path);
+        d.sync(std::slice::from_ref(&path));
+        assert_eq!(d.service.generation, generation);
         drop(gate);
         d.finish(std::slice::from_ref(&path));
-        assert!(d.service.generation > generation);
-        assert_eq!(d.sizes[&path], 11);
-        stale(&d.service.cache);
-        d.sync(std::slice::from_ref(&path));
-        assert_eq!(d.sizes[&path], 11);
+        assert_eq!(d.sizes[&path], 29);
+        assert_eq!(d.service.generation, generation, "no rescan right away");
+        let at = d.service.cache.lock().expect("lock poisoned")[&path].at;
+        assert!(
+            at + TTL <= Instant::now() + RETRY,
+            "the total is due again soon"
+        );
     }
 
     #[test]
@@ -830,12 +890,7 @@ mod tests {
         d.sync(&[path.clone(), other.clone()]);
         assert_eq!(d.sizes[&path], 99, "last session's total shows at once");
         assert!(d.sizing.is_empty());
-        d.service.invalidate(&other, &mut d.sizes);
-        d.sync(&[path.clone(), other.clone()]);
-        assert!(
-            !d.sizes.contains_key(&other),
-            "an invalidated total is not shown"
-        );
+
         drop(gate);
         d.finish(&[path.clone(), other.clone()]);
         assert_eq!((d.sizes[&path], d.sizes[&other]), (11, 5));

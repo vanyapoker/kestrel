@@ -780,7 +780,7 @@ impl App {
 
     fn refresh(&mut self) {
         let path = self.tab().path.clone();
-        self.size_service.invalidate(&path, &mut self.sizes);
+        self.size_service.invalidate(&path);
         self.preview.invalidate();
         let tab = self.tab_mut();
         if let Some(s) = &mut tab.search {
@@ -1045,8 +1045,12 @@ impl App {
         }
 
         // File watcher: debounce, then soft-reload affected tabs.
-        for p in self.watcher.drain() {
-            self.size_service.invalidate(&p, &mut self.sizes);
+        // A file being written reports thousands of events a second; handle each path once.
+        let mut changed = self.watcher.drain();
+        changed.sort_unstable();
+        changed.dedup();
+        for p in changed {
+            self.size_service.changed(&p);
             self.thumbs.invalidate(&p);
             if let Some(parent) = p.parent() {
                 self.thumbs.invalidate(parent); // a folder tile previews its children
@@ -1188,7 +1192,7 @@ impl App {
 
     fn job_done(&mut self, done: ops::Done) {
         for d in &done.dirs {
-            self.size_service.invalidate(d, &mut self.sizes);
+            self.size_service.invalidate(d);
         }
         let select = done.created.first().cloned();
         let (list_tx, ctx) = (&self.list_tx, &self.ctx);
@@ -1563,8 +1567,8 @@ impl App {
                     path.to_path_buf(),
                     target.clone(),
                 )]));
-                self.size_service.invalidate(path, &mut self.sizes);
-                self.size_service.invalidate(&target, &mut self.sizes);
+                self.size_service.invalidate(path);
+                self.size_service.invalidate(&target);
                 let tab = self.tab_mut();
                 tab.marked.clear();
                 tab.select_after_load = Some(target);
