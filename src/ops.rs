@@ -9,6 +9,7 @@ use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
@@ -1008,6 +1009,9 @@ impl Worker {
     }
 
     fn copy_file(&mut self, src: &Path, dst: &Path, meta: &fs::Metadata) -> io::Result<()> {
+        if crate::util::is_gvfs(src) {
+            return self.copy_file_gvfs(src, dst);
+        }
         let mut input = fs::File::open(src)?;
         let mut output = fs::OpenOptions::new()
             .write(true)
@@ -1024,6 +1028,47 @@ impl Worker {
             let _ = output.set_modified(m);
         }
         Ok(())
+    }
+
+    /// Reads through gio instead of the gvfs-fuse mount: the mount serves a camera file
+    /// about ten times slower. Bytes show up as the destination grows.
+    fn copy_file_gvfs(&mut self, src: &Path, dst: &Path) -> io::Result<()> {
+        let mut child = Command::new("gio")
+            .arg("copy")
+            .arg(src)
+            .arg(dst)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let mut seen = 0;
+        let status = loop {
+            if self.cancelled() {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = fs::remove_file(dst);
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+            let status = child.try_wait()?;
+            let len = fs::metadata(dst).map(|m| m.len()).unwrap_or(seen);
+            self.update(|p| p.bytes_done += len.saturating_sub(seen));
+            seen = seen.max(len);
+            if let Some(status) = status {
+                break status;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        if status.success() {
+            return Ok(());
+        }
+        let mut err = String::new();
+        if let Some(mut e) = child.stderr.take() {
+            let _ = e.read_to_string(&mut err);
+        }
+        let _ = fs::remove_file(dst);
+        let line = err.lines().next().unwrap_or("gio copy failed");
+        Err(io::Error::other(
+            line.strip_prefix("gio: ").unwrap_or(line).to_string(),
+        ))
     }
 
     /// Copies with `copy_file_range` (kernel side, reflinks on btrfs/xfs), falling
