@@ -1,7 +1,10 @@
-use crate::preview::{Table, TextLink};
+use crate::app::icons::draw_icon_scaled;
+use crate::archive::Tree;
+use crate::preview::{Detail, ImageView, Table, TextLink};
 use crate::theme::*;
 use eframe::egui::{
-    self, Align2, Color32, FontId, Pos2, Rect, ScrollArea, Sense, Stroke, Ui, UiBuilder, vec2,
+    self, Align2, Color32, FontId, Pos2, Rect, RichText, ScrollArea, Sense, Stroke, Ui, UiBuilder,
+    vec2,
 };
 use std::sync::Arc;
 
@@ -355,4 +358,214 @@ pub(in crate::app) fn preview_table(ui: &mut Ui, table: &Table) {
                 response.on_hover_text(text);
             }
         });
+}
+
+/// Draws an image that zooms around the pointer with the wheel or a pinch, pans by
+/// dragging, and switches between fitting the panel and 100% on double-click.
+/// Returns the size worth reloading the image at once the texture is too coarse
+/// for the current zoom.
+pub(in crate::app) fn preview_image(
+    ui: &mut Ui,
+    tex: &egui::TextureHandle,
+    dims: (u32, u32),
+    view: &mut ImageView,
+) -> Option<u32> {
+    let area = ui.available_rect_before_wrap();
+    let response = ui.allocate_rect(area, Sense::click_and_drag());
+    let orig = vec2(dims.0.max(1) as f32, dims.1.max(1) as f32);
+    let texture = tex.size_vec2();
+    let ppp = ui.ctx().pixels_per_point();
+    // Fit, but don't blow small images up past twice their size.
+    let fit = (area.width() / orig.x)
+        .min(area.height() / orig.y)
+        .min(2.0 * texture.x / orig.x)
+        .max(f32::MIN_POSITIVE);
+    let max = (8.0 / ppp).max(fit);
+    let mut scale = view.scale.unwrap_or(fit);
+
+    // Moves to `new` keeping the image point under `anchor` where it is.
+    let zoom_to = |view: &mut ImageView, scale: &mut f32, new: f32, anchor: Pos2| {
+        let new = new.clamp(fit, max);
+        let offset = anchor - area.center();
+        let point = view.center + offset / (orig * *scale);
+        view.center = point - offset / (orig * new);
+        *scale = new;
+        view.scale = (new > fit * 1.001).then_some(new);
+    };
+    if let Some(pointer) = response.hover_pos() {
+        let (wheel, pinch) = ui.input(|i| (i.smooth_scroll_delta.y, i.zoom_delta()));
+        let factor = pinch * (wheel / 200.0).exp();
+        if factor != 1.0 {
+            let new = scale * factor;
+            zoom_to(view, &mut scale, new, pointer);
+        }
+    }
+    if response.double_clicked() {
+        let pointer = response.interact_pointer_pos().unwrap_or(area.center());
+        if view.scale.is_some() {
+            *view = ImageView {
+                detail: view.detail,
+                ..ImageView::default()
+            };
+            scale = fit;
+        } else {
+            zoom_to(view, &mut scale, (1.0 / ppp).max(fit * 1.01), pointer);
+        }
+    }
+    if response.dragged() && view.scale.is_some() {
+        view.center -= response.drag_delta() / (orig * scale);
+    }
+    if view.scale.is_none() {
+        view.center = vec2(0.5, 0.5);
+    }
+
+    // A smaller-than-panel side stays centered; a larger one can't leave a gap.
+    let size = orig * scale;
+    for axis in 0..2 {
+        if size[axis] <= area.size()[axis] {
+            view.center[axis] = 0.5;
+        } else {
+            let half = area.size()[axis] / (2.0 * size[axis]);
+            view.center[axis] = view.center[axis].clamp(half, 1.0 - half);
+        }
+    }
+    let rect = Rect::from_center_size(area.center() + (vec2(0.5, 0.5) - view.center) * size, size);
+    let painter = ui.painter_at(area);
+    super::draw_checker(&painter, rect.intersect(area));
+    painter.image(tex.id(), rect, super::UV, Color32::WHITE);
+
+    let pannable = size.x > area.width() + 0.5 || size.y > area.height() + 0.5;
+    if pannable && response.hovered() {
+        ui.ctx().set_cursor_icon(if response.dragged() {
+            egui::CursorIcon::Grabbing
+        } else {
+            egui::CursorIcon::Grab
+        });
+    }
+    if response.hovered() || view.scale.is_some() {
+        let percent = (scale * ppp * 100.0).round();
+        let mut text = if view.scale.is_some() {
+            format!("{percent}%")
+        } else {
+            format!("{percent}% · scroll to zoom")
+        };
+        if view.detail == Detail::Loading {
+            text.push_str(" · sharpening…");
+        }
+        let p = pal();
+        let galley = painter.layout_no_wrap(text, FontId::proportional(11.5), p.dim);
+        let badge = Rect::from_min_size(
+            area.right_bottom() - galley.size() - vec2(18.0, 14.0),
+            galley.size() + vec2(12.0, 6.0),
+        );
+        painter.rect_filled(badge, 4.0, p.surface.gamma_multiply(0.92));
+        painter.galley(badge.min + vec2(6.0, 3.0), galley, p.dim);
+    }
+
+    // Texture pixels each take more than one screen pixel: a sharper copy would help.
+    let coarse = scale * ppp * orig.x / texture.x > 1.05;
+    (coarse && texture.x < orig.x && view.detail == Detail::None).then(|| {
+        dims.0
+            .max(dims.1)
+            .min(ui.ctx().input(|i| i.max_texture_side) as u32)
+    })
+}
+
+/// Lists an archive's folder `cwd`, with a way back up. Clicking a folder enters it.
+pub(in crate::app) fn preview_archive(ui: &mut Ui, tree: &Tree, cwd: &mut Vec<String>) {
+    const ROW: f32 = 24.0;
+    let p = pal();
+    let Some(dir) = tree.find(cwd) else {
+        cwd.clear();
+        return;
+    };
+    if tree.truncated {
+        ui.label(
+            RichText::new("Showing part of the archive: it has too many items to list quickly.")
+                .small()
+                .color(p.faint),
+        );
+    }
+    if !cwd.is_empty() {
+        ui.horizontal(|ui| {
+            if ui.small_button("‹ Up").clicked() {
+                cwd.pop();
+            }
+            ui.add(
+                egui::Label::new(RichText::new(cwd.join(" / ")).size(12.0).color(p.dim)).truncate(),
+            );
+        });
+    }
+    let children = &tree.nodes[dir].children;
+    if children.is_empty() {
+        ui.label(RichText::new("Empty folder").color(p.faint));
+        return;
+    }
+    let mut enter = None;
+    ScrollArea::vertical()
+        .id_salt(("archive", cwd.len()))
+        .auto_shrink([false; 2])
+        .show_rows(ui, ROW, children.len(), |ui, range| {
+            for &i in &children[range] {
+                let node = &tree.nodes[i];
+                let (rect, response) =
+                    ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
+                if response.hovered() {
+                    ui.painter().rect_filled(rect, 4.0, p.hover);
+                }
+                let ext = node
+                    .name
+                    .rsplit_once('.')
+                    .filter(|(stem, _)| !stem.is_empty())
+                    .map(|(_, e)| e.to_lowercase())
+                    .unwrap_or_default();
+                let cat = crate::util::category(&ext, node.is_dir);
+                draw_icon_scaled(
+                    ui.painter(),
+                    egui::pos2(rect.left() + 14.0, rect.center().y),
+                    cat,
+                    0.75,
+                );
+                let size = crate::util::human_size(node.size);
+                let size_galley =
+                    ui.painter()
+                        .layout_no_wrap(size, FontId::proportional(11.5), p.faint);
+                let name_width = rect.width() - 36.0 - size_galley.size().x - 12.0;
+                let name = ui.painter().layout_no_wrap(
+                    node.name.clone(),
+                    FontId::proportional(12.5),
+                    p.text,
+                );
+                let clipped = name.size().x > name_width;
+                let name_rect = Rect::from_min_size(
+                    egui::pos2(rect.left() + 30.0, rect.center().y - name.size().y / 2.0),
+                    vec2(name_width.max(0.0), name.size().y),
+                );
+                ui.painter()
+                    .with_clip_rect(name_rect.intersect(ui.clip_rect()))
+                    .galley(name_rect.min, name, p.text);
+                ui.painter().galley(
+                    egui::pos2(
+                        rect.right() - 6.0 - size_galley.size().x,
+                        rect.center().y - size_galley.size().y / 2.0,
+                    ),
+                    size_galley,
+                    p.faint,
+                );
+                if node.is_dir && response.clicked() {
+                    enter = Some(node.name.clone());
+                }
+                let response = if node.is_dir {
+                    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+                } else {
+                    response
+                };
+                if clipped {
+                    response.on_hover_text(&node.name);
+                }
+            }
+        });
+    if let Some(name) = enter {
+        cwd.push(name);
+    }
 }

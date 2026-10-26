@@ -433,6 +433,8 @@ impl Worker {
             }
         }
 
+        // Set when an undo has already put back the items a replace trashed.
+        let mut restored = false;
         match job.kind {
             JobKind::SaveImage => {
                 if let (Some(dest), Some((name, bytes))) = (job.dest.as_deref(), job.image) {
@@ -504,8 +506,37 @@ impl Worker {
                 done.summary = format!("Moved {what} to trash");
             }
             JobKind::MoveBack => {
+                // An item may belong inside the one it replaced (moving "foo/foo" up
+                // over "foo"). Park it, bring the replaced item back, then finish.
+                let mut parked = Vec::new();
                 for (orig, cur) in &job.pairs {
-                    self.move_back(orig, cur, &mut done);
+                    if !job.restore.iter().any(|(r, _)| orig.starts_with(r)) {
+                        self.move_back(orig, cur, &mut done);
+                        continue;
+                    }
+                    let dir = cur.parent().unwrap_or(Path::new("/"));
+                    let temp = unique_dest(dir, &format!(".{}.undoing", file_name(cur)));
+                    match fs::rename(cur, &temp) {
+                        Ok(()) => parked.push((orig, cur, temp)),
+                        Err(e) => done.errors.push(format!("{}: {e}", cur.display())),
+                    }
+                }
+                if !parked.is_empty() {
+                    if done.errors.is_empty() {
+                        restore_by_id(&job.restore, &mut done);
+                        restored = true;
+                    }
+                    for (orig, cur, temp) in parked {
+                        if done.errors.is_empty() {
+                            self.move_back(orig, &temp, &mut done);
+                        } else if let Err(e) = fs::rename(&temp, cur) {
+                            done.errors.push(format!(
+                                "{e}: \"{}\" was left at {}",
+                                file_name(cur),
+                                temp.display()
+                            ));
+                        }
+                    }
                 }
                 done.summary = format!("Moved back {what}");
             }
@@ -601,7 +632,7 @@ impl Worker {
                 done.summary = format!("{verb} {what} to {}", file_name(&dest));
             }
         }
-        if !job.restore.is_empty() && done.errors.is_empty() {
+        if !restored && !job.restore.is_empty() && done.errors.is_empty() {
             restore_by_id(&job.restore, &mut done);
         }
         done.cancelled = self.cancelled();
@@ -1622,6 +1653,43 @@ mod tests {
         );
         assert!(!d.join("foo/outer.txt").exists());
         assert!(!d.join("foo/foo").exists());
+
+        // Undo has to bring "foo" back before "foo/foo" can return inside it.
+        let done = run(Job::undo(done.undo.expect("undoable")));
+        assert!(done.errors.is_empty(), "{:?}", done.errors);
+        assert_eq!(
+            fs::read_to_string(d.join("foo/outer.txt")).unwrap(),
+            "outer"
+        );
+        assert_eq!(
+            fs::read_to_string(d.join("foo/foo/inner.txt")).unwrap(),
+            "inner"
+        );
+        let names: Vec<_> = fs::read_dir(&d)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(names, ["foo"], "no temporary items are left behind");
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn undoing_a_replacing_move_puts_both_items_back() {
+        let d = home_tmp("undo-move-replace");
+        let (a, b) = (d.join("a"), d.join("b"));
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        fs::write(a.join("f.txt"), "new").unwrap();
+        fs::write(b.join("f.txt"), "old").unwrap();
+        let mut job = Job::new(JobKind::Move, vec![a.join("f.txt")], Some(b.clone()));
+        job.replace.insert(a.join("f.txt"));
+        let done = run(job);
+        assert_eq!(fs::read_to_string(b.join("f.txt")).unwrap(), "new");
+        let done = run(Job::undo(done.undo.expect("undoable")));
+        assert!(done.errors.is_empty(), "{:?}", done.errors);
+        assert_eq!(fs::read_to_string(a.join("f.txt")).unwrap(), "new");
+        assert_eq!(fs::read_to_string(b.join("f.txt")).unwrap(), "old");
         fs::remove_dir_all(d).unwrap();
     }
 

@@ -31,7 +31,9 @@ mod sidebar;
 mod views;
 
 use glyphs::*;
-pub(super) use preview::{paint_preview_links, preview_code_cached, preview_table};
+pub(super) use preview::{
+    paint_preview_links, preview_archive, preview_code_cached, preview_image, preview_table,
+};
 #[cfg(test)]
 pub(super) use preview::{preview_code, preview_text};
 

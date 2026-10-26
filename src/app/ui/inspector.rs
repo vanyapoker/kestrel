@@ -4,12 +4,13 @@ use crate::preview::{Content, State};
 use crate::theme::*;
 use crate::util;
 use eframe::egui::{
-    self, CentralPanel, Color32, CornerRadius, Frame, Margin, Panel, RichText, ScrollArea, Sense,
-    Ui, vec2,
+    self, CentralPanel, CornerRadius, Frame, Margin, Panel, RichText, ScrollArea, Sense, Ui, vec2,
 };
 use std::path::PathBuf;
 
-use super::{INSPECTOR_TILE, UV, draw_checker, paint_tile, preview_code_cached, preview_table};
+use super::{
+    INSPECTOR_TILE, paint_tile, preview_archive, preview_code_cached, preview_image, preview_table,
+};
 
 impl App {
     pub(in crate::app) fn sync_inspector(&mut self) {
@@ -141,6 +142,24 @@ impl App {
                     ));
                     rows.push(("Columns".into(), t.widths.len().to_string()));
                 }
+                Content::Archive { tree, .. } => {
+                    let plus = if tree.truncated { "+" } else { "" };
+                    let count = |n: usize, one: &str, many: &str| {
+                        format!("{n}{plus} {}", if n == 1 { one } else { many })
+                    };
+                    rows.push((
+                        "Contents".into(),
+                        format!(
+                            "{}, {}",
+                            count(tree.files, "file", "files"),
+                            count(tree.dirs, "folder", "folders")
+                        ),
+                    ));
+                    rows.push((
+                        "Unpacked".into(),
+                        format!("{}{plus}", util::human_size(tree.total_size())),
+                    ));
+                }
                 Content::Dir { entries } => rows.push((
                     "Items".into(),
                     entries
@@ -192,6 +211,7 @@ impl App {
 
         let mut inspect = None;
         let mut open_folder = None;
+        let mut detail = None;
         if e.is_dir && ui.small_button("Open folder in main view ↗").clicked() {
             open_folder = Some(e.path.clone());
         }
@@ -202,18 +222,10 @@ impl App {
                     ui.add_space(30.0);
                     ui.vertical_centered(|ui| ui.spinner());
                 }
-                State::Ready(Content::Image { tex, .. }) => {
-                    let avail = ui.available_size();
-                    let ts = tex.size_vec2();
-                    let scale = (avail.x / ts.x).min(avail.y / ts.y).min(2.0);
-                    let size = ts * scale;
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(((avail.y - size.y) / 2.0).max(0.0));
-                        let (r, _) = ui.allocate_exact_size(size, Sense::hover());
-                        draw_checker(ui.painter(), r);
-                        ui.painter().image(tex.id(), r, UV, Color32::WHITE);
-                    });
-                }
+                State::Ready(Content::Image {
+                    tex, dims, view, ..
+                }) => detail = preview_image(ui, tex, *dims, view),
+                State::Ready(Content::Archive { tree, cwd }) => preview_archive(ui, tree, cwd),
                 State::Ready(Content::Text {
                     job,
                     links,
@@ -340,6 +352,9 @@ impl App {
                     });
                 }
             });
+        if let Some(max_side) = detail {
+            self.preview.request_detail(max_side);
+        }
         if hash {
             self.start_checksums(e.path.clone(), e.modified);
         }

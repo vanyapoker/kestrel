@@ -1,8 +1,10 @@
 mod actions;
 mod app;
 mod apps;
+mod archive;
 mod complete;
 mod devices;
+mod exif;
 mod fsops;
 mod ops;
 mod palette;

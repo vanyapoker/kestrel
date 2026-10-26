@@ -43,8 +43,10 @@ pub fn renderer_for(ext: &str) -> Option<Renderer> {
 
 pub struct Rendered {
     pub image: ColorImage,
-    /// Original dimensions, when meaningful.
+    /// Original dimensions, when meaningful (after applying the Exif orientation).
     pub dims: Option<(u32, u32)>,
+    /// The raw Exif block of a photo.
+    pub exif: Option<Vec<u8>>,
 }
 
 pub fn render(path: &Path, renderer: Renderer, max: u32) -> Result<Rendered, String> {
@@ -131,21 +133,38 @@ fn render_raster(path: &Path, max: u32) -> Result<Rendered, String> {
     {
         return Err("Image too large to preview".into());
     }
-    let img = image::ImageReader::open(path)
+    use image::ImageDecoder as _;
+    let mut decoder = image::ImageReader::open(path)
         .map_err(|e| e.to_string())?
         .with_guessed_format()
         .map_err(|e| e.to_string())?
-        .decode()
+        .into_decoder()
         .map_err(|e| e.to_string())?;
-    let dims = (img.width(), img.height());
-    let img = if dims.0 > max || dims.1 > max {
+    // `ImageReader::decode` refuses images this large before allocating; so do we.
+    if decoder.total_bytes() > 512 * 1024 * 1024 {
+        return Err("Image too large to preview".into());
+    }
+    // Phones store portrait photos sideways and record the rotation in Exif.
+    let exif = decoder.exif_metadata().ok().flatten();
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    let img = image::DynamicImage::from_decoder(decoder).map_err(|e| e.to_string())?;
+    let mut dims = (img.width(), img.height());
+    let mut img = if dims.0 > max || dims.1 > max {
         img.thumbnail(max, max)
     } else {
         img
     };
+    let width = img.width();
+    img.apply_orientation(orientation);
+    if img.width() != width {
+        dims = (dims.1, dims.0);
+    }
     Ok(Rendered {
         image: to_color_image(img),
         dims: Some(dims),
+        exif,
     })
 }
 
@@ -155,6 +174,7 @@ fn decode_png(bytes: &[u8], dims: Option<(u32, u32)>) -> Result<Rendered, String
     Ok(Rendered {
         image: to_color_image(img),
         dims,
+        exif: None,
     })
 }
 
@@ -556,6 +576,47 @@ mod tests {
     use super::*;
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn photos_are_turned_upright_and_keep_their_exif() {
+        use image::ImageEncoder as _;
+        // Little-endian TIFF: IFD0 at 8 with Make "Acme" and Orientation 6 (turn 90° right).
+        let mut exif = b"II*\0\x08\0\0\0\x02\0".to_vec();
+        exif.extend([0x0F, 0x01, 2, 0, 5, 0, 0, 0, 38, 0, 0, 0]);
+        exif.extend([0x12, 0x01, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0]);
+        exif.extend([0; 4]);
+        exif.extend(b"Acme\0");
+
+        let dir = directory();
+        let path = dir.join("sideways.jpg");
+        let mut bytes = Vec::new();
+        let mut encoder = image::codecs::jpeg::JpegEncoder::new(&mut bytes);
+        encoder.set_exif_metadata(exif).unwrap();
+        // A wide, left-dark image: once turned, it's tall with the dark part on top.
+        let pixels: Vec<u8> = (0..20)
+            .flat_map(|_| (0..40).flat_map(|x| [if x < 20 { 0 } else { 255 }; 3]))
+            .collect();
+        encoder
+            .write_image(&pixels, 40, 20, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        fs::write(&path, bytes).unwrap();
+
+        let r = render(&path, Renderer::Raster, 1600).unwrap();
+        assert_eq!(r.image.size, [20, 40]);
+        assert_eq!(r.dims, Some((20, 40)));
+        assert!(r.image.pixels[0].r() < 64, "dark side on top");
+        assert!(
+            r.image.pixels[20 * 39].r() > 192,
+            "light side at the bottom"
+        );
+        let rows = crate::exif::rows(r.exif.as_deref().expect("exif kept"));
+        assert_eq!(rows, [("Camera".to_string(), "Acme".to_string())]);
+        // Scaled-down renders report the original size, turned the same way.
+        let small = render(&path, Renderer::Raster, 10).unwrap();
+        assert_eq!(small.dims, Some((20, 40)));
+        assert!(small.image.size[1] > small.image.size[0]);
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     fn directory() -> PathBuf {
         static NEXT: AtomicU64 = AtomicU64::new(0);

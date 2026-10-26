@@ -16,6 +16,9 @@ use syntect::util::LinesWithEndings;
 const MAX_TEXT_BYTES: usize = 256 * 1024;
 const MAX_TEXT_LINES: usize = 3000;
 const MAX_IMAGE_SIDE: u32 = 1600;
+/// Zooming past the preview's resolution reloads the photo up to this size, which
+/// covers a 24-megapixel camera at 100% while bounding memory (~100 MB at most).
+const MAX_DETAIL_SIDE: u32 = 6144;
 const MAX_TABLE_ROWS: usize = 5000;
 const MAX_CELL_CHARS: usize = 200;
 const LOAD_TIMEOUT: Duration = Duration::from_secs(20);
@@ -27,6 +30,9 @@ pub enum Content {
     Image {
         tex: egui::TextureHandle,
         info: Info,
+        /// Size of the original image, which the texture may be scaled down from.
+        dims: (u32, u32),
+        view: ImageView,
     },
     Text {
         job: LayoutJob,
@@ -39,6 +45,11 @@ pub enum Content {
     Table(Table),
     Dir {
         entries: Vec<crate::fsops::Entry>,
+    },
+    Archive {
+        tree: crate::archive::Tree,
+        /// The folder being browsed, as names from the archive's root.
+        cwd: Vec<String>,
     },
     Binary {
         info: Info,
@@ -97,8 +108,42 @@ pub enum State {
     Ready(Content),
 }
 
+/// Zoom and pan of an image preview.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImageView {
+    /// Screen points per original image pixel; `None` fits the image to the panel.
+    pub scale: Option<f32>,
+    /// The image point shown at the middle of the panel, from (0, 0) to (1, 1).
+    pub center: egui::Vec2,
+    pub detail: Detail,
+}
+
+impl Default for ImageView {
+    fn default() -> Self {
+        Self {
+            scale: None,
+            center: egui::vec2(0.5, 0.5),
+            detail: Detail::None,
+        }
+    }
+}
+
+/// A sharper texture loaded for zooming in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Detail {
+    None,
+    Loading,
+    /// Loaded, or failed; either way there's nothing more to load.
+    Done,
+}
+
 enum Payload {
-    Image(ColorImage, Info),
+    Image(ColorImage, Info, (u32, u32)),
+    /// A sharper version of the image already shown.
+    Detail(ColorImage),
+    /// The sharper version couldn't be made; keep the image already shown.
+    DetailFailed,
+    Archive(crate::archive::Tree),
     Text(LayoutJob, Vec<TextLink>, usize, bool, bool),
     Table(Table),
     Dir(Vec<crate::fsops::Entry>),
@@ -110,6 +155,8 @@ struct Request {
     id: u64,
     path: PathBuf,
     is_dir: bool,
+    /// Load the image again at up to this size, for zooming.
+    detail: Option<u32>,
 }
 
 /// A parsed CSV/TSV file; the first row is the header.
@@ -463,9 +510,10 @@ impl Preview {
                     // Loads run on their own thread so a stuck read or tool can never
                     // block later previews; an abandoned load just finishes unseen.
                     let (done_tx, done_rx) = channel();
-                    let (path, is_dir, id, generation) = (
+                    let (path, is_dir, detail, id, generation) = (
                         req.path.clone(),
                         req.is_dir,
+                        req.detail,
                         req.id,
                         worker_generation.clone(),
                     );
@@ -477,7 +525,11 @@ impl Preview {
                                 for_tools.load(Ordering::Relaxed) != id
                             }));
                             let cancelled = move || generation.load(Ordering::Relaxed) != id;
-                            let _ = done_tx.send(load_cancellable(&path, is_dir, &cancelled));
+                            let payload = match detail {
+                                Some(max) => load_detail(&path, max),
+                                None => load_cancellable(&path, is_dir, &cancelled),
+                            };
+                            let _ = done_tx.send(payload);
                         });
                     let started = Instant::now();
                     let payload = loop {
@@ -548,6 +600,28 @@ impl Preview {
             id: self.next_id,
             path: path.to_path_buf(),
             is_dir,
+            detail: None,
+        });
+    }
+
+    /// Loads the shown image again at up to `max_side` pixels (capped by
+    /// `MAX_DETAIL_SIDE`), replacing its texture once ready. Selecting another file
+    /// abandons it.
+    pub fn request_detail(&mut self, max_side: u32) {
+        let (Some(path), State::Ready(Content::Image { view, .. })) = (&self.path, &mut self.state)
+        else {
+            return;
+        };
+        if view.detail != Detail::None {
+            return;
+        }
+        view.detail = Detail::Loading;
+        self.next_id = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
+        let _ = self.req_tx.send(Request {
+            id: self.next_id,
+            path: path.clone(),
+            is_dir: false,
+            detail: Some(max_side.min(MAX_DETAIL_SIDE)),
         });
     }
 
@@ -564,10 +638,26 @@ impl Preview {
             if res.id != self.next_id {
                 continue;
             }
+            if let Payload::Detail(_) | Payload::DetailFailed = res.payload {
+                if let State::Ready(Content::Image { tex, view, .. }) = &mut self.state {
+                    if let Payload::Detail(img) = res.payload {
+                        *tex = ctx.load_texture("preview", img, egui::TextureOptions::LINEAR);
+                    }
+                    view.detail = Detail::Done;
+                }
+                continue;
+            }
             self.state = State::Ready(match res.payload {
-                Payload::Image(img, info) => Content::Image {
+                Payload::Image(img, info, dims) => Content::Image {
                     tex: ctx.load_texture("preview", img, egui::TextureOptions::LINEAR),
                     info,
+                    dims,
+                    view: ImageView::default(),
+                },
+                Payload::Detail(_) | Payload::DetailFailed => unreachable!("handled above"),
+                Payload::Archive(tree) => Content::Archive {
+                    tree,
+                    cwd: Vec::new(),
                 },
                 Payload::Text(job, links, lines, truncated, plain) => Content::Text {
                     job,
@@ -620,10 +710,25 @@ fn load_cancellable(path: &Path, is_dir: bool, cancelled: &dyn Fn() -> bool) -> 
                 if let (Some((w, h)), true) = (r.dims, renderer == Renderer::Raster) {
                     info.insert(0, ("Dimensions".into(), format!("{w} × {h}")));
                 }
-                Payload::Image(r.image, info)
+                if let Some(exif) = &r.exif {
+                    info.extend(crate::exif::rows(exif));
+                }
+                // Only raster images can be decoded again at a larger size.
+                let texture = (r.image.width() as u32, r.image.height() as u32);
+                let dims = r
+                    .dims
+                    .filter(|_| renderer == Renderer::Raster)
+                    .unwrap_or(texture);
+                Payload::Image(r.image, info, dims)
             }
             Err(e) if renderer == Renderer::Raster => Payload::Error(e),
             Err(_) => Payload::Binary(info),
+        };
+    }
+    if crate::ops::is_archive(path) {
+        return match crate::archive::list(path, cancelled) {
+            Ok(tree) => Payload::Archive(tree),
+            Err(e) => Payload::Error(e),
         };
     }
     if matches!(
@@ -638,6 +743,14 @@ fn load_cancellable(path: &Path, is_dir: bool, cancelled: &dyn Fn() -> bool) -> 
         return table;
     }
     load_text_cancellable(path, cancelled)
+}
+
+/// The image at up to `max` pixels on its longer side, for zooming in.
+fn load_detail(path: &Path, max: u32) -> Payload {
+    match thumbs::render(path, Renderer::Raster, max) {
+        Ok(r) => Payload::Detail(r.image),
+        Err(_) => Payload::DetailFailed,
+    }
 }
 
 /// Opens only regular files, without blocking on FIFOs, devices or dead mounts' open path.

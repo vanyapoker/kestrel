@@ -3150,3 +3150,164 @@ fn permissions_dialog_changes_the_mode_and_select_pattern_marks_matches() {
     });
     fs::remove_dir_all(dir).unwrap();
 }
+
+/// A point inside the preview panel's content area, between the file name heading
+/// and the info rows.
+fn preview_area_point(d: &Driver, name: &str) -> Pos2 {
+    let heading = d
+        .texts
+        .iter()
+        .filter(|(text, _)| text == name)
+        .max_by(|a, b| a.1.center().x.total_cmp(&b.1.center().x))
+        .expect("preview heading")
+        .1;
+    let info = d
+        .texts
+        .iter()
+        .find(|(text, r)| text == "Size" && r.left() > heading.left() - 40.0)
+        .expect("info rows")
+        .1;
+    Pos2::new(
+        heading.center().x + 40.0,
+        (heading.bottom() + info.top()) / 2.0,
+    )
+}
+
+#[test]
+fn image_preview_zooms_pans_and_loads_a_sharper_copy() {
+    use crate::preview::{Content, Detail, State};
+    let dir = sandbox("image-zoom");
+    let path = dir.join("wide.png");
+    image::RgbImage::from_fn(4000, 2000, |x, _| image::Rgb([(x % 256) as u8, 90, 160]))
+        .save(&path)
+        .unwrap();
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| !a.tab().loading);
+    d.app.tab_mut().select_path(&path);
+    d.frame(Vec::new());
+    d.until("image preview", |a| {
+        matches!(&a.preview.state, State::Ready(Content::Image { .. }))
+    });
+    d.frame(Vec::new());
+    let view = |d: &Driver| match &d.app.preview.state {
+        State::Ready(Content::Image {
+            view, tex, dims, ..
+        }) => (*view, tex.size(), *dims),
+        _ => panic!("not an image"),
+    };
+    let (start, texture, dims) = view(&d);
+    assert_eq!(start.scale, None, "starts fitted");
+    assert_eq!(dims, (4000, 2000));
+    assert!(texture[0] <= 1600, "preview texture is scaled down");
+
+    let at = preview_area_point(&d, "wide.png");
+    d.move_to(at);
+    assert!(
+        d.texts
+            .iter()
+            .any(|(t, _)| t.ends_with("% · scroll to zoom")),
+        "zoom hint on hover"
+    );
+    let wheel = Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: vec2(0.0, 400.0),
+        modifiers: Modifiers::NONE,
+        phase: egui::TouchPhase::Move,
+    };
+    d.frame(vec![wheel]);
+    for _ in 0..30 {
+        d.frame(Vec::new()); // the wheel is smoothed over several frames
+    }
+    let zoomed = view(&d).0;
+    let scale = zoomed.scale.expect("zoomed in");
+    assert_ne!(
+        zoomed.detail,
+        Detail::None,
+        "zooming past the texture asks for more pixels"
+    );
+    d.until("sharper copy", |a| {
+        matches!(&a.preview.state, State::Ready(Content::Image { view, tex, .. })
+            if view.detail == Detail::Done && tex.size()[0] > texture[0])
+    });
+    // The point under the pointer stays put, so zooming at the panel's left half
+    // moves the view's center left of the middle.
+    assert!(zoomed.center.x != 0.5 || zoomed.center.y != 0.5);
+
+    // Dragging left reveals more of the right side.
+    let before = view(&d).0.center;
+    d.drag(at, at - vec2(120.0, 0.0), |_| {});
+    let after = view(&d).0;
+    assert!(after.center.x > before.x, "{before:?} → {after:?}");
+    assert_eq!(after.scale, Some(scale));
+
+    // Double-click returns to fitting the panel.
+    d.move_to(at);
+    d.button(true);
+    d.button(false);
+    d.button(true);
+    d.button(false);
+    let fitted = view(&d).0;
+    assert_eq!(fitted.scale, None);
+    assert_eq!(fitted.center, vec2(0.5, 0.5));
+    // ... and again zooms to 100% around the pointer.
+    for _ in 0..60 {
+        d.frame(Vec::new()); // a second apart, or egui counts a triple click
+    }
+    d.button(true);
+    d.button(false);
+    d.button(true);
+    d.button(false);
+    let full = view(&d).0.scale.expect("100%");
+    assert!(
+        (full * d.ctx.pixels_per_point() - 1.0).abs() < 1e-3,
+        "{full}"
+    );
+    assert!(d.texts.iter().any(|(t, _)| t == "100%"));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn archive_preview_lists_contents_and_browses_folders() {
+    use crate::preview::{Content, State};
+    let dir = sandbox("archive-preview");
+    let src = dir.join("pack");
+    fs::create_dir_all(src.join("src/deep")).unwrap();
+    fs::write(src.join("src/deep/notes.txt"), "hello").unwrap();
+    fs::write(src.join("README.md"), "readme!").unwrap();
+    let made = std::process::Command::new("bsdtar")
+        .current_dir(&src)
+        .args(["-a", "-cf", "../bundle.zip", "src", "README.md"])
+        .status();
+    if !made.is_ok_and(|s| s.success()) {
+        return; // bsdtar isn't installed
+    }
+    fs::remove_dir_all(&src).unwrap();
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| !a.tab().loading);
+    d.app.tab_mut().select_path(&dir.join("bundle.zip"));
+    d.frame(Vec::new());
+    d.until("archive preview", |a| {
+        matches!(&a.preview.state, State::Ready(Content::Archive { .. }))
+    });
+    d.frame(Vec::new());
+    let has = |d: &Driver, text: &str| d.texts.iter().any(|(t, _)| t == text);
+    assert!(has(&d, "2 files, 2 folders"), "contents row");
+    assert!(has(&d, "12 B"), "unpacked size row");
+    assert!(has(&d, "src") && has(&d, "README.md"));
+    d.click_text("src");
+    d.frame(Vec::new());
+    assert!(has(&d, "deep") && !has(&d, "README.md"));
+    d.click_text("deep");
+    d.frame(Vec::new());
+    assert!(has(&d, "notes.txt"));
+    assert!(has(&d, "src / deep"), "location within the archive");
+    d.click_text("‹ Up");
+    d.click_text("‹ Up");
+    d.frame(Vec::new());
+    assert!(has(&d, "README.md"));
+    match &d.app.preview.state {
+        State::Ready(Content::Archive { cwd, .. }) => assert!(cwd.is_empty()),
+        _ => panic!("not an archive"),
+    }
+    fs::remove_dir_all(dir).unwrap();
+}

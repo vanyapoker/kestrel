@@ -118,6 +118,17 @@ Select and copy text directly from previews, including table cells and file deta
 Web links in text and CSV previews open in your browser; tables scroll horizontally
 and keep their header visible.
 
+Scroll or pinch over an image preview to zoom around the pointer, drag to pan, and
+double-click to switch between fitting the panel and 100%. Zooming past the preview's
+resolution loads a sharper copy, up to 6144 pixels on the longer side. Photos appear upright
+according to their camera orientation, and their details list the camera, lens, date taken,
+exposure, and GPS location when recorded.
+
+Archives preview as a browsable list of their contents with sizes; click a folder to open
+it and **‹ Up** to go back. The details show the number of files and folders and the
+unpacked size. Very large archives show the first 100,000 items, or what can be listed
+in 10 seconds.
+
 Select a folder to inspect its contents inside the preview panel. Click through nested
 folders and files, go back within the inspector, or open the inspected folder in the
 main view. Your main selection stays in place while you inspect.
@@ -185,7 +196,8 @@ template. Numbering supports a starting value and zero padding. Conflicts block 
   other split pane. Create zip, tar.gz, tar.xz, tar.zst, tar.bz2, or 7z archives through
   **Compress…**, with Fast, Normal, or Best compression; zip also supports Store.
   **Compress to .zip** is available as a quick action. Extraction also supports rar
-  and other formats handled by `bsdtar`.
+  and other formats handled by `bsdtar`. Select an archive to browse it in the preview
+  panel without extracting.
 - **Efficient copies.** Copies use the kernel's `copy_file_range` where supported, with
   a streamed fallback. Copied files retain their permissions and modification times.
 - **Drives.** Mount, unmount, and eject drives from the Devices section. Mounted

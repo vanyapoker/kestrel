@@ -14,6 +14,9 @@ use std::time::UNIX_EPOCH;
 const SIZE_DIR: &str = "large";
 /// The shared folder is pruned at startup to stay below this many bytes.
 const MAX_BYTES: u64 = 256 * 1024 * 1024;
+/// Written as the spec's `Software` key. Earlier Kestrel builds wrote none and didn't
+/// apply Exif orientation, so thumbnails without this key are made again.
+const SOFTWARE: &str = "Kestrel 2";
 
 fn dir() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CACHE_HOME")
@@ -77,7 +80,10 @@ pub fn load(path: &Path) -> Option<ColorImage> {
             .find(|t| t.keyword == key)
             .map(|t| t.text.as_str())
     };
-    if field("Thumb::URI")? != uri || field("Thumb::MTime")?.parse::<i64>().ok()? != mtime {
+    if field("Thumb::URI")? != uri
+        || field("Thumb::MTime")?.parse::<i64>().ok()? != mtime
+        || field("Software").is_none_or(|s| s.starts_with("Kestrel") && s != SOFTWARE)
+    {
         return None;
     }
     let img = image::load_from_memory(&bytes).ok()?;
@@ -114,6 +120,9 @@ fn try_store(path: &Path, image: &ColorImage) -> Option<()> {
     encoder.add_text_chunk("Thumb::URI".into(), uri).ok()?;
     encoder
         .add_text_chunk("Thumb::MTime".into(), mtime.to_string())
+        .ok()?;
+    encoder
+        .add_text_chunk("Software".into(), SOFTWARE.into())
         .ok()?;
     encoder
         .write_header()
