@@ -30,6 +30,21 @@ pub fn human_size(bytes: u64) -> String {
     }
 }
 
+/// Compact, rounded-up estimate so a running transfer never reports zero seconds.
+pub fn eta(duration: std::time::Duration) -> String {
+    let seconds = duration
+        .as_secs()
+        .saturating_add(u64::from(duration.subsec_nanos() > 0))
+        .max(1);
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 3600 {
+        format!("{}m {:02}s", seconds / 60, seconds % 60)
+    } else {
+        format!("{}h {:02}m", seconds / 3600, (seconds % 3600) / 60)
+    }
+}
+
 pub fn fmt_time(t: SystemTime) -> String {
     let dt: chrono::DateTime<chrono::Local> = t.into();
     dt.format("%Y-%m-%d %H:%M").to_string()
@@ -234,6 +249,16 @@ pub fn is_code_ext(ext: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn eta_rounds_up_and_keeps_long_estimates_compact() {
+        use std::time::Duration;
+        assert_eq!(eta(Duration::ZERO), "1s");
+        assert_eq!(eta(Duration::from_millis(1250)), "2s");
+        assert_eq!(eta(Duration::from_millis(59_001)), "1m 00s");
+        assert_eq!(eta(Duration::from_secs(125)), "2m 05s");
+        assert_eq!(eta(Duration::from_secs(7260)), "2h 01m");
+    }
 
     #[test]
     fn natural_order() {

@@ -3,7 +3,7 @@
 //! " (2)" style suffix, unless the user chose to replace (the old item goes to the trash).
 
 use eframe::egui;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
@@ -278,6 +278,67 @@ pub struct Progress {
     pub files_total: u64,
     pub files_done: u64,
     pub current: String,
+    rate_samples: VecDeque<(Instant, u64)>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Throughput {
+    pub bytes_per_second: f64,
+    pub remaining: Option<Duration>,
+}
+
+impl Progress {
+    fn start_bytes(&mut self, total: u64, now: Instant) {
+        self.bytes_total = total;
+        self.bytes_done = 0;
+        self.rate_samples.clear();
+        self.rate_samples.push_back((now, 0));
+    }
+
+    fn record(&mut self, now: Instant) {
+        let Some(&(last, bytes)) = self.rate_samples.back() else {
+            return;
+        };
+        if self.bytes_done < bytes {
+            self.start_bytes(self.bytes_total, now);
+            return;
+        }
+        if now.saturating_duration_since(last) >= Duration::from_millis(250) {
+            self.rate_samples.push_back((now, self.bytes_done));
+        }
+        // Retain a baseline just before the window, including during a stall.
+        while self.rate_samples.len() > 2
+            && now.saturating_duration_since(self.rate_samples[1].0) >= Duration::from_secs(3)
+        {
+            self.rate_samples.pop_front();
+        }
+    }
+
+    /// Recent processing speed and estimated time to consume the remaining input.
+    /// No estimate is available while starting, stalled, or finishing the operation.
+    pub fn throughput(&self, now: Instant) -> Option<Throughput> {
+        let &(start, bytes) = self.rate_samples.front()?;
+        let elapsed = now.saturating_duration_since(start).as_secs_f64();
+        if elapsed < 0.5 || self.bytes_total == 0 {
+            return None;
+        }
+        let last = self.rate_samples.back()?.0;
+        let bytes_per_second = if now.saturating_duration_since(last) > Duration::from_secs(3) {
+            0.0
+        } else {
+            self.bytes_done.saturating_sub(bytes) as f64 / elapsed
+        };
+        let remaining = self.bytes_total.saturating_sub(self.bytes_done);
+        let remaining = if bytes_per_second > 0.0 && remaining > 0 {
+            Duration::try_from_secs_f64(remaining as f64 / bytes_per_second).ok()
+        } else {
+            None
+        };
+        Some(Throughput {
+            bytes_per_second,
+            remaining,
+        })
+    }
 }
 
 pub struct Done {
@@ -369,6 +430,7 @@ impl Worker {
     fn update(&mut self, f: impl FnOnce(&mut Progress)) {
         if let Some(p) = self.progress.lock().expect("lock poisoned").as_mut() {
             f(p);
+            p.record(Instant::now());
         }
         if self.last_repaint.elapsed() > Duration::from_millis(50) {
             self.last_repaint = Instant::now();
@@ -670,7 +732,7 @@ impl Worker {
                 Err(e) => return Err(e),
             }
         };
-        self.update(|p| p.bytes_total = bytes.len() as u64);
+        self.update(|p| p.start_bytes(bytes.len() as u64, Instant::now()));
         let result = (|| {
             for chunk in bytes.chunks(64 * 1024) {
                 if self.cancelled() {
@@ -739,7 +801,7 @@ impl Worker {
             files += f;
         }
         self.update(|p| {
-            p.bytes_total = bytes;
+            p.start_bytes(bytes, Instant::now());
             p.files_total = files;
         });
 
@@ -801,8 +863,7 @@ impl Worker {
         });
         let io = format!("/proc/{}/io", child.id());
         self.update(|p| {
-            p.bytes_total = total;
-            p.bytes_done = 0;
+            p.start_bytes(total, Instant::now());
         });
         let status = loop {
             if self.cancelled() {
@@ -1464,6 +1525,80 @@ fn untrash(paths: &[PathBuf], done: &mut Done) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn throughput_tracks_recent_speed_and_eta_without_startup_spikes() {
+        let start = Instant::now();
+        let mut p = Progress::default();
+        assert!(p.throughput(start).is_none());
+        p.start_bytes(10_000, start);
+        p.bytes_done = 100;
+        p.record(start + Duration::from_millis(100));
+        assert!(p.throughput(start + Duration::from_millis(100)).is_none());
+        for second in 1..=10 {
+            p.bytes_done = second * 100;
+            p.record(start + Duration::from_secs(second));
+        }
+        let rate = p.throughput(start + Duration::from_secs(10)).unwrap();
+        assert_eq!(rate.bytes_per_second, 100.0);
+        assert_eq!(rate.remaining, Some(Duration::from_secs(90)));
+        // Faster work replaces the earlier samples instead of averaging the whole job.
+        for second in 11..=14 {
+            p.bytes_done += 1000;
+            p.record(start + Duration::from_secs(second));
+        }
+        let rate = p.throughput(start + Duration::from_secs(14)).unwrap();
+        assert_eq!(rate.bytes_per_second, 1000.0);
+        assert_eq!(rate.remaining, Some(Duration::from_secs(5)));
+        assert!(p.rate_samples.len() <= 5, "sample history stays bounded");
+    }
+
+    #[test]
+    fn throughput_handles_stalls_completion_and_new_archive_inputs() {
+        let start = Instant::now();
+        let mut p = Progress::default();
+        p.start_bytes(1000, start);
+        p.bytes_done = 500;
+        p.record(start + Duration::from_secs(1));
+        let stalled = p.throughput(start + Duration::from_secs(5)).unwrap();
+        assert_eq!(stalled.bytes_per_second, 0.0);
+        assert!(
+            stalled.remaining.is_none(),
+            "blocked IO has no reliable ETA"
+        );
+        for second in 2..=5 {
+            p.record(start + Duration::from_secs(second));
+        }
+        assert_eq!(
+            p.throughput(start + Duration::from_secs(5))
+                .unwrap()
+                .bytes_per_second,
+            0.0
+        );
+        p.bytes_done = 1000;
+        p.record(start + Duration::from_secs(6));
+        assert!(
+            p.throughput(start + Duration::from_secs(6))
+                .unwrap()
+                .remaining
+                .is_none(),
+            "consuming all input still leaves archive finalization"
+        );
+        p.start_bytes(2000, start + Duration::from_secs(10));
+        assert_eq!(p.bytes_done, 0);
+        assert!(
+            p.throughput(start + Duration::from_millis(10_100))
+                .is_none()
+        );
+        p.bytes_done = 200;
+        p.record(start + Duration::from_secs(11));
+        assert_eq!(
+            p.throughput(start + Duration::from_secs(11))
+                .unwrap()
+                .remaining,
+            Some(Duration::from_secs(9))
+        );
+    }
 
     fn tmpdir(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("kestrel-test-{name}-{}", std::process::id()));

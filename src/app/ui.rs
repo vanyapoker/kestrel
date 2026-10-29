@@ -997,76 +997,79 @@ impl App {
         let tab = self.tab();
         let small = |s: String| RichText::new(s).size(12.0).color(pal().dim);
         ui.horizontal_centered(|ui| {
-            if let Some(s) = &tab.search {
-                let n = tab.view.len();
-                let more = if s.truncated { "+" } else { "" };
-                ui.label(small(format!(
-                    "{n}{more} {}",
-                    if s.flatten {
-                        "items · subfolders included"
-                    } else {
-                        "results"
-                    }
-                )));
-                if s.running {
-                    ui.add(egui::Spinner::new().size(11.0).color(pal().dim));
-                    ui.label(small("searching".into()));
-                }
-            } else {
-                let (mut dirs, mut files, mut bytes) = (0usize, 0usize, 0u64);
-                let mut all_known = true;
-                for &i in &tab.view {
-                    let e = &tab.entries[i];
-                    if e.is_dir {
-                        dirs += 1;
-                        match self.sizes.get(&e.path) {
-                            Some(s) => bytes += s,
-                            None => all_known &= e.is_link,
-                        }
-                    } else {
-                        files += 1;
-                        bytes += e.size;
-                    }
-                }
-                ui.label(small(format!(
-                    "{} items  ·  {dirs} folders, {files} files",
-                    tab.view.len()
-                )));
-                ui.label(small(format!(
-                    "·  {}{}",
-                    util::human_size(bytes),
-                    if all_known { "" } else { "+" }
-                )));
-                if tab
-                    .entries
-                    .iter()
-                    .any(|e| e.is_dir && self.sizing.contains(&e.path))
-                {
-                    ui.add(egui::Spinner::new().size(11.0).color(pal().dim));
-                }
-            }
-            let n = tab.selection_count();
-            if n > 1 {
-                let bytes: u64 = tab
-                    .entries
-                    .iter()
-                    .filter(|e| tab.marked.contains(&e.path))
-                    .filter_map(|e| {
-                        if e.is_dir {
-                            self.sizes.get(&e.path).copied()
+            if job.is_none() {
+                if let Some(s) = &tab.search {
+                    let n = tab.view.len();
+                    let more = if s.truncated { "+" } else { "" };
+                    ui.label(small(format!(
+                        "{n}{more} {}",
+                        if s.flatten {
+                            "items · subfolders included"
                         } else {
-                            Some(e.size)
+                            "results"
                         }
-                    })
-                    .sum();
-                ui.label(small(format!(
-                    "·  {n} selected ({})",
-                    util::human_size(bytes)
-                )));
+                    )));
+                    if s.running {
+                        ui.add(egui::Spinner::new().size(11.0).color(pal().dim));
+                        ui.label(small("searching".into()));
+                    }
+                } else {
+                    let (mut dirs, mut files, mut bytes) = (0usize, 0usize, 0u64);
+                    let mut all_known = true;
+                    for &i in &tab.view {
+                        let e = &tab.entries[i];
+                        if e.is_dir {
+                            dirs += 1;
+                            match self.sizes.get(&e.path) {
+                                Some(s) => bytes += s,
+                                None => all_known &= e.is_link,
+                            }
+                        } else {
+                            files += 1;
+                            bytes += e.size;
+                        }
+                    }
+                    ui.label(small(format!(
+                        "{} items  ·  {dirs} folders, {files} files",
+                        tab.view.len()
+                    )));
+                    ui.label(small(format!(
+                        "·  {}{}",
+                        util::human_size(bytes),
+                        if all_known { "" } else { "+" }
+                    )));
+                    if tab
+                        .entries
+                        .iter()
+                        .any(|e| e.is_dir && self.sizing.contains(&e.path))
+                    {
+                        ui.add(egui::Spinner::new().size(11.0).color(pal().dim));
+                    }
+                }
+                let n = tab.selection_count();
+                if n > 1 {
+                    let bytes: u64 = tab
+                        .entries
+                        .iter()
+                        .filter(|e| tab.marked.contains(&e.path))
+                        .filter_map(|e| {
+                            if e.is_dir {
+                                self.sizes.get(&e.path).copied()
+                            } else {
+                                Some(e.size)
+                            }
+                        })
+                        .sum();
+                    ui.label(small(format!(
+                        "·  {n} selected ({})",
+                        util::human_size(bytes)
+                    )));
+                }
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if let Some(job) = &job {
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
                     let cancel = ui
                         .add(
                             egui::Button::new(RichText::new("×").size(14.0))
@@ -1090,6 +1093,20 @@ impl App {
                                 .desired_height(8.0)
                                 .fill(pal().accent),
                         );
+                        let rate = job.throughput(Instant::now());
+                        let speed = rate.map_or_else(|| "— /s".into(), |r| {
+                            format!("{}/s", util::human_size(r.bytes_per_second as u64))
+                        });
+                        let eta = if job.bytes_done >= job.bytes_total {
+                            "Finishing…".into()
+                        } else {
+                            rate.and_then(|r| r.remaining).map_or_else(
+                                || "ETA —".into(),
+                                |remaining| format!("ETA {}", util::eta(remaining)),
+                            )
+                        };
+                        ui.label(small(format!("{speed} · {eta}")))
+                            .on_hover_text("Estimated from recent processed bytes. Archives measure input data; finalizing may take longer.");
                         ui.label(small(format!(
                             "{:.0}%  ·  {} / {}",
                             frac * 100.0,
@@ -1104,11 +1121,11 @@ impl App {
                     } else {
                         String::new()
                     };
-                    ui.label(
+                    ui.add(egui::Label::new(
                         RichText::new(format!("{}{extra}", job.title))
                             .size(12.0)
                             .color(pal().text),
-                    );
+                    ).truncate()).on_hover_text(&job.title);
                 } else if let Some((free, total)) = tab.disk {
                     ui.label(small(format!(
                         "{} free of {}",
