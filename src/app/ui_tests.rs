@@ -3364,3 +3364,220 @@ fn picker_confirms_from_name_field_with_ctrl_enter() {
     );
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn creating_folder_selects_reveals_and_keyboard_opens_it_in_every_view() {
+    let modes = [ViewMode::Details, ViewMode::List, ViewMode::Columns]
+        .into_iter()
+        .chain((0..crate::tab::ICON_SIZES.len()).map(ViewMode::Icons));
+    for (index, mode) in modes.enumerate() {
+        let dir = sandbox(&format!("create-focus-{index}"));
+        for number in 0..160 {
+            fs::create_dir(dir.join(format!("folder-{number:03}"))).unwrap();
+        }
+        let target = dir.join("zz-created");
+        let mut d = Driver::new(dir.clone());
+        d.app.show_sidebar = false;
+        d.app.show_preview = false;
+        d.until("listing", |a| !a.tab().loading);
+        d.app.set_view(mode);
+        // A creation must reveal its result even when the old filter excludes it.
+        d.frame(vec![Event::Text("a.txt".into())]);
+        d.app.run_cmd(Cmd::NewFolder);
+        d.frame(Vec::new());
+        d.frame(vec![Event::Paste("zz-created".into())]);
+        d.frame(vec![press(Key::Enter, Modifiers::NONE)]);
+        d.until("new folder selected", |a| {
+            !a.tab().loading && a.tab().cursor_entry().is_some_and(|e| e.path == target)
+        });
+        for _ in 0..4 {
+            d.frame(Vec::new());
+        }
+        assert!(target.is_dir(), "{mode:?}: folder exists");
+        assert_eq!(d.app.tab().path, dir, "{mode:?}: stay in parent");
+        assert_eq!(
+            d.app.tab().targets(),
+            vec![target.clone()],
+            "{mode:?}: only new folder selected"
+        );
+        let row = d.row(&target);
+        assert!(
+            row.center().y > 70.0 && row.center().y < 874.0,
+            "{mode:?}: new folder must be in the viewport: {row:?}"
+        );
+        assert!(
+            !d.ctx.text_edit_focused(),
+            "{mode:?}: keyboard leaves dialog"
+        );
+        d.frame(vec![press(Key::Enter, Modifiers::NONE)]);
+        d.until("keyboard opens new folder", |a| a.tab().path == target);
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
+fn creating_hidden_folder_reveals_it_and_failed_creation_keeps_selection() {
+    let dir = sandbox("create-hidden-focus");
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| !a.tab().loading);
+    d.app.show_hidden = false;
+    d.app.create(&dir, ".created", NewKind::Folder);
+    let target = dir.join(".created");
+    d.until("hidden folder selected", |a| {
+        !a.tab().loading && a.tab().cursor_entry().is_some_and(|e| e.path == target)
+    });
+    d.app.create(&dir, ".created", NewKind::Folder);
+    assert_eq!(d.app.tab().targets(), vec![target]);
+    assert!(d.app.tab().select_after_load.is_none());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn pending_created_folder_focus_stays_with_its_miller_column() {
+    let (dir, mut d) = columns_driver("create-column-pending");
+    let original = d.app.tab().columns.as_ref().unwrap().active;
+    d.app.create(&dir, "new-column-folder", NewKind::Folder);
+    d.app.column_step(-1);
+    assert_ne!(d.app.tab().path, dir);
+    assert!(
+        !d.app.tab().center_after_load,
+        "pending centering belongs to the original directory"
+    );
+    d.until("passive column creation loaded", |a| {
+        !a.tab().columns.as_ref().unwrap().items[original].loading
+    });
+    let id = d.app.tab().id;
+    assert!(d.app.activate_column_path(id, &dir));
+    d.frame(Vec::new());
+    assert_eq!(d.app.tab().targets(), vec![dir.join("new-column-folder")]);
+    assert!(!d.app.tab().center_after_load);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn collapsed_navigation_keeps_clickable_icons_and_named_tooltips() {
+    let dir = sandbox("sidebar-rail");
+    let destination = dir.join("dest");
+    let mut d = Driver::new(dir.clone());
+    d.app.places.bookmarks = vec![("Test project".into(), destination.clone())];
+    d.app.collapsed.insert("BOOKMARKS");
+    d.frame(Vec::new());
+    let expanded_left = d.app.pane_rects[0].left();
+    d.app.run_cmd(Cmd::ToggleSidebar);
+    for _ in 0..30 {
+        d.frame(Vec::new());
+    }
+    let rail_left = d.app.pane_rects[0].left();
+    assert!(
+        (45.0..=65.0).contains(&rail_left),
+        "navigation must remain as a narrow rail: {rail_left}"
+    );
+    assert!(expanded_left - rail_left > 100.0);
+    let icon = d
+        .ctx
+        .data(|data| data.get_temp::<Rect>(egui::Id::new(("sidebar_item", &destination))))
+        .unwrap();
+    assert!(icon.center().x < rail_left);
+    d.move_to(icon.center());
+    for _ in 0..30 {
+        d.frame(Vec::new());
+    }
+    assert!(
+        d.texts
+            .iter()
+            .any(|(text, _)| text.contains("Test project")),
+        "icon tooltip names its destination"
+    );
+    d.button(true);
+    d.button(false);
+    assert_eq!(d.app.tab().path, destination);
+    d.app.run_cmd(Cmd::ToggleSidebar);
+    for _ in 0..30 {
+        d.frame(Vec::new());
+    }
+    assert!(d.app.show_sidebar);
+    assert!(
+        (d.app.pane_rects[0].left() - expanded_left).abs() < 2.0,
+        "expanded width restored"
+    );
+    assert!(
+        d.app.collapsed.contains("BOOKMARKS"),
+        "rail does not change expanded group preferences"
+    );
+    d.app.run_cmd(Cmd::ToggleSidebar);
+    for _ in 0..30 {
+        d.frame(Vec::new());
+    }
+    let edge = d.app.pane_rects[0].left();
+    d.move_to(Pos2::new(edge - 1.0, 400.0));
+    d.button(true);
+    d.move_to(Pos2::new(edge + 160.0, 400.0));
+    d.button(false);
+    for _ in 0..30 {
+        d.frame(Vec::new());
+    }
+    assert!(
+        d.app.show_sidebar,
+        "dragging the rail edge expands navigation"
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn view_picker_switches_modes_preserves_icon_size_and_targets_the_clicked_pane() {
+    let dir = sandbox("view-icons");
+    let mut d = Driver::new(dir.clone());
+    d.app.show_preview = false;
+    d.until("listing", |a| !a.tab().loading);
+    let choose = |d: &mut Driver, label: &str| {
+        d.frame(Vec::new());
+        let rect = d
+            .ctx
+            .data(|data| data.get_temp::<Rect>(egui::Id::new(("toolbar_button", "View mode"))))
+            .unwrap();
+        d.move_to(rect.center());
+        d.button(true);
+        d.button(false);
+        d.frame(Vec::new());
+        d.click_text(&format!("      {label}"));
+    };
+    for (label, mode) in [
+        ("List", ViewMode::List),
+        ("Icons", ViewMode::Icons(2)),
+        ("Miller columns", ViewMode::Columns),
+        ("Details", ViewMode::Details),
+    ] {
+        choose(&mut d, label);
+        assert_eq!(d.app.tab().mode, mode);
+    }
+    d.app.set_view(ViewMode::Icons(5));
+    choose(&mut d, "Icons");
+    assert_eq!(d.app.tab().mode, ViewMode::Icons(5));
+    d.app.toggle_split();
+    d.app.active_pane = 0;
+    choose(&mut d, "List");
+    assert_eq!(
+        d.app.active_pane, 1,
+        "right pane toolbar activates its own pane"
+    );
+    assert_eq!(d.app.tab().mode, ViewMode::List);
+    assert_eq!(d.app.panes[0].tabs[0].mode, ViewMode::Icons(5));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn navigation_hotkeys_work_without_toolbar_arrow_buttons() {
+    let dir = sandbox("toolbar-navigation");
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| !a.tab().loading);
+    d.app.navigate(dir.join("dest"), History::Push);
+    d.modifiers = Modifiers::ALT;
+    d.frame(vec![press(Key::ArrowLeft, Modifiers::ALT)]);
+    assert_eq!(d.app.tab().path, dir);
+    d.frame(vec![press(Key::ArrowRight, Modifiers::ALT)]);
+    assert_eq!(d.app.tab().path, dir.join("dest"));
+    d.modifiers = Modifiers::NONE;
+    d.frame(vec![press(Key::Backspace, Modifiers::NONE)]);
+    assert_eq!(d.app.tab().path, dir);
+    fs::remove_dir_all(dir).unwrap();
+}

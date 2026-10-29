@@ -74,7 +74,11 @@ pub const COMMANDS: &[(Cmd, &str, &str)] = &[
     ),
     (Cmd::ZoomOut, "Smaller view", "Ctrl+Wheel down"),
     (Cmd::TogglePreview, "Toggle preview panel", "Space / F3"),
-    (Cmd::ToggleSidebar, "Toggle sidebar", "Ctrl+B"),
+    (
+        Cmd::ToggleSidebar,
+        "Expand / collapse sidebar labels",
+        "Ctrl+B",
+    ),
     (Cmd::BookmarkFolder, "Bookmark this folder", ""),
     (Cmd::ToggleHidden, "Toggle hidden files", "Ctrl+H"),
     (Cmd::NewFolder, "New folder", "Ctrl+Shift+N"),

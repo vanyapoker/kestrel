@@ -46,7 +46,7 @@ the next release.
 | F6 or Ctrl+\ / Tab | Toggle split / switch pane |
 | Ctrl+G / Ctrl+Shift+M | Icons and details / Miller columns |
 | Space or F3 | Preview |
-| Ctrl+H / Ctrl+B | Hidden files / sidebar |
+| Ctrl+H / Ctrl+B | Hidden files / expand or collapse navigation labels |
 | Ctrl+scroll | View size |
 | Ctrl+C / Ctrl+X / Ctrl+V | Copy / cut / paste |
 | Ctrl+Z / Ctrl+D | Undo / duplicate |

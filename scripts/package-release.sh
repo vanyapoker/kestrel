@@ -27,6 +27,7 @@ install -Dm644 assets/kestrel.desktop "$bundle/assets/kestrel.desktop"
 install -Dm644 assets/kestrel.svg "$bundle/assets/kestrel.svg"
 install -Dm644 LICENSE "$bundle/LICENSE"
 install -Dm644 README.md "$bundle/README.md"
+install -Dm644 docs/usage.md "$bundle/docs/usage.md"
 printf '%s\n' "$version" > "$bundle/VERSION"
 {
     printf 'Kestrel %s\nTarget: Linux x86_64 (GNU libc)\n' "$version"

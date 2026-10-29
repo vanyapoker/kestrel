@@ -31,9 +31,10 @@ pub(super) fn chevron(p: &Painter, c: Pos2, open: bool, color: Color32) {
 
 #[derive(Clone, Copy)]
 pub(super) enum Glyph {
-    Back,
-    Forward,
-    Up,
+    Details,
+    List,
+    Icons,
+    Columns,
     Refresh,
     Plus,
     Eye,
@@ -49,9 +50,14 @@ pub(super) fn glyph_button(ui: &mut Ui, glyph: Glyph, enabled: bool, on: bool, t
             enabled,
             egui::Button::new("")
                 .frame_when_inactive(false)
+                .selected(on)
                 .min_size(vec2(28.0, 26.0)),
         )
         .on_hover_text(tip);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, tip));
+    #[cfg(test)]
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(egui::Id::new(("toolbar_button", tip)), resp.rect));
     let color = if !enabled {
         pal().faint
     } else if on {
@@ -69,14 +75,38 @@ pub(super) fn paint_glyph(p: &Painter, c: Pos2, glyph: Glyph, color: Color32) {
     let stroke = Stroke::new(1.6, color);
     let pt = |x: f32, y: f32| c + vec2(x, y);
     match glyph {
-        Glyph::Back => {
-            p.line(vec![pt(2.5, -5.0), pt(-2.5, 0.0), pt(2.5, 5.0)], stroke);
+        Glyph::Details => {
+            for y in [-5.0, 0.0, 5.0] {
+                p.line_segment([pt(-7.0, y), pt(2.0, y)], stroke);
+                p.line_segment([pt(5.0, y), pt(7.0, y)], stroke);
+            }
         }
-        Glyph::Forward => {
-            p.line(vec![pt(-2.5, -5.0), pt(2.5, 0.0), pt(-2.5, 5.0)], stroke);
+        Glyph::List => {
+            for y in [-5.0, 0.0, 5.0] {
+                p.line_segment([pt(-7.0, y), pt(7.0, y)], stroke);
+            }
         }
-        Glyph::Up => {
-            p.line(vec![pt(-5.0, 2.5), pt(0.0, -2.5), pt(5.0, 2.5)], stroke);
+        Glyph::Icons => {
+            for x in [-4.5, 4.5] {
+                for y in [-4.5, 4.5] {
+                    p.rect_stroke(
+                        Rect::from_center_size(pt(x, y), vec2(5.0, 5.0)),
+                        CornerRadius::same(1),
+                        stroke,
+                        egui::StrokeKind::Middle,
+                    );
+                }
+            }
+        }
+        Glyph::Columns => {
+            for x in [-6.0, 0.0, 6.0] {
+                p.rect_stroke(
+                    Rect::from_center_size(pt(x, 0.0), vec2(3.0, 13.0)),
+                    CornerRadius::same(1),
+                    stroke,
+                    egui::StrokeKind::Middle,
+                );
+            }
         }
         Glyph::Plus => {
             p.line_segment([pt(-5.0, 0.0), pt(5.0, 0.0)], stroke);

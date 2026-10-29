@@ -349,6 +349,8 @@ impl App {
             return;
         }
 
+        // Virtualization and cursor scrolling must use the same row stride.
+        ui.spacing_mut().item_spacing.y = 0.0;
         let scroll = scroll_area(tab, ("list", tab.id), ROW_H, 1);
         let ctrl_shift = ui.input(|i| (i.modifiers.ctrl, i.modifiers.shift));
         let pointer = ui.input(|i| i.pointer.hover_pos());
@@ -465,6 +467,8 @@ impl App {
             return;
         }
         let rows = tab.view.len().div_ceil(cols);
+        // Set spacing before show_rows computes which rows are visible.
+        ui.spacing_mut().item_spacing.y = 0.0;
         let scroll = scroll_area(tab, ("grid", tab.id), cell.y, cols);
         let ctrl_shift = ui.input(|i| (i.modifiers.ctrl, i.modifiers.shift));
         let gap = ((full.width() - 8.0) - cols as f32 * cell.x) / cols as f32;

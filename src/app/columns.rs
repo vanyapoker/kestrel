@@ -30,6 +30,8 @@ fn swap_directory(a: &mut Tab, b: &mut Tab) {
         generation,
         cancel,
         select_after_load,
+        center_after_load,
+        center_cursor,
         scroll_to_cursor,
         force_offset,
         scroll_offset,

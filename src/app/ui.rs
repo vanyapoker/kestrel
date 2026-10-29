@@ -89,17 +89,29 @@ impl App {
         let width = ui.available_width();
         // Both can be toggled, or dragged closed past their minimum width and back open.
         let mut show = self.show_sidebar;
-        Panel::left("sidebar")
+        let sidebar_frame = || {
+            Frame::new()
+                .fill(pal().panel)
+                .inner_margin(Margin::symmetric(8, 4))
+        };
+        let rail = Panel::left("sidebar_rail")
+            .exact_size(48.0)
+            .resizable(true)
+            .frame(sidebar_frame());
+        let expanded = Panel::left("sidebar")
             .default_size(self.sidebar_width)
             .min_size(120.0_f32.min(width * 0.25))
             .max_size((width * 0.25).max(120.0))
-            .drag_to_open(true)
-            .frame(
-                Frame::new()
-                    .fill(pal().panel)
-                    .inner_margin(Margin::symmetric(8, 4)),
-            )
-            .show_collapsible(ui, &mut show, |ui| self.sidebar(ui, &mut actions));
+            .resizable(true)
+            .frame(sidebar_frame());
+        Panel::show_switched(ui, &mut show, rail, expanded, |ui, expanded| {
+            let mode = if expanded {
+                sidebar::SidebarMode::Expanded
+            } else {
+                sidebar::SidebarMode::Rail
+            };
+            self.sidebar(ui, mode, &mut actions);
+        });
         self.show_sidebar = show;
         let mut show = self.show_preview;
         Panel::right("preview")
@@ -687,49 +699,17 @@ impl App {
         ui.horizontal_centered(|ui| {
             if p == 0 {
                 let tip = if self.show_sidebar {
-                    "Hide sidebar (Ctrl+B)"
+                    "Collapse navigation to icons (Ctrl+B)"
                 } else {
-                    "Show sidebar (Ctrl+B)"
+                    "Expand navigation labels (Ctrl+B)"
                 };
                 if glyph_button(ui, Glyph::Sidebar, true, self.show_sidebar, tip) {
                     actions.push(Action::Cmd(Cmd::ToggleSidebar));
                 }
             }
-            let pane = &self.panes[p];
-            let tab = &pane.tabs[pane.active];
-            let mut nav = |cmd| {
-                actions.push(Action::FocusPane(p));
-                actions.push(Action::Cmd(cmd));
-            };
-            if glyph_button(
-                ui,
-                Glyph::Back,
-                !tab.back.is_empty(),
-                false,
-                "Back (Alt+Left)",
-            ) {
-                nav(Cmd::Back);
-            }
-            if glyph_button(
-                ui,
-                Glyph::Forward,
-                !tab.fwd.is_empty(),
-                false,
-                "Forward (Alt+Right)",
-            ) {
-                nav(Cmd::Forward);
-            }
-            if glyph_button(
-                ui,
-                Glyph::Up,
-                tab.path.parent().is_some(),
-                false,
-                "Up (Backspace)",
-            ) {
-                nav(Cmd::GoUp);
-            }
             if glyph_button(ui, Glyph::Refresh, true, false, "Refresh (F5)") {
-                nav(Cmd::Refresh);
+                actions.push(Action::FocusPane(p));
+                actions.push(Action::Cmd(Cmd::Refresh));
             }
             ui.add_space(6.0);
 
@@ -770,57 +750,84 @@ impl App {
                 }
                 let pane = &self.panes[p];
                 let tab = &pane.tabs[pane.active];
-                if !compact {
-                    ui.menu_button("View", |ui| {
-                        for (mode, label) in [
-                            (ViewMode::Details, "Details"),
-                            (ViewMode::List, "List"),
-                            (ViewMode::Icons(2), "Icons"),
-                            (ViewMode::Columns, "Miller columns"),
-                        ] {
-                            let selected = tab.mode == mode
-                                || (mode == ViewMode::Icons(2)
-                                    && matches!(tab.mode, ViewMode::Icons(_)));
-                            let shortcut = match mode {
-                                ViewMode::Columns => "Ctrl+Shift+M",
-                                ViewMode::Details if tab.mode.is_grid() => "Ctrl+G",
-                                ViewMode::Icons(_) if !tab.mode.is_grid() => "Ctrl+G",
-                                _ => "",
-                            };
-                            if ui
-                                .add(
-                                    egui::Button::new(label)
+                if !editing {
+                    let active_glyph = match tab.mode {
+                        ViewMode::Details => Glyph::Details,
+                        ViewMode::List => Glyph::List,
+                        ViewMode::Icons(_) => Glyph::Icons,
+                        ViewMode::Columns => Glyph::Columns,
+                    };
+                    let button = egui::Button::new("")
+                        .frame_when_inactive(false)
+                        .min_size(vec2(40.0, 26.0));
+                    let (response, _) =
+                        egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
+                            ui.set_min_width(180.0);
+                            for (mode, glyph, label, shortcut) in [
+                                (ViewMode::Details, Glyph::Details, "Details", "Ctrl+G"),
+                                (ViewMode::List, Glyph::List, "List", ""),
+                                (ViewMode::Icons(2), Glyph::Icons, "Icons", "Ctrl+G"),
+                                (
+                                    ViewMode::Columns,
+                                    Glyph::Columns,
+                                    "Miller columns",
+                                    "Ctrl+Shift+M",
+                                ),
+                            ] {
+                                let selected = tab.mode == mode
+                                    || matches!(
+                                        (tab.mode, mode),
+                                        (ViewMode::Icons(_), ViewMode::Icons(_))
+                                    );
+                                let choice = ui.add(
+                                    egui::Button::new(format!("      {label}"))
                                         .selected(selected)
                                         .shortcut_text(shortcut),
-                                )
-                                .clicked()
-                            {
-                                actions.push(Action::FocusPane(p));
-                                actions.push(Action::SetView(mode));
-                                ui.close();
+                                );
+                                paint_glyph(
+                                    ui.painter(),
+                                    Pos2::new(choice.rect.left() + 14.0, choice.rect.center().y),
+                                    glyph,
+                                    if selected { pal().accent } else { pal().dim },
+                                );
+                                if choice.clicked() {
+                                    actions.push(Action::FocusPane(p));
+                                    // Keep the chosen thumbnail size when reselecting Icons.
+                                    if !selected {
+                                        actions.push(Action::SetView(mode));
+                                    }
+                                    ui.close();
+                                }
                             }
-                        }
-                        ui.separator();
-                        ui.label(
-                            RichText::new("Ctrl+G · Icons / Details")
-                                .small()
-                                .color(pal().dim),
-                        );
-                        ui.label(
-                            RichText::new("Ctrl+scroll · Details → List → Icons")
-                                .small()
-                                .color(pal().dim),
-                        );
-                        if tab.mode == ViewMode::Columns {
-                            ui.label(
-                                RichText::new("Zoom is inactive in columns")
-                                    .small()
-                                    .color(pal().dim),
-                            );
-                        }
-                    })
-                    .response
-                    .on_hover_text("View mode · columns: Ctrl+Shift+M · icons/details: Ctrl+G");
+                        });
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "View mode")
+                    });
+                    paint_glyph(
+                        ui.painter(),
+                        response.rect.center() - vec2(5.0, 0.0),
+                        active_glyph,
+                        if response.hovered() {
+                            pal().text
+                        } else {
+                            pal().accent
+                        },
+                    );
+                    chevron(
+                        ui.painter(),
+                        response.rect.center() + vec2(11.0, 0.0),
+                        true,
+                        pal().dim,
+                    );
+                    #[cfg(test)]
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(
+                            egui::Id::new(("toolbar_button", "View mode")),
+                            response.rect,
+                        )
+                    });
+                    response
+                        .on_hover_text("View mode · Ctrl+G: icons/details · Ctrl+Shift+M: columns");
                 }
                 if (!compact || tab.search.is_some())
                     && glyph_button(

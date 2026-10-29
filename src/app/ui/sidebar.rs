@@ -14,8 +14,15 @@ use super::{
     bookmark_zone, chevron, disk_usage, drop_hover, eject_icon, record_folder, take_file_drop,
 };
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum SidebarMode {
+    Expanded,
+    Rail,
+}
+
 impl App {
-    pub(in crate::app) fn sidebar(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
+    pub(super) fn sidebar(&mut self, ui: &mut Ui, mode: SidebarMode, actions: &mut Vec<Action>) {
+        let compact = mode == SidebarMode::Rail;
         // Folders being dragged can be dropped on the Bookmarks section to bookmark them.
         let dragged_dirs: Vec<PathBuf> = self
             .dragging
@@ -44,39 +51,45 @@ impl App {
                     }
                     ui.add_space(8.0);
                     let collapsed = self.collapsed.contains(title);
-                    let (hrect, header) =
-                        ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::click());
-                    let hot = header.hovered();
-                    let color = if hot { pal().dim } else { pal().faint };
-                    ui.painter().text(
-                        Pos2::new(hrect.left() + 2.0, hrect.center().y),
-                        Align2::LEFT_CENTER,
-                        title,
-                        FontId::proportional(10.5),
-                        color,
-                    );
-                    if hot || collapsed {
-                        chevron(
-                            ui.painter(),
-                            Pos2::new(hrect.right() - 8.0, hrect.center().y),
-                            !collapsed,
+                    if compact {
+                        if title != "PLACES" {
+                            ui.separator();
+                        }
+                    } else {
+                        let (hrect, header) = ui
+                            .allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::click());
+                        let hot = header.hovered();
+                        let color = if hot { pal().dim } else { pal().faint };
+                        ui.painter().text(
+                            Pos2::new(hrect.left() + 2.0, hrect.center().y),
+                            Align2::LEFT_CENTER,
+                            title,
+                            FontId::proportional(10.5),
                             color,
                         );
-                    }
-                    if header.clicked() {
-                        actions.push(Action::ToggleSection(title));
-                    }
-                    if can_drop && bookmark_zone(ui, &header, &dragged_dirs, actions) {
-                        ui.painter().rect_stroke(
-                            hrect,
-                            CornerRadius::same(5),
-                            Stroke::new(1.5, pal().accent),
-                            egui::StrokeKind::Inside,
-                        );
-                    }
-                    ui.add_space(2.0);
-                    if collapsed {
-                        continue;
+                        if hot || collapsed {
+                            chevron(
+                                ui.painter(),
+                                Pos2::new(hrect.right() - 8.0, hrect.center().y),
+                                !collapsed,
+                                color,
+                            );
+                        }
+                        if header.clicked() {
+                            actions.push(Action::ToggleSection(title));
+                        }
+                        if can_drop && bookmark_zone(ui, &header, &dragged_dirs, actions) {
+                            ui.painter().rect_stroke(
+                                hrect,
+                                CornerRadius::same(5),
+                                Stroke::new(1.5, pal().accent),
+                                egui::StrokeKind::Inside,
+                            );
+                        }
+                        ui.add_space(2.0);
+                        if collapsed {
+                            continue;
+                        }
                     }
                     for (name, path) in items {
                         let device = if title == "DEVICES" {
@@ -87,8 +100,14 @@ impl App {
                         let unmounted = device.is_some_and(|d| d.mount.is_none());
                         let busy = device.is_some_and(|d| self.dev_busy.contains(&d.dev));
                         let ejectable = device.is_some_and(|d| d.removable && d.mount.is_some());
-                        let (rect, resp) = ui
-                            .allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
+                        let (rect, resp) = ui.allocate_exact_size(
+                            vec2(ui.available_width(), if compact { 34.0 } else { 26.0 }),
+                            Sense::click(),
+                        );
+                        #[cfg(test)]
+                        ui.ctx().data_mut(|d| {
+                            d.insert_temp(egui::Id::new(("sidebar_item", path)), rect)
+                        });
                         let selected = *path == cur;
                         let drop_target = !unmounted && drop_hover(&resp, path);
                         if !unmounted {
@@ -99,7 +118,7 @@ impl App {
                             Pos2::new(rect.right() - 13.0, rect.center().y),
                             vec2(20.0, 20.0),
                         );
-                        let eject = (ejectable && !busy).then(|| {
+                        let eject = (ejectable && !busy && !compact).then(|| {
                             ui.interact(eject_rect, ui.id().with(("eject", path)), Sense::click())
                         });
                         let painter = ui.painter();
@@ -129,27 +148,33 @@ impl App {
                         };
                         draw_place(
                             painter,
-                            Pos2::new(rect.left() + 14.0, rect.center().y),
+                            if compact {
+                                rect.center()
+                            } else {
+                                Pos2::new(rect.left() + 14.0, rect.center().y)
+                            },
                             kind,
                             icon_color,
                         );
-                        let mut text_rect = rect.shrink(2.0);
-                        if ejectable || busy {
-                            text_rect.max.x = eject_rect.left();
+                        if !compact {
+                            let mut text_rect = rect.shrink(2.0);
+                            if ejectable || busy {
+                                text_rect.max.x = eject_rect.left();
+                            }
+                            painter.with_clip_rect(text_rect).text(
+                                Pos2::new(rect.left() + 30.0, rect.center().y),
+                                Align2::LEFT_CENTER,
+                                name,
+                                FontId::proportional(BODY),
+                                if selected {
+                                    pal().text
+                                } else if unmounted {
+                                    pal().faint
+                                } else {
+                                    pal().dim
+                                },
+                            );
                         }
-                        painter.with_clip_rect(text_rect).text(
-                            Pos2::new(rect.left() + 30.0, rect.center().y),
-                            Align2::LEFT_CENTER,
-                            name,
-                            FontId::proportional(BODY),
-                            if selected {
-                                pal().text
-                            } else if unmounted {
-                                pal().faint
-                            } else {
-                                pal().dim
-                            },
-                        );
                         // Thin usage bar along the bottom of a mounted drive's row.
                         let usage = device
                             .filter(|_| !unmounted)
@@ -175,7 +200,14 @@ impl App {
                         }
                         if busy {
                             let spin = egui::Spinner::new().size(11.0).color(pal().dim);
-                            ui.put(eject_rect, spin);
+                            ui.put(
+                                if compact {
+                                    rect.shrink(6.0)
+                                } else {
+                                    eject_rect
+                                },
+                                spin,
+                            );
                         }
                         if let Some(eject) = eject {
                             if eject.hovered() {
@@ -217,7 +249,7 @@ impl App {
                         } else {
                             path.display().to_string()
                         };
-                        let resp = resp.on_hover_text(hover);
+                        let resp = resp.on_hover_text(format!("{name}\n{hover}"));
                         if resp.clicked() && !busy {
                             actions.push(match device {
                                 Some(d) if unmounted => Action::Device(DevOp::Mount, d.dev.clone()),
@@ -304,19 +336,25 @@ impl App {
                         );
                         draw_emblem(
                             painter,
-                            Pos2::new(rect.left() + 14.0, rect.center().y),
+                            if compact {
+                                rect.center()
+                            } else {
+                                Pos2::new(rect.left() + 14.0, rect.center().y)
+                            },
                             fsops::Special::Bookmark,
                             0.9,
                             if hot { pal().accent } else { pal().dim },
                             1.4,
                         );
-                        painter.text(
-                            Pos2::new(rect.left() + 30.0, rect.center().y),
-                            Align2::LEFT_CENTER,
-                            "Drop to bookmark",
-                            FontId::proportional(12.5),
-                            if hot { pal().text } else { pal().dim },
-                        );
+                        if !compact {
+                            painter.text(
+                                Pos2::new(rect.left() + 30.0, rect.center().y),
+                                Align2::LEFT_CENTER,
+                                "Drop to bookmark",
+                                FontId::proportional(12.5),
+                                if hot { pal().text } else { pal().dim },
+                            );
+                        }
                     }
                 }
             });

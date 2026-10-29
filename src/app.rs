@@ -1601,10 +1601,18 @@ impl App {
         match res {
             Ok(()) => {
                 self.push_undo(ops::Undo::TrashCreated(vec![target.clone()]));
+                // The result must be visible even if creation started from a filtered view.
+                if name.starts_with('.') && !self.show_hidden {
+                    self.show_hidden = true;
+                    self.refilter_all();
+                }
                 let tab = self.tab_mut();
+                tab.filter.clear();
                 tab.marked.clear();
                 tab.select_after_load = Some(target);
                 tab.center_after_load = true;
+                self.ctx
+                    .memory_mut(|m| m.surrender_focus(egui::Id::new("dialog_name")));
                 self.reload_active(true);
             }
             Err(e) => self.toast_error(format!("Couldn't create \"{name}\": {e}")),
