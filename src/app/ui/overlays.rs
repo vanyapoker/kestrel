@@ -450,6 +450,13 @@ impl App {
                         if ui.button("Cancel").clicked() { cancel = true; }
                     });
                 }
+                Dialog::ConfirmOverwrite { path } => {
+                    ui.label(RichText::new("Replace existing file?").size(15.0).strong());
+                    ui.add_space(6.0);
+                    ui.label(format!("“{}” already exists in this folder.", ops_name(path)));
+                    ui.label(RichText::new("Saving will replace its contents.").color(pal().dim));
+                    dialog_buttons(ui, "Replace", true, &mut confirm, &mut cancel);
+                }
                 Dialog::ConfirmDelete { paths } => {
                     ui.label(RichText::new("Delete permanently?").size(15.0).strong());
                     ui.add_space(6.0);
@@ -493,6 +500,12 @@ impl App {
             match self.dialog.take() {
                 Some(Dialog::SaveWorkspace { name, .. }) => self.save_workspace(&name),
                 Some(Dialog::Workspaces) => {}
+                Some(Dialog::ConfirmOverwrite { path }) => {
+                    if let Some(p) = &mut self.picker {
+                        p.chosen = vec![path];
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                }
                 Some(Dialog::BatchRename(editor)) => {
                     if let Some(plan) = editor.plan.filter(|p| p.valid()) {
                         let pairs = plan.changes();

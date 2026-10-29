@@ -67,6 +67,9 @@ enum Dialog {
         kind: NewKind,
         focus: bool,
     },
+    ConfirmOverwrite {
+        path: PathBuf,
+    },
     ConfirmDelete {
         paths: Vec<PathBuf>,
     },
@@ -1910,7 +1913,9 @@ impl App {
                     .into_iter()
                     .filter(|f| tab.entries.iter().any(|e| &e.path == f && e.is_dir))
                     .collect();
-                if p.req.multiple {
+                if dirs.is_empty() {
+                    vec![tab.path.clone()]
+                } else if p.req.multiple {
                     dirs
                 } else {
                     dirs.into_iter().take(1).collect()
@@ -1918,7 +1923,12 @@ impl App {
             }
             Kind::Save => {
                 let name = p.name.trim();
-                if name.is_empty() || name.contains('/') || name == "." || name == ".." {
+                if name.is_empty()
+                    || name.contains(['/', '\0'])
+                    || name == "."
+                    || name == ".."
+                    || tab.path.join(name).is_dir()
+                {
                     Vec::new()
                 } else {
                     vec![tab.path.join(name)]
@@ -1930,6 +1940,15 @@ impl App {
     fn pick_confirm(&mut self) {
         let chosen = self.pick_choice();
         if chosen.is_empty() {
+            return;
+        }
+        if self
+            .picker
+            .as_ref()
+            .is_some_and(|p| p.req.kind == crate::picker::Kind::Save)
+            && let Some(path) = chosen.first().filter(|p| p.exists())
+        {
+            self.dialog = Some(Dialog::ConfirmOverwrite { path: path.clone() });
             return;
         }
         if let Some(p) = &mut self.picker {
@@ -2193,6 +2212,24 @@ impl App {
         }
         if self.palette.open || self.dialog.is_some() {
             return; // they handle their own keys
+        }
+        if self.picker.is_some() {
+            if ctx.input_mut(|i| take(i, Modifiers::NONE, Key::Escape)) {
+                if !self.tab().filter.is_empty() {
+                    self.apply(Action::ClearFilter);
+                } else {
+                    self.apply(Action::PickCancel);
+                }
+                return;
+            }
+            if ctx.input_mut(|i| take(i, Modifiers::COMMAND, Key::Enter)) {
+                self.pick_confirm();
+                return;
+            }
+            if ctx.input_mut(|i| take(i, Modifiers::COMMAND, Key::L)) {
+                self.run_cmd(Cmd::EditPath);
+                return;
+            }
         }
         if ctx.input_mut(|i| take(i, Modifiers::COMMAND, Key::K)) {
             self.palette.show_goto();

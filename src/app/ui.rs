@@ -65,7 +65,17 @@ impl App {
                     .inner_margin(Margin::symmetric(12, 2)),
             )
             .show(ui, |ui| self.status_bar(ui));
-        if self.picker.is_some() {
+        if let Some(picker) = &self.picker {
+            Panel::top("picker_heading")
+                .exact_size(40.0)
+                .frame(
+                    Frame::new()
+                        .fill(pal().panel)
+                        .inner_margin(Margin::symmetric(12, 8)),
+                )
+                .show(ui, |ui| {
+                    ui.label(RichText::new(picker.req.heading()).size(17.0).strong());
+                });
             Panel::bottom("picker")
                 .exact_size(44.0)
                 .frame(
@@ -193,7 +203,11 @@ impl App {
         if self.show_preview {
             self.sync_inspector();
         }
-        let title = format!("{} — Kestrel", self.tab().path.display());
+        let title = if let Some(picker) = &self.picker {
+            format!("{} — Kestrel", picker.req.heading())
+        } else {
+            format!("{} — Kestrel", self.tab().path.display())
+        };
         if title != self.window_title {
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));

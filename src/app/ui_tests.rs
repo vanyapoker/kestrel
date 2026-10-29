@@ -2276,6 +2276,7 @@ fn picker_app(dir: &Path, kind: crate::picker::Kind, name: &str) -> Driver {
         kind,
         multiple: false,
         title: String::new(),
+        accept_label: String::new(),
         dir: None,
         name: name.into(),
     };
@@ -3309,5 +3310,57 @@ fn archive_preview_lists_contents_and_browses_folders() {
         State::Ready(Content::Archive { cwd, .. }) => assert!(cwd.is_empty()),
         _ => panic!("not an archive"),
     }
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn picker_rejects_directory_save_and_confirms_overwrite() {
+    let dir = sandbox("picker-overwrite");
+    let mut d = picker_app(&dir, crate::picker::Kind::Save, "dest");
+    assert!(d.app.pick_choice().is_empty(), "cannot save over a folder");
+    d.app.picker.as_mut().unwrap().name = "a.txt".into();
+    d.app.pick_confirm();
+    assert!(
+        matches!(&d.app.dialog, Some(Dialog::ConfirmOverwrite { path }) if path == &dir.join("a.txt"))
+    );
+    assert!(d.app.picker.as_ref().unwrap().chosen.is_empty());
+    d.frame(Vec::new());
+    d.click_text("Cancel");
+    assert!(d.app.dialog.is_none());
+    assert!(d.app.picker.as_ref().unwrap().chosen.is_empty());
+    d.app.pick_confirm();
+    d.frame(Vec::new());
+    d.click_text("Replace");
+    assert_eq!(
+        d.app.picker.as_ref().unwrap().chosen,
+        vec![dir.join("a.txt")]
+    );
+    assert_eq!(
+        fs::read_to_string(dir.join("a.txt")).unwrap(),
+        "a",
+        "picker never writes the file itself"
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn picker_confirms_from_name_field_with_ctrl_enter() {
+    let dir = sandbox("picker-keyboard");
+    let mut d = picker_app(&dir, crate::picker::Kind::Save, "new.txt");
+    d.app.picker.as_mut().unwrap().focus = true;
+    d.frame(Vec::new());
+    assert!(d.ctx.text_edit_focused());
+    d.modifiers = Modifiers::COMMAND;
+    d.frame(vec![Event::Key {
+        key: Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::COMMAND,
+    }]);
+    assert_eq!(
+        d.app.picker.as_ref().unwrap().chosen,
+        vec![dir.join("new.txt")]
+    );
     fs::remove_dir_all(dir).unwrap();
 }

@@ -16,38 +16,23 @@ REPO_URL="${KESTREL_REPO:-https://github.com/vanyapoker/kestrel.git}"
 
 BIN="$HOME/.local/bin"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
-CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}"
 MANAGED_SRC="$DATA/kestrel/source"
-PORTAL_FILE="$DATA/xdg-desktop-portal/portals/kestrel.portal"
-PORTAL_SERVICE="$DATA/dbus-1/services/org.freedesktop.impl.portal.desktop.kestrel.service"
-PORTAL_MARK="# installed by kestrel"
-
-# The portal config is named after the desktop, e.g. hyprland-portals.conf.
-portal_conf() {
-    local desktop="${XDG_CURRENT_DESKTOP:-}"
-    desktop="${desktop%%:*}"
-    [ -n "$desktop" ] && echo "$CONFIG/xdg-desktop-portal/${desktop,,}-portals.conf" || echo "$CONFIG/xdg-desktop-portal/portals.conf"
-}
-
 say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 uninstall() {
-    rm -f "$BIN/kestrel" "$BIN/kestrel-update" \
-        "$DATA/applications/kestrel.desktop" \
-        "$DATA/icons/hicolor/scalable/apps/kestrel.svg" \
-        "$PORTAL_FILE" "$PORTAL_SERVICE"
-    local conf; conf="$(portal_conf)"
-    if [ -f "$conf" ] && grep -q "^$PORTAL_MARK" "$conf"; then rm -f "$conf"; fi
-    busctl --user call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ReloadConfig >/dev/null 2>&1 || true
-    systemctl --user restart xdg-desktop-portal 2>/dev/null || true
-    rm -rf "$DATA/kestrel"
-    update-desktop-database "$DATA/applications" 2>/dev/null || true
-    say "Kestrel uninstalled"
+    if [ -f "$DATA/kestrel/integrate.sh" ]; then
+        bash "$DATA/kestrel/integrate.sh" --uninstall
+    elif [ -f "$(dirname "${BASH_SOURCE[0]}")/scripts/integrate.sh" ]; then
+        bash "$(dirname "${BASH_SOURCE[0]}")/scripts/integrate.sh" --uninstall
+    else
+        die "desktop integration helper is missing; reinstall before uninstalling"
+    fi
 }
 
 # Rust, git and a C toolchain (for the linker). Omarchy ships everything else.
 ensure_deps() {
+    # shellcheck source=/dev/null
     [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
     local missing=()
     command -v git >/dev/null || missing+=(git)
@@ -117,41 +102,7 @@ exec bash "$SRC/install.sh" --update
 EOF
 chmod 755 "$BIN/kestrel-update"
 
-# File dialogs: register Kestrel as an xdg-desktop-portal FileChooser backend, so
-# Firefox and other apps open it when you upload or save something.
-install_portal() {
-    mkdir -p "$(dirname "$PORTAL_FILE")" "$(dirname "$PORTAL_SERVICE")"
-    cat > "$PORTAL_FILE" <<EOP
-[portal]
-DBusName=org.freedesktop.impl.portal.desktop.kestrel
-Interfaces=org.freedesktop.impl.portal.FileChooser;
-UseIn=Hyprland;sway;wlroots;river;Wayfire;
-EOP
-    cat > "$PORTAL_SERVICE" <<EOP
-[D-BUS Service]
-Name=org.freedesktop.impl.portal.desktop.kestrel
-Exec=$BIN/kestrel --portal
-EOP
-    local conf; conf="$(portal_conf)"
-    if [ ! -f "$conf" ]; then
-        mkdir -p "$(dirname "$conf")"
-        local desktop="${XDG_CURRENT_DESKTOP:-}"; desktop="${desktop%%:*}"
-        local system="/usr/share/xdg-desktop-portal/${desktop,,}-portals.conf"
-        {
-            echo "$PORTAL_MARK"
-            if [ -f "$system" ]; then cat "$system"; echo; else printf '[preferred]\ndefault=gtk\n'; fi
-            echo "org.freedesktop.impl.portal.FileChooser=kestrel"
-        } > "$conf"
-    elif ! grep -q 'FileChooser=kestrel' "$conf"; then
-        echo "   To use Kestrel for file dialogs, add this line to the [preferred] section of $conf:"
-        echo "     org.freedesktop.impl.portal.FileChooser=kestrel"
-    fi
-    # A running portal and a stale Kestrel backend both need to pick up the new files.
-    pkill -f 'kestrel --portal' 2>/dev/null || true
-    busctl --user call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ReloadConfig >/dev/null 2>&1 || true
-    systemctl --user restart xdg-desktop-portal 2>/dev/null || true
-}
-install_portal
+bash "$SRC/scripts/integrate.sh"
 
 # The app used to be called fpilot; drop the old copies so the launcher shows one entry.
 rm -f "$BIN/fpilot" "$DATA/applications/fpilot.desktop" \

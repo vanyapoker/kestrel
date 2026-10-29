@@ -89,21 +89,36 @@ fn request(kind: Kind, title: &str, options: &HashMap<String, OwnedValue>) -> Re
             .map(str::to_owned)
     };
     // `current_folder` is a NUL-terminated byte string.
-    let dir = options.get("current_folder").and_then(|v| {
-        let bytes: Vec<u8> = <Vec<u8>>::try_from((**v).try_clone().ok()?).ok()?;
-        let bytes = bytes.strip_suffix(&[0]).unwrap_or(&bytes);
-        {
-            use std::os::unix::ffi::OsStrExt;
-            Some(PathBuf::from(std::ffi::OsStr::from_bytes(bytes)))
-        }
-    });
+    let dir = byte_path(options, "current_folder");
+    let current_file = (kind == Kind::Save)
+        .then(|| byte_path(options, "current_file"))
+        .flatten();
     Request {
         kind,
-        multiple: kind == Kind::Open && flag(options, "multiple"),
+        multiple: kind != Kind::Save && flag(options, "multiple"),
         title: title.to_owned(),
-        dir: dir.filter(|d| d.is_dir()),
-        name: text("current_name").unwrap_or_default(),
+        accept_label: text("accept_label").unwrap_or_default().replace('_', ""),
+        dir: current_file
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(PathBuf::from)
+            .or(dir)
+            .filter(|d| d.is_dir()),
+        name: current_file
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .or_else(|| text("current_name"))
+            .unwrap_or_default(),
     }
+}
+
+fn byte_path(options: &HashMap<String, OwnedValue>, key: &str) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let value = options.get(key)?;
+    let bytes = Vec::<u8>::try_from((**value).try_clone().ok()?).ok()?;
+    let bytes = bytes.strip_suffix(&[0]).unwrap_or(&bytes);
+    Some(PathBuf::from(std::ffi::OsStr::from_bytes(bytes)))
 }
 
 /// Runs a picker and answers the portal: 0 with `uris` when something was chosen, 1 when cancelled.
@@ -179,5 +194,44 @@ pub fn run() -> zbus::Result<()> {
         .build()?;
     loop {
         std::thread::park();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn save_existing_file_uses_its_parent_and_name() {
+        let dir = std::env::temp_dir();
+        let file = dir.join("existing.txt");
+        let mut bytes = file.as_os_str().as_encoded_bytes().to_vec();
+        bytes.push(0);
+        let options = HashMap::from([
+            (
+                "current_file".into(),
+                OwnedValue::try_from(Value::from(bytes)).unwrap(),
+            ),
+            (
+                "current_name".into(),
+                OwnedValue::from(zbus::zvariant::Str::from("ignored.txt")),
+            ),
+            (
+                "accept_label".into(),
+                OwnedValue::from(zbus::zvariant::Str::from("_Export")),
+            ),
+        ]);
+        let req = request(Kind::Save, "Export file", &options);
+        assert_eq!(req.dir, Some(dir));
+        assert_eq!(req.name, "existing.txt");
+        assert_eq!(req.accept_label, "Export");
+        assert_eq!(req.title, "Export file");
+    }
+
+    #[test]
+    fn folder_picker_honors_multiple_selection() {
+        let options = HashMap::from([("multiple".into(), OwnedValue::from(true))]);
+        assert!(request(Kind::Folder, "Folders", &options).multiple);
+        assert!(!request(Kind::Save, "Save", &options).multiple);
     }
 }

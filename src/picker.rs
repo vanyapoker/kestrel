@@ -16,6 +16,8 @@ pub struct Request {
     pub kind: Kind,
     pub multiple: bool,
     pub title: String,
+    /// Optional action label supplied by the calling application.
+    pub accept_label: String,
     /// Folder to start in.
     pub dir: Option<PathBuf>,
     /// Suggested file name when saving.
@@ -41,6 +43,7 @@ pub fn parse_args(args: &[String]) -> Option<Request> {
         kind,
         multiple: args.iter().any(|a| a == "--multiple"),
         title: value("--title").unwrap_or_default(),
+        accept_label: value("--accept-label").unwrap_or_default(),
         dir: value("--dir").map(PathBuf::from).filter(|p| p.is_dir()),
         name: value("--name").unwrap_or_default(),
     })
@@ -67,6 +70,7 @@ impl Request {
             }
         };
         opt("--title", self.title.clone());
+        opt("--accept-label", self.accept_label.clone());
         opt(
             "--dir",
             self.dir
@@ -92,9 +96,13 @@ impl Request {
         .into()
     }
 
-    pub fn confirm_label(&self) -> &'static str {
+    pub fn confirm_label(&self) -> &str {
+        if !self.accept_label.is_empty() {
+            return &self.accept_label;
+        }
         match self.kind {
-            Kind::Open | Kind::Folder => "Select",
+            Kind::Open => "Open",
+            Kind::Folder => "Select folder",
             Kind::Save => "Save",
         }
     }
@@ -125,6 +133,7 @@ mod tests {
             kind: Kind::Save,
             multiple: true,
             title: "Save it".into(),
+            accept_label: "Export".into(),
             dir: Some(std::env::temp_dir()),
             name: "a b.txt".into(),
         };
@@ -133,6 +142,7 @@ mod tests {
             (back.kind, back.multiple, back.title, back.dir, back.name),
             (req.kind, true, req.title, req.dir, req.name)
         );
+        assert_eq!(back.accept_label, req.accept_label);
         assert!(parse_args(&["kestrel".into()]).is_none());
     }
 

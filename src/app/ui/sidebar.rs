@@ -328,15 +328,19 @@ impl App {
         let dir = self.tab().path.clone();
         let Some(p) = &mut self.picker else { return };
         let saving = p.req.kind == crate::picker::Kind::Save;
-        let replacing = saving && choice.first().is_some_and(|c| c.exists());
-        let label = if replacing {
-            "Replace"
-        } else {
-            p.req.confirm_label()
-        };
+        let label = p.req.confirm_label();
         let mut enter = false;
         ui.horizontal_centered(|ui| {
-            ui.label(RichText::new(p.req.heading()).strong());
+            if !saving {
+                let hint = if p.req.multiple {
+                    "Select items · Ctrl+Enter to confirm"
+                } else {
+                    "Ctrl+Enter to confirm"
+                };
+                ui.label(RichText::new(hint).color(pal().dim));
+            } else {
+                ui.label("Name");
+            }
             ui.add_space(8.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.button("Cancel").clicked() {
@@ -353,12 +357,26 @@ impl App {
                     actions.push(Action::PickConfirm);
                 }
                 if saving {
+                    let id = egui::Id::new("picker_name");
+                    let focus = std::mem::take(&mut p.focus);
+                    if focus {
+                        let mut state =
+                            egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+                        state
+                            .cursor
+                            .set_char_range(Some(egui::text::CCursorRange::two(
+                                egui::text::CCursor::new(0),
+                                egui::text::CCursor::new(super::stem_chars(&p.name)),
+                            )));
+                        state.store(ui.ctx(), id);
+                    }
                     let r = ui.add(
                         egui::TextEdit::singleline(&mut p.name)
+                            .id(id)
                             .hint_text("File name")
                             .desired_width(f32::INFINITY),
                     );
-                    if std::mem::take(&mut p.focus) {
+                    if focus {
                         r.request_focus();
                     }
                     enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));

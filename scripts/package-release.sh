@@ -22,6 +22,7 @@ trap 'rm -rf -- "$staging_dir"' EXIT
 bundle="$staging_dir/$package"
 install -Dm755 "$binary" "$bundle/kestrel"
 install -Dm755 scripts/install-prebuilt.sh "$bundle/install.sh"
+install -Dm755 scripts/integrate.sh "$bundle/scripts/integrate.sh"
 install -Dm644 assets/kestrel.desktop "$bundle/assets/kestrel.desktop"
 install -Dm644 assets/kestrel.svg "$bundle/assets/kestrel.svg"
 install -Dm644 LICENSE "$bundle/LICENSE"
