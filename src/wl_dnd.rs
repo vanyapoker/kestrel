@@ -37,9 +37,9 @@ const URI_LIST: &str = "text/uri-list";
 // while Firefox can supply the actual pixels without a separate download.
 fn drop_mime(mimes: &[String]) -> Option<&'static str> {
     [
-        "image/png",
         "image/jpeg",
         "image/jpg",
+        "image/png",
         "image/webp",
         "image/gif",
         URI_LIST,
@@ -56,6 +56,24 @@ fn image_name(mime: &str) -> Option<&'static str> {
         "image/gif" => Some("image.gif"),
         _ => None,
     }
+}
+
+fn is_grayscale_image(bytes: &[u8]) -> bool {
+    image::load_from_memory(bytes)
+        .is_ok_and(|image| matches!(image.color(), image::ColorType::L8 | image::ColorType::L16))
+}
+
+// Some sources provide a grayscale JPEG even though their PNG offer is in color.
+fn color_jpeg_fallback(png: &[u8]) -> Option<Vec<u8>> {
+    let color = image::load_from_memory(png).ok()?.to_rgb8();
+    if !color.pixels().any(|p| p[0] != p[1] || p[1] != p[2]) {
+        return None;
+    }
+    let mut output = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, 90)
+        .encode_image(&color)
+        .ok()?;
+    Some(output)
 }
 
 const IMAGE_NAME_MIMES: [&str; 4] = [
@@ -707,13 +725,22 @@ fn receive(conn: &Connection, offer: &WlDataOffer, mime: &str) -> Option<String>
 }
 
 fn receive_bytes(conn: &Connection, offer: &WlDataOffer, mime: &str) -> Option<Vec<u8>> {
+    receive_bytes_with_timeout(conn, offer, mime, std::time::Duration::from_secs(1))
+}
+
+fn receive_bytes_with_timeout(
+    conn: &Connection,
+    offer: &WlDataOffer,
+    mime: &str,
+    timeout: std::time::Duration,
+) -> Option<Vec<u8>> {
     let (read, write) = pipe(libc::O_CLOEXEC).ok()?;
     offer.receive(mime.into(), write.as_fd());
     drop(write);
     conn.flush().ok()?;
     let mut file = std::fs::File::from(read);
     let mut out = Vec::new();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    let deadline = std::time::Instant::now() + timeout;
     let mut buf = [0u8; 8192];
     loop {
         let left = deadline
@@ -1098,6 +1125,20 @@ impl Dispatch<WlDataDevice, ()> for State {
                         } else {
                             None
                         };
+                    if result.is_ok()
+                        && matches!(mime, "image/jpeg" | "image/jpg")
+                        && mimes.iter().any(|m| m == "image/png")
+                        && is_grayscale_image(&bytes)
+                        && let Some(png) = receive_bytes_with_timeout(
+                            &conn,
+                            &offer,
+                            "image/png",
+                            std::time::Duration::from_secs(10),
+                        )
+                        && let Some(color_jpeg) = color_jpeg_fallback(&png)
+                    {
+                        bytes = color_jpeg;
+                    }
                     offer.finish();
                     offer.destroy();
                     let _ = conn.flush();
@@ -1235,14 +1276,38 @@ mod tests {
             "image/png",
         ]
         .map(String::from);
-        assert_eq!(drop_mime(&firefox), Some("image/png"));
-        assert_eq!(image_name(drop_mime(&firefox).unwrap()), Some("image.png"));
+        assert_eq!(drop_mime(&firefox), Some("image/jpeg"));
+        assert_eq!(image_name(drop_mime(&firefox).unwrap()), Some("image.jpg"));
+        assert_eq!(drop_mime(&["image/png".into()]), Some("image/png"));
         assert_eq!(
             drop_mime(&[URI_LIST.into(), "text/plain".into()]),
             Some(URI_LIST)
         );
         assert_eq!(drop_mime(&["image/jpeg".into()]), Some("image/jpeg"));
         assert_eq!(drop_mime(&["text/html".into(), "text/plain".into()]), None);
+    }
+
+    #[test]
+    fn grayscale_jpeg_can_be_replaced_with_color_from_png() {
+        use image::{DynamicImage, ImageFormat, Rgb, RgbImage};
+        use std::io::Cursor;
+
+        let encode_png = |pixel| {
+            let image = DynamicImage::ImageRgb8(RgbImage::from_pixel(2, 2, Rgb(pixel)));
+            let mut bytes = Cursor::new(Vec::new());
+            image.write_to(&mut bytes, ImageFormat::Png).unwrap();
+            bytes.into_inner()
+        };
+        let jpeg = color_jpeg_fallback(&encode_png([220, 40, 10])).unwrap();
+        let pixel = image::load_from_memory(&jpeg).unwrap().to_rgb8()[(0, 0)];
+        assert!(pixel[0] > pixel[1] * 2);
+        assert!(color_jpeg_fallback(&encode_png([80, 80, 80])).is_none());
+        assert!(!is_grayscale_image(&jpeg));
+        let mut grayscale = Cursor::new(Vec::new());
+        DynamicImage::new_luma8(2, 2)
+            .write_to(&mut grayscale, ImageFormat::Jpeg)
+            .unwrap();
+        assert!(is_grayscale_image(&grayscale.into_inner()));
     }
 
     #[test]
