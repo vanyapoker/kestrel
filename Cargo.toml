@@ -14,6 +14,8 @@ ignore = "0.4.33"
 image = "0.25.10"
 png = "0.18.1"
 libc = "0.2.190"
+libheif-rs = { version = "3", default-features = false, features = ["v1_20"] }
+moxcms = "0.8"
 notify = "8.2.0"
 raw-window-handle = "0.6"
 rayon = "1.12.0"

@@ -23,6 +23,7 @@ const WORKERS: usize = 4;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Renderer {
     Raster,
+    Heif,
     Svg,
     Pdf,
     Video,
@@ -32,6 +33,7 @@ pub fn renderer_for(ext: &str) -> Option<Renderer> {
     Some(match ext {
         "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "ico" | "tif" | "tiff" | "tga"
         | "qoi" | "pnm" | "hdr" | "exr" | "avif" => Renderer::Raster,
+        "heic" | "heif" => Renderer::Heif,
         "svg" | "svgz" => Renderer::Svg,
         "pdf" => Renderer::Pdf,
         "mp4" | "mkv" | "webm" | "avi" | "mov" | "wmv" | "flv" | "m4v" | "mpg" | "mpeg" => {
@@ -52,6 +54,7 @@ pub struct Rendered {
 pub fn render(path: &Path, renderer: Renderer, max: u32) -> Result<Rendered, String> {
     match renderer {
         Renderer::Raster => render_raster(path, max),
+        Renderer::Heif => crate::heif::Images::open(path)?.render(0, max),
         Renderer::Svg => {
             let png = run_tool(
                 Command::new("rsvg-convert")
@@ -120,13 +123,18 @@ fn render_cached(path: &Path, renderer: Renderer) -> Option<ColorImage> {
     if let Some(image) = crate::thumb_cache::load(path) {
         return Some(image);
     }
-    let image = render(path, renderer, THUMB_SIZE).ok()?.image;
+    let image = if renderer == Renderer::Heif {
+        crate::heif::Images::thumbnail(path, THUMB_SIZE)
+            .or_else(|| render(path, renderer, THUMB_SIZE).ok().map(|r| r.image))?
+    } else {
+        render(path, renderer, THUMB_SIZE).ok()?.image
+    };
     // A cancelled render fails above, so only complete thumbnails reach the disk.
     crate::thumb_cache::store(path, &image);
     Some(image)
 }
 
-fn render_raster(path: &Path, max: u32) -> Result<Rendered, String> {
+pub(crate) fn render_raster(path: &Path, max: u32) -> Result<Rendered, String> {
     if std::fs::metadata(path)
         .map(|m| m.len() > MAX_IMAGE_FILE)
         .unwrap_or(false)
@@ -223,7 +231,7 @@ pub fn set_cancel(cancelled: Box<dyn Fn() -> bool>) {
     CANCEL.with(|c| *c.borrow_mut() = Some(cancelled));
 }
 
-fn is_cancelled() -> bool {
+pub(crate) fn is_cancelled() -> bool {
     CANCEL.with(|c| c.borrow().as_ref().is_some_and(|f| f()))
 }
 

@@ -212,6 +212,7 @@ impl App {
         let mut inspect = None;
         let mut open_folder = None;
         let mut detail = None;
+        let mut heif_frame = None;
         if e.is_dir && ui.small_button("Open folder in main view ↗").clicked() {
             open_folder = Some(e.path.clone());
         }
@@ -223,8 +224,34 @@ impl App {
                     ui.vertical_centered(|ui| ui.spinner());
                 }
                 State::Ready(Content::Image {
-                    tex, dims, view, ..
-                }) => detail = preview_image(ui, tex, *dims, view),
+                    tex,
+                    dims,
+                    view,
+                    heif,
+                    ..
+                }) => {
+                    if let Some(heif) = heif.as_ref().filter(|h| h.len() > 1) {
+                        ui.horizontal(|ui| {
+                            let mut index = heif.index + 1;
+                            if ui
+                                .add(
+                                    egui::Slider::new(&mut index, 1..=heif.len())
+                                        .text(format!("/ {}", heif.len())),
+                                )
+                                .changed()
+                            {
+                                heif_frame = Some(index - 1);
+                            }
+                            if heif.loading {
+                                ui.spinner();
+                            }
+                        });
+                        if let Some(error) = &heif.error {
+                            ui.label(RichText::new(error).color(pal().faint));
+                        }
+                    }
+                    detail = preview_image(ui, tex, *dims, view);
+                }
                 State::Ready(Content::Archive { tree, cwd }) => preview_archive(ui, tree, cwd),
                 State::Ready(Content::Text {
                     job,
@@ -352,7 +379,9 @@ impl App {
                     });
                 }
             });
-        if let Some(max_side) = detail {
+        if let Some(index) = heif_frame {
+            self.preview.request_heif_frame(index);
+        } else if let Some(max_side) = detail {
             self.preview.request_detail(max_side);
         }
         if hash {

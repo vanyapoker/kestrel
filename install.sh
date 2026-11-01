@@ -47,6 +47,8 @@ ensure_deps() {
         say "Installing the stable Rust toolchain"
         rustup default stable
     fi
+    command -v pkg-config >/dev/null || die "pkg-config is required to find libheif (1.20 or newer)"
+    pkg-config --atleast-version=1.20 libheif || die "libheif 1.20 or newer and its development files are required"
 }
 
 # Picks the source tree: the clone this script lives in, or the managed clone.

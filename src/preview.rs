@@ -33,6 +33,7 @@ pub enum Content {
         /// Size of the original image, which the texture may be scaled down from.
         dims: (u32, u32),
         view: ImageView,
+        heif: Option<HeifView>,
     },
     Text {
         job: LayoutJob,
@@ -55,6 +56,20 @@ pub enum Content {
         info: Info,
     },
     Error(String),
+}
+
+pub struct HeifView {
+    images: Arc<crate::heif::Images>,
+    pub index: usize,
+    loaded_index: usize,
+    pub loading: bool,
+    pub error: Option<String>,
+}
+
+impl HeifView {
+    pub fn len(&self) -> usize {
+        self.images.len()
+    }
 }
 
 /// Prepared text geometry belongs to a single immutable preview payload. Replacing
@@ -139,6 +154,9 @@ pub enum Detail {
 
 enum Payload {
     Image(ColorImage, Info, (u32, u32)),
+    Heif(crate::thumbs::Rendered, Arc<crate::heif::Images>),
+    HeifFrame(crate::thumbs::Rendered),
+    HeifFrameFailed(String),
     /// A sharper version of the image already shown.
     Detail(ColorImage),
     /// The sharper version couldn't be made; keep the image already shown.
@@ -157,6 +175,7 @@ struct Request {
     is_dir: bool,
     /// Load the image again at up to this size, for zooming.
     detail: Option<u32>,
+    heif: Option<(Arc<crate::heif::Images>, usize)>,
 }
 
 /// A parsed CSV/TSV file; the first row is the header.
@@ -510,10 +529,11 @@ impl Preview {
                     // Loads run on their own thread so a stuck read or tool can never
                     // block later previews; an abandoned load just finishes unseen.
                     let (done_tx, done_rx) = channel();
-                    let (path, is_dir, detail, id, generation) = (
+                    let (path, is_dir, detail, heif, id, generation) = (
                         req.path.clone(),
                         req.is_dir,
                         req.detail,
+                        req.heif,
                         req.id,
                         worker_generation.clone(),
                     );
@@ -525,9 +545,21 @@ impl Preview {
                                 for_tools.load(Ordering::Relaxed) != id
                             }));
                             let cancelled = move || generation.load(Ordering::Relaxed) != id;
-                            let payload = match detail {
-                                Some(max) => load_detail(&path, max),
-                                None => load_cancellable(&path, is_dir, &cancelled),
+                            let payload = match (detail, heif) {
+                                (Some(max), Some((images, index))) => {
+                                    match images.render(index, max) {
+                                        Ok(r) => Payload::Detail(r.image),
+                                        Err(_) => Payload::DetailFailed,
+                                    }
+                                }
+                                (None, Some((images, index))) => {
+                                    match images.render(index, MAX_IMAGE_SIDE) {
+                                        Ok(r) => Payload::HeifFrame(r),
+                                        Err(e) => Payload::HeifFrameFailed(e),
+                                    }
+                                }
+                                (Some(max), None) => load_detail(&path, max),
+                                (None, None) => load_cancellable(&path, is_dir, &cancelled),
                             };
                             let _ = done_tx.send(payload);
                         });
@@ -601,6 +633,7 @@ impl Preview {
             path: path.to_path_buf(),
             is_dir,
             detail: None,
+            heif: None,
         });
     }
 
@@ -608,11 +641,12 @@ impl Preview {
     /// `MAX_DETAIL_SIDE`), replacing its texture once ready. Selecting another file
     /// abandons it.
     pub fn request_detail(&mut self, max_side: u32) {
-        let (Some(path), State::Ready(Content::Image { view, .. })) = (&self.path, &mut self.state)
+        let (Some(path), State::Ready(Content::Image { view, heif, .. })) =
+            (&self.path, &mut self.state)
         else {
             return;
         };
-        if view.detail != Detail::None {
+        if view.detail != Detail::None || heif.as_ref().is_some_and(|h| h.loading) {
             return;
         }
         view.detail = Detail::Loading;
@@ -622,6 +656,36 @@ impl Preview {
             path: path.clone(),
             is_dir: false,
             detail: Some(max_side.min(MAX_DETAIL_SIDE)),
+            heif: heif.as_ref().map(|h| (h.images.clone(), h.index)),
+        });
+    }
+
+    pub fn request_heif_frame(&mut self, index: usize) {
+        let (
+            Some(path),
+            State::Ready(Content::Image {
+                heif: Some(heif),
+                view,
+                ..
+            }),
+        ) = (&self.path, &mut self.state)
+        else {
+            return;
+        };
+        if index >= heif.len() || index == heif.index {
+            return;
+        }
+        heif.index = index;
+        heif.loading = true;
+        heif.error = None;
+        view.detail = Detail::None;
+        self.next_id = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
+        let _ = self.req_tx.send(Request {
+            id: self.next_id,
+            path: path.clone(),
+            is_dir: false,
+            detail: None,
+            heif: Some((heif.images.clone(), index)),
         });
     }
 
@@ -636,6 +700,41 @@ impl Preview {
     pub fn poll(&mut self, ctx: &egui::Context) {
         while let Ok(res) = self.res_rx.try_recv() {
             if res.id != self.next_id {
+                continue;
+            }
+            if let Payload::HeifFrame(r) = res.payload {
+                if let State::Ready(Content::Image {
+                    tex,
+                    dims,
+                    info,
+                    view,
+                    heif: Some(heif),
+                }) = &mut self.state
+                {
+                    *dims = r
+                        .dims
+                        .unwrap_or((r.image.width() as u32, r.image.height() as u32));
+                    *tex = ctx.load_texture("preview", r.image, egui::TextureOptions::LINEAR);
+                    *info = vec![("Dimensions".into(), format!("{} × {}", dims.0, dims.1))];
+                    if let Some(exif) = r.exif {
+                        info.extend(crate::exif::rows(&exif));
+                    }
+                    *view = ImageView::default();
+                    heif.loading = false;
+                    heif.loaded_index = heif.index;
+                }
+                continue;
+            }
+            if let Payload::HeifFrameFailed(error) = &res.payload {
+                if let State::Ready(Content::Image {
+                    heif: Some(heif), ..
+                }) = &mut self.state
+                {
+                    heif.loading = false;
+                    heif.index = heif.loaded_index;
+                    heif.error = Some(error.clone());
+                }
+                eprintln!("kestrel: HEIC frame: {error}");
                 continue;
             }
             if let Payload::Detail(_) | Payload::DetailFailed = res.payload {
@@ -653,7 +752,33 @@ impl Preview {
                     info,
                     dims,
                     view: ImageView::default(),
+                    heif: None,
                 },
+                Payload::Heif(r, images) => {
+                    let dims = r
+                        .dims
+                        .unwrap_or((r.image.width() as u32, r.image.height() as u32));
+                    let mut info = vec![("Dimensions".into(), format!("{} × {}", dims.0, dims.1))];
+                    if let Some(exif) = r.exif {
+                        info.extend(crate::exif::rows(&exif));
+                    }
+                    Content::Image {
+                        tex: ctx.load_texture("preview", r.image, egui::TextureOptions::LINEAR),
+                        info,
+                        dims,
+                        view: ImageView::default(),
+                        heif: Some(HeifView {
+                            images,
+                            index: 0,
+                            loaded_index: 0,
+                            loading: false,
+                            error: None,
+                        }),
+                    }
+                }
+                Payload::HeifFrame(_) | Payload::HeifFrameFailed(_) => {
+                    unreachable!("handled above")
+                }
                 Payload::Detail(_) | Payload::DetailFailed => unreachable!("handled above"),
                 Payload::Archive(tree) => Content::Archive {
                     tree,
@@ -698,6 +823,16 @@ fn load_cancellable(path: &Path, is_dir: bool, cancelled: &dyn Fn() -> bool) -> 
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
     if let Some(renderer) = thumbs::renderer_for(&ext) {
+        if renderer == Renderer::Heif {
+            return match crate::heif::Images::open(path).and_then(|images| {
+                let images = Arc::new(images);
+                let rendered = images.render(0, MAX_IMAGE_SIDE)?;
+                Ok(Payload::Heif(rendered, images))
+            }) {
+                Ok(payload) => payload,
+                Err(error) => Payload::Error(error),
+            };
+        }
         let mut info = Info::new();
         match renderer {
             Renderer::Video => info = media_rows(path),

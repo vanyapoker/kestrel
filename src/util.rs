@@ -173,7 +173,7 @@ pub fn category(ext: &str, is_dir: bool) -> Category {
     }
     match ext {
         "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "ico" | "tif" | "tiff" | "tga"
-        | "qoi" | "svg" | "avif" | "heic" => Category::Image,
+        | "qoi" | "svg" | "avif" | "heic" | "heif" => Category::Image,
         "mp4" | "mkv" | "webm" | "avi" | "mov" | "wmv" | "flv" | "m4v" => Category::Video,
         "mp3" | "flac" | "wav" | "ogg" | "opus" | "m4a" | "aac" => Category::Audio,
         "zip" | "tar" | "gz" | "xz" | "zst" | "bz2" | "7z" | "rar" | "tgz" | "deb" | "rpm" => {

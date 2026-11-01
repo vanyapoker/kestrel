@@ -80,10 +80,15 @@ xdg-mime default kestrel.desktop inode/directory
 
 Omarchy includes the usual preview helpers. On other systems, install `poppler`,
 `ffmpeg`, `librsvg`, and `wl-clipboard` for PDF/video/SVG previews and clipboard
-support. Archives use `bsdtar`; drives use `udisksctl`; cameras and phones use
+support. HEIC images use the system libheif library and its decoder plugins;
+tiles use embedded thumbnails when available. HEIC collections and sequences
+are limited to 256 images, and decoded images to 512 MiB.
+Archives use `bsdtar`; drives use `udisksctl`; cameras and phones use
 `gvfs-gphoto2` and `gvfs-mtp`.
 
 ## Build
+
+Building requires `pkg-config` and libheif 1.20 or newer, including its development files.
 
 ```sh
 git clone https://github.com/vanyapoker/kestrel.git
