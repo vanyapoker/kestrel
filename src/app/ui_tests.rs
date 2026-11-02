@@ -2567,7 +2567,7 @@ fn large_code_preview_select_all_copies_offscreen_source_without_file_shortcuts(
 fn preview_table_cells_and_details_are_selectable() {
     for (name, filename, text, selected) in [
         ("csv-copy", "data.csv", "name,value\nПривет,42\n", "Привет"),
-        ("metadata-copy", "a.txt", "body", "Permissions"),
+        ("metadata-copy", "a.txt", "body", "4 B"),
     ] {
         let dir = sandbox(name);
         fs::write(dir.join(filename), text).unwrap();
@@ -2579,11 +2579,7 @@ fn preview_table_cells_and_details_are_selectable() {
             matches!(a.preview.state, crate::preview::State::Ready(_))
         });
         d.frame(Vec::new());
-        let selected = if name == "metadata-copy" {
-            dir.join(filename).display().to_string()
-        } else {
-            selected.to_string()
-        };
+        let selected = selected.to_string();
         let rect = d.texts.iter().find(|(t, _)| t == &selected).unwrap().1;
         d.drag(
             rect.left_top() + vec2(0.0, 2.0),
@@ -3165,7 +3161,7 @@ fn preview_area_point(d: &Driver, name: &str) -> Pos2 {
     let info = d
         .texts
         .iter()
-        .find(|(text, r)| text == "Size" && r.left() > heading.left() - 40.0)
+        .find(|(text, r)| text == "Edit permissions…" && r.left() > heading.left() - 40.0)
         .expect("info rows")
         .1;
     Pos2::new(
@@ -3292,8 +3288,8 @@ fn archive_preview_lists_contents_and_browses_folders() {
     });
     d.frame(Vec::new());
     let has = |d: &Driver, text: &str| d.texts.iter().any(|(t, _)| t == text);
-    assert!(has(&d, "2 files, 2 folders"), "contents row");
-    assert!(has(&d, "12 B"), "unpacked size row");
+    assert!(has(&d, "2 files") && has(&d, "2 folders"), "contents pills");
+    assert!(has(&d, "12 B unpacked"), "unpacked size pill");
     assert!(has(&d, "src") && has(&d, "README.md"));
     d.click_text("src");
     d.frame(Vec::new());

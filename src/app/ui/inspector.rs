@@ -75,41 +75,32 @@ impl App {
         ui.horizontal(|ui| {
             let (r, _) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::hover());
             draw_entry_icon(ui.painter(), r.center(), 1.0, &e.path, cat);
-            ui.add(egui::Label::new(RichText::new(&e.name).size(14.5).strong()).wrap());
+            ui.add(egui::Label::new(RichText::new(&e.name).size(14.5).strong()).wrap())
+                .on_hover_text(e.path.display().to_string());
         });
         ui.add_space(6.0);
 
+        // Short facts shown as pills; the label of each is its hover text.
+        let mut pills: Vec<(&str, String)> = Vec::new();
         let mut rows: Vec<(String, String)> = Vec::new();
         let size = if e.is_dir {
             self.sizes.get(&e.path).copied()
         } else {
             Some(e.size)
         };
-        rows.push((
-            "Size".into(),
+        pills.push((
+            "Size",
             size.map(util::human_size)
                 .unwrap_or_else(|| "calculating…".into()),
-        ));
-        if let Some(m) = e.modified {
-            rows.push(("Modified".into(), util::fmt_time(m)));
-        }
-        rows.push((
-            "Permissions".into(),
-            format!(
-                "{} ({:03o})",
-                util::fmt_mode(e.mode, e.is_dir),
-                e.mode & 0o7777
-            ),
         ));
         if self.props_cache.as_ref().map(|(p, _)| p) != Some(&e.path) {
             self.props_cache = Some((e.path.clone(), crate::props::read(&e.path)));
         }
-        if let Some((_, Some(props))) = &self.props_cache {
-            rows.push(("Owner".into(), format!("{}:{}", props.owner, props.group)));
-            if let Some((target, exists)) = &props.link {
-                let missing = if *exists { "" } else { " (missing)" };
-                rows.push(("Link to".into(), format!("{}{missing}", target.display())));
-            }
+        if let Some((_, Some(props))) = &self.props_cache
+            && let Some((target, exists)) = &props.link
+        {
+            let missing = if *exists { "" } else { " (missing)" };
+            rows.push(("Link to".into(), format!("{}{missing}", target.display())));
         }
         // Checksums of an older version of the file are stale.
         let sums = self
@@ -126,71 +117,93 @@ impl App {
         if let State::Ready(c) = &self.preview.state {
             match c {
                 Content::Image { info, .. } | Content::Binary { info } => {
-                    rows.extend(info.iter().cloned())
+                    let keep = ["Dimensions", "Resolution", "Duration", "Pages"];
+                    for (k, v) in info.iter().filter(|(k, _)| keep.contains(&k.as_str())) {
+                        pills.push((k.as_str(), v.clone()));
+                    }
                 }
                 Content::Text {
                     lines, truncated, ..
-                } => rows.push((
-                    "Lines".into(),
-                    format!("{lines}{}", if *truncated { "+" } else { "" }),
+                } => pills.push((
+                    "Lines",
+                    format!(
+                        "{lines}{} {}",
+                        if *truncated { "+" } else { "" },
+                        if *lines == 1 { "line" } else { "lines" }
+                    ),
                 )),
                 Content::Table(t) => {
                     let plus = if t.truncated { "+" } else { "" };
-                    rows.push((
-                        "Rows".into(),
-                        format!("{}{plus}", t.rows.len().saturating_sub(1)),
+                    pills.push((
+                        "Rows",
+                        format!("{}{plus} rows", t.rows.len().saturating_sub(1)),
                     ));
-                    rows.push(("Columns".into(), t.widths.len().to_string()));
+                    pills.push(("Columns", format!("{} cols", t.widths.len())));
                 }
                 Content::Archive { tree, .. } => {
                     let plus = if tree.truncated { "+" } else { "" };
                     let count = |n: usize, one: &str, many: &str| {
                         format!("{n}{plus} {}", if n == 1 { one } else { many })
                     };
-                    rows.push((
-                        "Contents".into(),
-                        format!(
-                            "{}, {}",
-                            count(tree.files, "file", "files"),
-                            count(tree.dirs, "folder", "folders")
-                        ),
-                    ));
-                    rows.push((
-                        "Unpacked".into(),
-                        format!("{}{plus}", util::human_size(tree.total_size())),
+                    pills.push(("Files", count(tree.files, "file", "files")));
+                    pills.push(("Folders", count(tree.dirs, "folder", "folders")));
+                    pills.push((
+                        "Unpacked",
+                        format!("{}{plus} unpacked", util::human_size(tree.total_size())),
                     ));
                 }
-                Content::Dir { entries } => rows.push((
-                    "Items".into(),
-                    entries
+                Content::Dir { entries } => {
+                    let n = entries
                         .iter()
                         .filter(|e| self.show_hidden || !e.hidden)
-                        .count()
-                        .to_string(),
-                )),
+                        .count();
+                    pills.push((
+                        "Items",
+                        format!("{n} {}", if n == 1 { "item" } else { "items" }),
+                    ));
+                }
                 _ => {}
             }
         }
-        rows.push(("Path".into(), e.path.display().to_string()));
 
         let (mut edit_permissions, mut hash) = (false, false);
         Panel::bottom("preview_info")
             .frame(Frame::new().inner_margin(Margin::symmetric(0, 8)))
             .resizable(false)
             .show(ui, |ui| {
-                egui::Grid::new("info")
-                    .num_columns(2)
-                    .spacing(vec2(12.0, 4.0))
-                    .show(ui, |ui| {
-                        for (k, v) in rows {
-                            ui.label(RichText::new(k).size(12.0).color(pal().faint));
-                            ui.add(
-                                egui::Label::new(RichText::new(v).size(12.0).color(pal().dim))
-                                    .wrap(),
-                            );
-                            ui.end_row();
-                        }
-                    });
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                    for (label, value) in pills {
+                        Frame::new()
+                            .fill(pal().surface)
+                            .stroke(egui::Stroke::new(1.0, pal().border))
+                            .corner_radius(CornerRadius::same(10))
+                            .inner_margin(Margin::symmetric(9, 2))
+                            .show(ui, |ui| {
+                                ui.add(egui::Label::new(
+                                    RichText::new(value).size(12.0).color(pal().dim),
+                                ))
+                                .on_hover_text(label);
+                            });
+                    }
+                });
+                if !rows.is_empty() {
+                    ui.add_space(4.0);
+                    egui::Grid::new("info")
+                        .num_columns(2)
+                        .spacing(vec2(12.0, 4.0))
+                        .show(ui, |ui| {
+                            for (k, v) in rows {
+                                ui.label(RichText::new(k).size(12.0).color(pal().faint));
+                                ui.add(
+                                    egui::Label::new(RichText::new(v).size(12.0).color(pal().dim))
+                                        .wrap(),
+                                );
+                                ui.end_row();
+                            }
+                        });
+                }
+                ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     if ui.small_button("Edit permissions…").clicked() {
                         edit_permissions = true;
