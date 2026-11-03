@@ -1695,6 +1695,37 @@ fn unknown_filters_are_flagged_in_the_status_bar() {
 }
 
 #[test]
+fn search_results_show_their_folder_in_list_and_icons_views() {
+    for mode in [ViewMode::List, ViewMode::Icons(1)] {
+        let dir = sandbox(&format!("result-folders-{mode:?}"));
+        fs::create_dir_all(dir.join("dest/deeper")).unwrap();
+        fs::write(dir.join("dest/deeper/notes.md"), "").unwrap();
+        fs::write(dir.join("top.md"), "").unwrap();
+        let mut d = Driver::new(dir.clone());
+        d.app.tab_mut().mode = mode;
+        d.until("listing", |a| !a.tab().loading);
+        d.app.tab_mut().filter = "ext:md".into();
+        d.app.start_search();
+        d.until("search", |a| !a.tab().search.as_ref().unwrap().running);
+        d.frame(Vec::new());
+        let shown = |t: &str| d.texts.iter().any(|(s, _)| s == t);
+        // Top-level files show the search folder's name, cut to fit narrow tiles.
+        let root = dir.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(shown("dest/deeper"), "{mode:?}: nested folder");
+        assert!(
+            d.texts.iter().any(|(s, _)| s == &root
+                || s.strip_suffix('…')
+                    .is_some_and(|start| root.starts_with(start))),
+            "{mode:?}: search root for top-level files"
+        );
+        // The folder line sits below its name.
+        let y = |t: &str| d.texts.iter().find(|(s, _)| s == t).unwrap().1.center().y;
+        assert!(y("dest/deeper") > y("notes.md"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
 fn search_highlights_matched_letters_in_every_view() {
     for mode in [ViewMode::Details, ViewMode::List, ViewMode::Icons(1)] {
         let dir = sandbox(&format!("highlights-{mode:?}"));

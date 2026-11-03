@@ -361,6 +361,7 @@ impl App {
                                                 entry,
                                                 false,
                                                 &query,
+                                                None,
                                             );
                                             if resp.clicked() {
                                                 inspect = Some((*entry).clone());

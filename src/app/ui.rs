@@ -18,6 +18,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 const ROW_H: f32 = 26.0;
+/// Extra height for the folder line under search results in List and Icons views.
+const FOLDER_LINE: f32 = 16.0;
 
 /// Preferred tile width for a folder shown in the inspector.
 const INSPECTOR_TILE: f32 = 112.0;
@@ -1828,8 +1830,15 @@ fn paint_row(painter: &Painter, rect: Rect, style: &RowPaint, e: &Entry, faded: 
     }
 }
 
-/// A List-mode cell: icon and name on one line.
-fn paint_cell(painter: &Painter, cell: Rect, e: &Entry, faded: bool, query: &crate::search::Query) {
+/// A List-mode cell: icon and name on one line, with the folder below for search results.
+fn paint_cell(
+    painter: &Painter,
+    cell: Rect,
+    e: &Entry,
+    faded: bool,
+    query: &crate::search::Query,
+    folder: Option<&str>,
+) {
     let alpha = if faded { 0.45 } else { 1.0 };
     let cy = cell.center().y;
     draw_entry_icon(
@@ -1840,14 +1849,58 @@ fn paint_cell(painter: &Painter, cell: Rect, e: &Entry, faded: bool, query: &cra
         util::category(&e.ext, e.is_dir),
     );
     let color = if e.hidden { pal().dim } else { pal().text };
+    let clip = painter.with_clip_rect(cell.shrink2(vec2(6.0, 0.0)).intersect(painter.clip_rect()));
+    let name_y = if folder.is_some() { cy - 8.0 } else { cy };
     paint_name(
-        &painter.with_clip_rect(cell.shrink2(vec2(6.0, 0.0)).intersect(painter.clip_rect())),
-        Pos2::new(cell.left() + 30.0, cy),
+        &clip,
+        Pos2::new(cell.left() + 30.0, name_y),
         &e.name,
         query,
         FontId::proportional(BODY),
         color.gamma_multiply(alpha),
     );
+    if let Some(folder) = folder {
+        let font = FontId::proportional(11.5);
+        let text = fit_folder(painter, folder, &font, cell.right() - cell.left() - 36.0);
+        clip.text(
+            Pos2::new(cell.left() + 30.0, cy + 9.0),
+            Align2::LEFT_CENTER,
+            text,
+            font,
+            pal().faint.gamma_multiply(alpha),
+        );
+    }
+}
+
+/// Shortens a folder path to fit `width` by dropping its first folders, so the
+/// ones closest to the file stay readable: "Work/Kestrel/src/app" → "…/src/app".
+fn fit_folder(painter: &Painter, folder: &str, font: &FontId, width: f32) -> String {
+    let fits = |s: &str| {
+        painter
+            .layout_no_wrap(s.to_string(), font.clone(), pal().faint)
+            .size()
+            .x
+            <= width
+    };
+    if fits(folder) {
+        return folder.to_string();
+    }
+    let parts: Vec<&str> = folder.split('/').collect();
+    if let Some(s) = (1..parts.len())
+        .map(|start| format!("…/{}", parts[start..].join("/")))
+        .find(|s| fits(s))
+    {
+        return s;
+    }
+    // Even the closest folder is too long: keep its start.
+    let last = parts[parts.len() - 1];
+    let prefix = if parts.len() > 1 { "…/" } else { "" };
+    let chars: Vec<char> = last.chars().collect();
+    (1..chars.len())
+        .rev()
+        .map(|n| format!("{prefix}{}…", chars[..n].iter().collect::<String>()))
+        .find(|s| fits(s))
+        .unwrap_or_else(|| "…".to_string())
 }
 
 fn paint_tile(
@@ -1857,9 +1910,11 @@ fn paint_tile(
     e: &Entry,
     faded: bool,
     query: &crate::search::Query,
+    folder: Option<&str>,
 ) {
     let alpha = if faded { 0.45 } else { 1.0 };
-    let side = tile.width().min(tile.height() - 48.0) - 16.0;
+    let label_h = 48.0 + if folder.is_some() { FOLDER_LINE } else { 0.0 };
+    let side = tile.width().min(tile.height() - label_h) - 16.0;
     let thumb_area = Rect::from_center_size(
         Pos2::new(tile.center().x, tile.top() + 8.0 + side / 2.0),
         vec2(tile.width() - 16.0, side),
@@ -1886,11 +1941,23 @@ fn paint_tile(
     job.wrap.break_anywhere = true;
     job.halign = Align::Center;
     let galley = painter.layout_job(job);
+    let name_bottom = thumb_area.bottom() + 8.0 + galley.size().y;
     painter.galley(
         Pos2::new(tile.center().x, thumb_area.bottom() + 8.0),
         galley,
         color,
     );
+    if let Some(folder) = folder {
+        let font = FontId::proportional(11.0);
+        let text = fit_folder(painter, folder, &font, tile.width() - 12.0);
+        painter.with_clip_rect(tile).text(
+            Pos2::new(tile.center().x, name_bottom + 2.0),
+            Align2::CENTER_TOP,
+            text,
+            font,
+            pal().faint.gamma_multiply(alpha),
+        );
+    }
 }
 
 /// Folder tiles at least this wide show their first children inside the folder.

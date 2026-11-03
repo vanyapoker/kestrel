@@ -10,9 +10,9 @@ use eframe::egui::{
 };
 
 use super::{
-    Columns, ROW_H, RowEnv, RowPaint, background_drop, chevron, drag_autoscroll, drop_hover,
-    empty_state, paint_cell, paint_name, paint_row, paint_tile, record_folder, row_interactions,
-    rubber_band, scroll_area, sort_arrow,
+    Columns, FOLDER_LINE, ROW_H, RowEnv, RowPaint, background_drop, chevron, drag_autoscroll,
+    drop_hover, empty_state, paint_cell, paint_name, paint_row, paint_tile, record_folder,
+    row_interactions, rubber_band, scroll_area, sort_arrow,
 };
 
 impl App {
@@ -451,12 +451,26 @@ impl App {
         let full = ui.available_rect_before_wrap();
         let mode = tab.mode;
         let query = tab.query();
+        // Search results also show their folder: one more line under each name.
+        let root = tab.search.as_ref().map(|s| {
+            s.root.file_name().map_or_else(
+                || s.root.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            )
+        });
+        let folder_line = if root.is_some() { FOLDER_LINE } else { 0.0 };
         let (cell, radius) = match mode {
             ViewMode::Icons(i) => {
                 let s = ICON_SIZES[i.min(ICON_SIZES.len() - 1)];
-                (vec2((s + 28.0).max(96.0), s + 56.0), 8)
+                (vec2((s + 28.0).max(96.0), s + 56.0 + folder_line), 8)
             }
-            _ => (vec2(240.0_f32.min(full.width() - 8.0).max(120.0), ROW_H), 5),
+            _ => (
+                vec2(
+                    240.0_f32.min(full.width() - 8.0).max(120.0),
+                    ROW_H + folder_line,
+                ),
+                5,
+            ),
         };
         let cols = ((full.width() - 8.0) / cell.x).floor().max(1.0) as usize;
         tab.grid_cols = cols;
@@ -532,12 +546,21 @@ impl App {
                         }
                         let faded = cut.is_some_and(|c| c.contains(&e.path))
                             || dragging.is_some_and(|d| d.0.contains(&e.path));
+                        let folder = root.as_deref().map(|root| match e.rel.as_deref() {
+                            Some("") | None => root,
+                            Some(rel) => rel,
+                        });
                         match mode {
                             ViewMode::Icons(_) => {
-                                paint_tile(painter, thumbs, tile, e, faded, &query)
+                                paint_tile(painter, thumbs, tile, e, faded, &query, folder)
                             }
-                            _ => paint_cell(painter, tile, e, faded, &query),
+                            _ => paint_cell(painter, tile, e, faded, &query, folder),
                         }
+                        let resp = if root.is_some() {
+                            resp.on_hover_text(e.path.display().to_string())
+                        } else {
+                            resp
+                        };
                         #[cfg(test)]
                         row_rects.insert(e.path.clone(), rect);
                         let env = RowEnv {
