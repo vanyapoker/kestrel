@@ -1916,6 +1916,17 @@ impl App {
             Cmd::UnbookmarkFolder => self.apply(Action::Unbookmark(self.tab().path.clone())),
             // Sorting by the current key again flips the order.
             Cmd::ReverseSort => self.apply(Action::Sort(self.tab().sort)),
+            Cmd::CopyToOtherPane | Cmd::MoveToOtherPane => {
+                if self.panes.len() > 1 {
+                    let dest = self.tab_in_pane(1 - self.active_pane).path.clone();
+                    let mode = if cmd == Cmd::CopyToOtherPane {
+                        DropMode::Copy
+                    } else {
+                        DropMode::Move
+                    };
+                    self.drop_paths(self.tab().targets(), dest, mode);
+                }
+            }
             Cmd::Help => {
                 self.dialog = Some(Dialog::Help {
                     filter: String::new(),

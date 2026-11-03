@@ -40,9 +40,15 @@ impl App {
         let mut items: Vec<Item> = COMMANDS
             .iter()
             .filter(|c| self.cmd_applies(c.cmd))
-            .map(|c| Item {
-                name: c.name.to_string(),
-                detail: c.keys.to_string(),
+            .map(|c| {
+                let (name, detail) = self
+                    .cmd_label(c.cmd)
+                    .unwrap_or_else(|| (c.name.to_string(), c.keys.to_string()));
+                (c, name, detail)
+            })
+            .map(|(c, name, detail)| Item {
+                name,
+                detail,
                 keywords: c.keywords,
                 state: self.cmd_state(c.cmd),
                 action: Action::Cmd(c.cmd),

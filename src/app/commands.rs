@@ -20,6 +20,11 @@ impl App {
             Cmd::ReopenTab => !self.closed_tabs.is_empty(),
             Cmd::NextTab | Cmd::PrevTab => self.panes[self.active_pane].tabs.len() > 1,
             Cmd::FocusOtherPane => self.panes.len() > 1,
+            Cmd::CopyToOtherPane | Cmd::MoveToOtherPane => {
+                self.panes.len() > 1
+                    && has_targets
+                    && self.tab_in_pane(1 - self.active_pane).path != tab.path
+            }
             Cmd::NewFolder | Cmd::NewFile | Cmd::Paste => tab.search.is_none(),
             Cmd::Rename
             | Cmd::BatchRename
@@ -49,6 +54,24 @@ impl App {
             Cmd::CancelJob => self.ops.queued.load(Ordering::Relaxed) > 0,
             _ => true,
         }
+    }
+
+    /// Palette name and detail for commands whose wording depends on the layout:
+    /// "Move to right pane", with the destination folder as the detail.
+    pub(super) fn cmd_label(&self, cmd: Cmd) -> Option<(String, String)> {
+        let verb = match cmd {
+            Cmd::CopyToOtherPane => "Copy",
+            Cmd::MoveToOtherPane => "Move",
+            _ => return None,
+        };
+        let other = 1 - self.active_pane.min(1);
+        let side = if other == 1 { "right" } else { "left" };
+        let dest = &self.tab_in_pane(other).path;
+        let folder = dest.file_name().map_or_else(
+            || dest.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        Some((format!("{verb} to {side} pane"), folder))
     }
 
     /// Current state shown beside a command, and whether it reads as "on".

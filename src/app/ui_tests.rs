@@ -1555,6 +1555,54 @@ fn help_lists_commands_and_search_syntax_and_filters_them() {
 }
 
 #[test]
+fn palette_copies_and_moves_the_selection_to_the_other_pane() {
+    let dir = sandbox("palette-other-pane");
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| !a.tab().loading);
+    let shown = |d: &Driver, t: &str| d.texts.iter().any(|(s, _)| s == t);
+    // No split yet: nothing to copy to.
+    d.app.palette.show();
+    d.frame(Vec::new());
+    d.frame(vec![Event::Text("pane".into())]);
+    d.frame(Vec::new());
+    assert!(!shown(&d, "Copy to right pane"));
+    d.frame(vec![press(Key::Escape, Modifiers::NONE)]);
+
+    d.app.run_cmd(Cmd::ToggleSplit);
+    d.app.active_pane = 1;
+    d.app.navigate(dir.join("dest"), History::Push);
+    d.until("right pane", |a| !a.tab().loading);
+    d.app.active_pane = 0;
+    d.app.tab_mut().select_path(&dir.join("a.txt"));
+    d.app.palette.show();
+    d.frame(Vec::new());
+    d.frame(vec![Event::Text("right pane".into())]);
+    d.frame(Vec::new());
+    assert!(shown(&d, "Copy to right pane") && shown(&d, "Move to right pane"));
+    assert!(shown(&d, "dest"), "destination folder shown");
+    d.frame(vec![
+        press(Key::A, Modifiers::COMMAND),
+        Event::Text("move to right".into()),
+    ]);
+    d.frame(vec![press(Key::Enter, Modifiers::NONE)]);
+    d.until("moved", |_| dir.join("dest/a.txt").exists());
+    assert!(!dir.join("a.txt").exists());
+
+    // From the right pane the other side is the left one; same folder hides it.
+    d.app.active_pane = 1;
+    d.app.tab_mut().select_path(&dir.join("dest/a.txt"));
+    d.app.palette.show();
+    d.frame(Vec::new());
+    d.frame(vec![Event::Text("copy to".into())]);
+    d.frame(Vec::new());
+    assert!(shown(&d, "Copy to left pane") && !shown(&d, "Copy to right pane"));
+    d.frame(vec![press(Key::Enter, Modifiers::NONE)]);
+    d.until("copied", |_| dir.join("a.txt").exists());
+    assert!(dir.join("dest/a.txt").exists());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn typing_a_filter_selects_the_best_fuzzy_match() {
     let dir = sandbox("fuzzy-filter");
     for name in ["Named", "NaDya", "nd-notes", "ND"] {
