@@ -2,7 +2,7 @@
 
 A keyboard-friendly file manager for [Omarchy](https://omarchy.org), inspired by [File Pilot](https://filepilot.tech).
 
-[![Kestrel with split panes and image previews](assets/screenshots/overview.png)](assets/screenshots/overview.png)
+[![Kestrel with the command palette open over a folder, with code thumbnails in the preview panel](assets/screenshots/overview.png)](assets/screenshots/overview.png)
 
 - Tabs, split panes, and Details, List, Icons, and Miller column views.
 - Fuzzy filtering, recursive search, bookmarks, and saved workspaces.
