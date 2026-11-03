@@ -20,7 +20,6 @@ pub struct Entry {
     pub hidden: bool,
     pub size: u64,
     pub modified: Option<SystemTime>,
-    pub mode: u32,
     /// Parent folder relative to the search root (search results only).
     pub rel: Option<String>,
 }
@@ -66,7 +65,6 @@ pub fn make_entry(path: PathBuf, name: String, lmeta: fs::Metadata) -> Entry {
         is_link,
         size: if is_dir { 0 } else { meta.len() },
         modified: meta.modified().ok(),
-        mode: meta.mode(),
         rel: None,
     }
 }
