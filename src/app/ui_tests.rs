@@ -1604,6 +1604,55 @@ fn recursive_search_reuses_its_scan_and_refresh_rebuilds_it() {
 }
 
 #[test]
+fn changing_the_query_during_a_scan_rechecks_what_it_found() {
+    let dir = sandbox("search-live");
+    fs::create_dir_all(dir.join("dest/deeper")).unwrap();
+    for i in 0..300 {
+        fs::write(dir.join("dest/deeper").join(format!("alpha-{i}.txt")), "").unwrap();
+    }
+    fs::write(dir.join("dest/beta.md"), "").unwrap();
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| !a.tab().loading);
+    d.app.tab_mut().filter = "alpha".into();
+    d.app.start_search();
+    // A different query, not a refinement, before the scan reports anything.
+    d.app.tab_mut().search.as_mut().unwrap().query = "beta".into();
+    d.app.restart_search();
+    let index_before = d.app.tab().search.as_ref().unwrap().index.is_none();
+    d.until("scan", |a| !a.tab().search.as_ref().unwrap().running);
+    d.frame(Vec::new());
+    let names: Vec<_> = d
+        .app
+        .tab()
+        .view
+        .iter()
+        .map(|&i| d.app.tab().entries[i].name.clone())
+        .collect();
+    assert_eq!(names, ["beta.md"]);
+    assert!(index_before && d.app.tab().search.as_ref().unwrap().index.is_some());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn unknown_filters_are_flagged_in_the_status_bar() {
+    let dir = sandbox("unknown-filter");
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| !a.tab().loading);
+    d.frame(vec![Event::Text("size:>1M".into())]);
+    d.frame(Vec::new());
+    assert!(
+        d.texts
+            .iter()
+            .any(|(t, _)| t.contains("Unknown filter size:>1M"))
+    );
+    d.frame(vec![press(Key::Escape, Modifiers::NONE)]);
+    d.frame(vec![Event::Text("type:image".into())]);
+    d.frame(Vec::new());
+    assert!(!d.texts.iter().any(|(t, _)| t.contains("Unknown filter")));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn search_highlights_matched_letters_in_every_view() {
     for mode in [ViewMode::Details, ViewMode::List, ViewMode::Icons(1)] {
         let dir = sandbox(&format!("highlights-{mode:?}"));
@@ -1653,6 +1702,7 @@ fn streamed_search_promotes_better_matches_and_keeps_manual_selection() {
             .send(SearchMsg {
                 tab_id,
                 generation,
+                rev: 0,
                 batch: vec![entry],
                 done: false,
                 truncated: false,

@@ -915,7 +915,7 @@ impl App {
                         s.restart_at = Some(Instant::now() + super::SEARCH_DEBOUNCE);
                         ui.ctx().request_repaint_after(super::SEARCH_DEBOUNCE);
                     }
-                    resp.on_hover_text("Fuzzy names · ext:pdf,jpg · type:folder / type:file\n\"literal phrase\" · =exact-name.txt · F5 rescans folders");
+                    resp.on_hover_text(format!("Fuzzy names · {}\n\"literal phrase\" · =exact-name.txt · F5 rescans folders", crate::search::FILTER_HELP));
                 });
                 if search_focus {
                     self.search_focus = false;
@@ -1071,6 +1071,20 @@ impl App {
                         "·  {n} selected ({})",
                         util::human_size(bytes)
                     )));
+                }
+                // Unknown filters only match file names, which usually finds nothing.
+                let unknown = tab.query().unknown;
+                if !unknown.is_empty() {
+                    let names = unknown.join(", ");
+                    ui.label(
+                        RichText::new(format!("·  Unknown filter {names}"))
+                            .size(12.0)
+                            .color(pal().danger),
+                    )
+                    .on_hover_text(format!(
+                        "Matched as part of a name instead. Filters: {}",
+                        crate::search::FILTER_HELP
+                    ));
                 }
             }
 

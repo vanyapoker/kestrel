@@ -81,6 +81,10 @@ pub struct Search {
     pub restart_at: Option<Instant>,
     pub index: Option<Arc<crate::search::Index>>,
     pub active_query: String,
+    /// Revision of the query sent to a running scan; results for older ones are dropped.
+    pub rev: u64,
+    /// Sends query changes to the running scan.
+    pub live: Option<std::sync::mpsc::Sender<crate::search::Update>>,
 }
 
 /// Inactive directories hold their own listing state; the active slot is a placeholder.

@@ -1,18 +1,30 @@
-//! Recursive filename search, parallel over the directory tree. Results stream
-//! back in batches so the first matches show up immediately.
+//! Recursive filename search, parallel over the directory tree. Walker threads
+//! only collect names; a streaming loop scores them against whatever the query
+//! currently is, so the first matches show up immediately and editing the query
+//! mid-scan re-checks everything found so far.
 
 use crate::fsops::{Entry, make_entry};
+use crate::util::{self, Category};
 use eframe::egui;
 use ignore::{DirEntry, ParallelVisitor, ParallelVisitorBuilder, WalkBuilder, WalkState};
+use rayon::prelude::*;
+use std::borrow::Cow;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
+use std::ffi::OsStr;
+use std::ops::Range;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 pub const MAX_RESULTS: usize = 20_000;
-const BATCH: usize = 256;
+/// Items a walker thread gathers before adding them to the shared index.
+const CHUNK: usize = 2048;
+/// How often new matches stream in while the walk runs.
+const STREAM_EVERY: Duration = Duration::from_millis(40);
 
 /// A case-insensitive filename query. Space-separated terms must all match;
 /// letters within each term may have gaps, as in "nd" matching "NaDya".
@@ -23,6 +35,10 @@ pub struct Query {
     exact: Option<String>,
     extensions: Vec<String>,
     directory: Option<bool>,
+    category: Option<Category>,
+    /// Tokens shaped like a filter (`size:>1M`) that aren't one; they are
+    /// still matched against names, but the UI warns about them.
+    pub unknown: Vec<String>,
 }
 
 /// Higher scores rank first. Match quality takes precedence over filename length.
@@ -34,6 +50,23 @@ pub struct MatchScore {
     length: Reverse<usize>,
 }
 
+/// File categories `type:` accepts, besides folder and file.
+const TYPES: &[(&str, Category)] = &[
+    ("image", Category::Image),
+    ("video", Category::Video),
+    ("audio", Category::Audio),
+    ("music", Category::Audio),
+    ("archive", Category::Archive),
+    ("document", Category::Document),
+    ("doc", Category::Document),
+    ("code", Category::Code),
+    ("text", Category::Text),
+];
+
+/// Filters for the search box hint and the unknown-filter warning.
+pub const FILTER_HELP: &str =
+    "ext:pdf,jpg · type:folder, file, image, video, audio, document, code";
+
 impl Query {
     pub fn new(query: &str) -> Self {
         let mut q = Self {
@@ -43,8 +76,12 @@ impl Query {
             exact: None,
             extensions: Vec::new(),
             directory: None,
+            category: None,
+            unknown: Vec::new(),
         };
         let mut token = String::new();
+        // The token as typed, for warnings.
+        let mut typed = String::new();
         let mut quoted = false;
         let mut literal = false;
         let mut tokens = Vec::new();
@@ -54,37 +91,54 @@ impl Query {
                 literal = true;
             } else if c.is_whitespace() && !quoted {
                 if !token.is_empty() {
-                    tokens.push((std::mem::take(&mut token), literal));
+                    tokens.push((
+                        std::mem::take(&mut token),
+                        std::mem::take(&mut typed),
+                        literal,
+                    ));
                     literal = false;
                 }
             } else {
                 token.extend(c.to_lowercase());
+                typed.push(c);
             }
         }
         if !token.is_empty() {
-            tokens.push((token.trim_end().to_string(), literal));
+            tokens.push((token.trim_end().to_string(), typed, literal));
         }
         let mut words = Vec::new();
-        for (token, literal) in tokens {
-            if let Some(ext) = token.strip_prefix("ext:").filter(|_| !literal) {
-                q.extensions.extend(
+        for (token, typed, literal) in tokens {
+            let filter = (!literal).then(|| token.split_once(':')).flatten();
+            match filter {
+                Some(("ext", ext)) if !ext.is_empty() => q.extensions.extend(
                     ext.split(',')
                         .map(|e| e.trim_start_matches('.').to_string())
                         .filter(|e| !e.is_empty()),
-                );
-            } else if !literal && (token == "type:folder" || token == "type:dir") {
-                q.directory = Some(true);
-            } else if !literal && token == "type:file" {
-                q.directory = Some(false);
-            } else if let Some(exact) = token.strip_prefix('=') {
-                q.exact = Some(exact.to_string());
-                words.push(exact.to_string());
-            } else {
-                if literal {
-                    q.literals.push(token.clone());
+                ),
+                Some(("type", "folder" | "dir")) => q.directory = Some(true),
+                Some(("type", "file")) => q.directory = Some(false),
+                Some(("type", kind)) if TYPES.iter().any(|(name, _)| *name == kind) => {
+                    q.directory = Some(false);
+                    q.category = TYPES.iter().find(|(name, _)| *name == kind).map(|t| t.1);
                 }
-                q.terms.push(token.chars().collect());
-                words.push(token);
+                _ => {
+                    if let Some(exact) = token.strip_prefix('=') {
+                        q.exact = Some(exact.to_string());
+                        words.push(exact.to_string());
+                        continue;
+                    }
+                    // "word:" looks like a filter; a drive letter or time ("c:", "10:30") doesn't.
+                    if filter.is_some_and(|(key, _)| {
+                        key.len() > 1 && key.chars().all(|c| c.is_ascii_alphabetic())
+                    }) {
+                        q.unknown.push(typed);
+                    }
+                    if literal {
+                        q.literals.push(token.clone());
+                    }
+                    q.terms.push(token.chars().collect());
+                    words.push(token);
+                }
             }
         }
         q.literal = words.join(" ");
@@ -95,13 +149,18 @@ impl Query {
         if self.directory.is_some_and(|d| d != is_dir) {
             return None;
         }
-        if !self.extensions.is_empty() {
+        if !self.extensions.is_empty() || self.category.is_some() {
             let ext = Path::new(name)
                 .extension()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_lowercase();
-            if is_dir || !self.extensions.contains(&ext) {
+            if is_dir
+                || (!self.extensions.is_empty() && !self.extensions.contains(&ext))
+                || self
+                    .category
+                    .is_some_and(|c| util::category(&ext, false) != c)
+            {
                 return None;
             }
         }
@@ -111,6 +170,26 @@ impl Query {
     /// Cheap eligibility check for the directory walker; scoring happens once
     /// per result when the tab builds its view, never inside the sort comparator.
     pub fn matches(&self, name: &str) -> bool {
+        if name.is_ascii() {
+            // Most names are ASCII: compare bytes without lowercasing a copy.
+            // A non-ASCII query letter can never match an ASCII name.
+            let b = name.as_bytes();
+            let contains = |s: &str| {
+                s.is_empty()
+                    || b.windows(s.len())
+                        .any(|w| w.eq_ignore_ascii_case(s.as_bytes()))
+            };
+            return !self
+                .exact
+                .as_ref()
+                .is_some_and(|e| !b.eq_ignore_ascii_case(e.as_bytes()))
+                && self.literals.iter().all(|s| contains(s))
+                && self.terms.iter().all(|term| {
+                    let mut bytes = b.iter();
+                    term.iter()
+                        .all(|&q| q.is_ascii() && bytes.any(|c| c.to_ascii_lowercase() == q as u8))
+                });
+        }
         let lower = name.to_lowercase();
         !self.exact.as_ref().is_some_and(|e| e != &lower)
             && self.literals.iter().all(|s| lower.contains(s))
@@ -133,58 +212,44 @@ impl Query {
         if self.terms.is_empty() {
             return Some(MatchScore::default());
         }
-        let original: Vec<char> = name.chars().collect();
-        let mut text = Vec::new();
-        let mut boundaries = Vec::new();
-        for (i, &c) in original.iter().enumerate() {
-            let boundary = i == 0
-                || !original[i - 1].is_alphanumeric()
-                || (original[i - 1].is_lowercase() && c.is_uppercase())
-                || (c.is_uppercase() && original.get(i + 1).is_some_and(|c| c.is_lowercase()));
-            for (j, lower) in c.to_lowercase().enumerate() {
-                text.push(lower);
-                boundaries.push(boundary && j == 0);
-            }
+        thread_local! {
+            // Ranking scores millions of names; reuse the buffers.
+            static FOLDED: std::cell::RefCell<Folded> = std::cell::RefCell::new(Folded::default());
         }
-        let mut kind = 2;
-        let mut quality = 0;
-        for term in &self.terms {
-            if term.len() > text.len() {
-                return None;
+        FOLDED.with_borrow_mut(|folded| {
+            folded.fill(name);
+            let mut kind = 2;
+            let mut quality = 0;
+            for term in &self.terms {
+                if let Some((contiguous, _)) = folded.contiguous(term) {
+                    quality += contiguous;
+                } else {
+                    kind = 1;
+                    quality += folded.subsequence(term, false)?.0;
+                }
             }
-            if let Some(contiguous) = text
-                .windows(term.len())
-                .enumerate()
-                .filter(|(_, window)| *window == term.as_slice())
-                .map(|(start, _)| (if boundaries[start] { 24 } else { 0 }) - start as i64)
-                .max()
-            {
-                quality += contiguous;
+            // A complete phrase beats the same words scattered through a name.
+            let lower = name.to_lowercase();
+            kind = if lower == self.literal {
+                5
+            } else if lower.starts_with(&self.literal) {
+                4
+            } else if lower.contains(&self.literal) {
+                3
             } else {
-                kind = 1;
-                quality += subsequence_score(term, &text, &boundaries)?;
-            }
-        }
-        // A complete phrase beats the same words scattered through a name.
-        let lower = name.to_lowercase();
-        kind = if lower == self.literal {
-            5
-        } else if lower.starts_with(&self.literal) {
-            4
-        } else if lower.contains(&self.literal) {
-            3
-        } else {
-            kind
-        };
-        Some(MatchScore {
-            kind,
-            quality,
-            length: Reverse(text.len()),
+                kind
+            };
+            Some(MatchScore {
+                kind,
+                quality,
+                length: Reverse(folded.text.len()),
+            })
         })
     }
 
-    /// Character offsets, so highlights remain correct for UTF-8 and lowercase
-    /// expansions (for example capital dotted İ).
+    /// Character offsets of the letters `score` matched, so highlights show the
+    /// alignment that ranked the name. Offsets stay correct for UTF-8 and
+    /// lowercase expansions (for example capital dotted İ).
     pub fn highlights(&self, name: &str) -> Vec<usize> {
         if !self.matches(name) {
             return Vec::new();
@@ -192,28 +257,17 @@ impl Query {
         if self.exact.is_some() {
             return (0..name.chars().count()).collect();
         }
-        let mut text = Vec::new();
-        let mut original = Vec::new();
-        for (i, c) in name.chars().enumerate() {
-            for lower in c.to_lowercase() {
-                text.push(lower);
-                original.push(i);
-            }
-        }
+        let folded = Folded::new(name);
         let mut matched = Vec::new();
         for term in &self.terms {
-            if let Some(start) = text.windows(term.len()).position(|w| w == term.as_slice()) {
-                matched.extend(original[start..start + term.len()].iter().copied());
-            } else {
-                let mut start = 0;
-                for &q in term {
-                    if let Some(offset) = text[start..].iter().position(|&c| c == q) {
-                        start += offset;
-                        matched.push(original[start]);
-                        start += 1;
-                    }
-                }
-            }
+            let positions: Vec<usize> = match folded.contiguous(term) {
+                Some((_, start)) => (start..start + term.len()).collect(),
+                None => folded
+                    .subsequence(term, true)
+                    .map(|m| m.1)
+                    .unwrap_or_default(),
+            };
+            matched.extend(positions.into_iter().map(|p| folded.original[p]));
         }
         matched.sort_unstable();
         matched.dedup();
@@ -221,51 +275,298 @@ impl Query {
     }
 }
 
-/// Best subsequence alignment, rather than greedily taking the first occurrence
-/// of each letter. Rewards word/camel-case starts, consecutive letters and small gaps.
-fn subsequence_score(term: &[char], text: &[char], boundaries: &[bool]) -> Option<i64> {
-    const MISS: i64 = i64::MIN / 4;
-    let mut previous = vec![MISS; text.len()];
-    let mut current = vec![MISS; text.len()];
-    for (qi, &q) in term.iter().enumerate() {
-        let mut best_gap = MISS;
-        for (i, &c) in text.iter().enumerate() {
-            if i > 0 {
-                best_gap = best_gap.max(previous[i - 1] + 2 * (i - 1) as i64);
-            }
-            current[i] = MISS;
-            if c != q {
-                continue;
-            }
-            let base = if qi == 0 {
-                -(i as i64)
-            } else {
-                let consecutive = if i > 0 { previous[i - 1] + 24 } else { MISS };
-                consecutive.max(best_gap - 2 * i.saturating_sub(1) as i64)
-            };
-            if base > MISS / 2 {
-                current[i] = base + 16 + if boundaries[i] { 24 } else { 0 };
-            }
-        }
-        std::mem::swap(&mut previous, &mut current);
+/// A name lowercased for matching, with word starts and the original character
+/// index of each lowercase character.
+#[derive(Default)]
+struct Folded {
+    text: Vec<char>,
+    boundaries: Vec<bool>,
+    original: Vec<usize>,
+}
+
+impl Folded {
+    fn new(name: &str) -> Self {
+        let mut f = Folded::default();
+        f.fill(name);
+        f
     }
-    previous.into_iter().max().filter(|&s| s > MISS / 2)
+
+    fn fill(&mut self, name: &str) {
+        self.text.clear();
+        self.boundaries.clear();
+        self.original.clear();
+        let mut chars = name.chars().enumerate().peekable();
+        let mut prev: Option<char> = None;
+        while let Some((i, c)) = chars.next() {
+            let boundary = prev.is_none_or(|p| {
+                !p.is_alphanumeric()
+                    || (p.is_lowercase() && c.is_uppercase())
+                    || (c.is_uppercase() && chars.peek().is_some_and(|(_, n)| n.is_lowercase()))
+            });
+            if c.is_ascii() {
+                self.text.push(c.to_ascii_lowercase());
+                self.boundaries.push(boundary);
+                self.original.push(i);
+            } else {
+                for (j, lower) in c.to_lowercase().enumerate() {
+                    self.text.push(lower);
+                    self.boundaries.push(boundary && j == 0);
+                    self.original.push(i);
+                }
+            }
+            prev = Some(c);
+        }
+    }
+
+    /// Best place the term appears unbroken, preferring word starts, then early.
+    fn contiguous(&self, term: &[char]) -> Option<(i64, usize)> {
+        if term.len() > self.text.len() {
+            return None;
+        }
+        self.text
+            .windows(term.len())
+            .enumerate()
+            .filter(|(_, window)| *window == term)
+            .map(|(start, _)| {
+                let bonus = if self.boundaries[start] { 24 } else { 0 };
+                (bonus - start as i64, start)
+            })
+            .max_by_key(|&(quality, start)| (quality, Reverse(start)))
+    }
+
+    /// Best subsequence alignment, rather than greedily taking the first occurrence
+    /// of each letter. Rewards word/camel-case starts, consecutive letters and small
+    /// gaps. With `trace`, also returns the matched positions.
+    fn subsequence(&self, term: &[char], trace: bool) -> Option<(i64, Vec<usize>)> {
+        const MISS: i64 = i64::MIN / 4;
+        let (text, n) = (&self.text, self.text.len());
+        if term.is_empty() || term.len() > n {
+            return None;
+        }
+        let mut previous = vec![MISS; n];
+        let mut current = vec![MISS; n];
+        // from[qi * n + i]: where the previous letter matched, for the best score
+        // that matches letter qi at position i.
+        let mut from = if trace {
+            vec![0; term.len() * n]
+        } else {
+            Vec::new()
+        };
+        for (qi, &q) in term.iter().enumerate() {
+            let (mut best_gap, mut gap_at) = (MISS, 0);
+            for (i, &c) in text.iter().enumerate() {
+                if i > 0 && previous[i - 1] + 2 * (i - 1) as i64 >= best_gap {
+                    best_gap = previous[i - 1] + 2 * (i - 1) as i64;
+                    gap_at = i - 1;
+                }
+                current[i] = MISS;
+                if c != q {
+                    continue;
+                }
+                let (base, prev) = if qi == 0 {
+                    (-(i as i64), 0)
+                } else {
+                    let consecutive = if i > 0 { previous[i - 1] + 24 } else { MISS };
+                    let gap = best_gap - 2 * i.saturating_sub(1) as i64;
+                    if consecutive >= gap {
+                        (consecutive, i.saturating_sub(1))
+                    } else {
+                        (gap, gap_at)
+                    }
+                };
+                if base > MISS / 2 {
+                    current[i] = base + 16 + if self.boundaries[i] { 24 } else { 0 };
+                    if trace {
+                        from[qi * n + i] = prev;
+                    }
+                }
+            }
+            std::mem::swap(&mut previous, &mut current);
+        }
+        let (end, score) = previous
+            .iter()
+            .copied()
+            .enumerate()
+            .max_by_key(|&(i, s)| (s, Reverse(i)))
+            .filter(|&(_, s)| s > MISS / 2)?;
+        let mut positions = Vec::new();
+        if trace {
+            let mut i = end;
+            for qi in (0..term.len()).rev() {
+                positions.push(i);
+                i = from[qi * n + i];
+            }
+            positions.reverse();
+        }
+        Some((score, positions))
+    }
 }
 
-/// A lightweight, reusable directory scan: metadata is loaded only for results.
+/// Every name under the search root, reusable across queries. Names are packed
+/// into one buffer and folders are shared by their items, which takes about a
+/// quarter of the memory of a full path per item.
 pub struct Index {
-    pub candidates: Vec<Candidate>,
     pub show_hidden: bool,
+    dirs: Vec<PathBuf>,
+    names: Vec<u8>,
+    items: Vec<Item>,
 }
 
-pub struct Candidate {
-    pub path: PathBuf,
-    pub is_dir: bool,
+#[derive(Clone, Copy)]
+struct Item {
+    name: u32,
+    len: u16,
+    dir: u32,
+    is_dir: bool,
+}
+
+impl Index {
+    fn new(show_hidden: bool) -> Self {
+        Self {
+            show_hidden,
+            dirs: Vec::new(),
+            names: Vec::new(),
+            items: Vec::new(),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    fn push(&mut self, path: &Path, is_dir: bool) {
+        let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+            return;
+        };
+        // A folder's entries arrive together, so checking the last folder dedupes them.
+        if self.dirs.last().map(PathBuf::as_path) != Some(dir) {
+            self.dirs.push(dir.to_path_buf());
+        }
+        let bytes = name.as_bytes();
+        self.items.push(Item {
+            name: self.names.len() as u32,
+            len: bytes.len().min(u16::MAX as usize) as u16,
+            dir: (self.dirs.len() - 1) as u32,
+            is_dir,
+        });
+        self.names
+            .extend_from_slice(&bytes[..bytes.len().min(u16::MAX as usize)]);
+    }
+
+    /// Moves another index's items to the end of this one.
+    fn append(&mut self, other: &mut Index) {
+        let (names, dirs) = (self.names.len() as u32, self.dirs.len() as u32);
+        self.items.extend(other.items.drain(..).map(|item| Item {
+            name: item.name + names,
+            dir: item.dir + dirs,
+            ..item
+        }));
+        self.names.append(&mut other.names);
+        self.dirs.append(&mut other.dirs);
+    }
+
+    fn name_bytes(&self, i: usize) -> &[u8] {
+        let item = self.items[i];
+        &self.names[item.name as usize..item.name as usize + item.len as usize]
+    }
+
+    fn name(&self, i: usize) -> Cow<'_, str> {
+        String::from_utf8_lossy(self.name_bytes(i))
+    }
+
+    fn path(&self, i: usize) -> PathBuf {
+        self.dirs[self.items[i].dir as usize].join(OsStr::from_bytes(self.name_bytes(i)))
+    }
+
+    /// The best matches among `range`, best first, and how many matched in all.
+    /// The limit bounds displayed results, never the scan: a late exact match can
+    /// replace an early fuzzy one.
+    fn best_matches(
+        &self,
+        range: Range<usize>,
+        query: &Query,
+        limit: usize,
+        cancel: &AtomicBool,
+    ) -> (Vec<usize>, usize) {
+        // Ties go to the earlier item; the view orders equal matches itself.
+        type Ranked = Reverse<(MatchScore, Reverse<usize>)>;
+        let keep = |heap: &mut BinaryHeap<Ranked>, rank: Ranked| {
+            if heap.len() < limit {
+                heap.push(rank);
+            } else if heap.peek().is_some_and(|worst| rank < *worst) {
+                heap.pop();
+                heap.push(rank);
+            }
+        };
+        if limit == 0 {
+            return (Vec::new(), 0);
+        }
+        let (best, total) = range
+            .into_par_iter()
+            .with_min_len(4096)
+            .fold(
+                || (BinaryHeap::new(), 0usize),
+                |(mut heap, total), i| {
+                    if cancel.load(Ordering::Relaxed) {
+                        return (heap, total);
+                    }
+                    match query.score_name(&self.name(i), self.items[i].is_dir) {
+                        Some(score) => {
+                            keep(&mut heap, Reverse((score, Reverse(i))));
+                            (heap, total + 1)
+                        }
+                        None => (heap, total),
+                    }
+                },
+            )
+            .reduce(
+                || (BinaryHeap::new(), 0),
+                |(a, x), (b, y)| {
+                    let (mut a, b) = if a.len() >= b.len() { (a, b) } else { (b, a) };
+                    for rank in b {
+                        keep(&mut a, rank);
+                    }
+                    (a, x + y)
+                },
+            );
+        (
+            best.into_sorted_vec()
+                .into_iter()
+                .map(|Reverse((_, Reverse(i)))| i)
+                .collect(),
+            total,
+        )
+    }
+
+    fn paths(&self, items: &[usize]) -> Vec<PathBuf> {
+        items.iter().map(|&i| self.path(i)).collect()
+    }
+}
+
+/// Entries for the given paths, read in parallel; paths deleted since the scan
+/// are skipped.
+fn entries(root: &Path, paths: Vec<PathBuf>, cancel: &AtomicBool) -> Vec<Entry> {
+    paths
+        .into_par_iter()
+        .filter_map(|path| {
+            if cancel.load(Ordering::Relaxed) {
+                return None;
+            }
+            let meta = std::fs::symlink_metadata(&path).ok()?;
+            let name = path.file_name()?.to_string_lossy().into_owned();
+            let rel = relative_parent(root, &path);
+            let mut e = make_entry(path, name, meta);
+            e.rel = Some(rel);
+            Some(e)
+        })
+        .collect()
 }
 
 pub struct SearchMsg {
     pub tab_id: u64,
     pub generation: u64,
+    /// Which query revision of the search the results are for.
+    pub rev: u64,
     pub batch: Vec<Entry>,
     pub done: bool,
     pub truncated: bool,
@@ -273,75 +574,129 @@ pub struct SearchMsg {
     pub index: Option<Arc<Index>>,
 }
 
+/// A new query for a search whose scan is still running. `None` shows nothing
+/// while the scan goes on building the index.
+pub struct Update {
+    pub rev: u64,
+    pub query: Option<String>,
+}
+
 pub struct Request {
     pub tab_id: u64,
     pub generation: u64,
     pub root: PathBuf,
-    pub query: String,
+    pub query: Option<String>,
     pub show_hidden: bool,
     pub cancel: Arc<AtomicBool>,
     pub index: Option<Arc<Index>>,
-}
-
-/// Keep the best matches across the entire scan. The limit bounds displayed
-/// results, never the traversal; a late exact match can replace an early fuzzy one.
-fn best_matches(
-    index: &Index,
-    query: &Query,
-    limit: usize,
-    cancel: &AtomicBool,
-) -> (Vec<usize>, bool) {
-    let mut best = BinaryHeap::new();
-    let mut total = 0;
-    for (i, c) in index.candidates.iter().enumerate() {
-        if cancel.load(Ordering::Relaxed) {
-            break;
-        }
-        let name = c.path.file_name().unwrap_or_default().to_string_lossy();
-        if let Some(score) = query.score_name(&name, c.is_dir) {
-            total += 1;
-            let rank = (score, Reverse(&c.path), i);
-            if best.len() < limit {
-                best.push(Reverse(rank));
-            } else if best.peek().is_some_and(|worst| rank > worst.0) {
-                best.pop();
-                best.push(Reverse(rank));
-            }
-        }
-    }
-    (
-        best.into_sorted_vec()
-            .into_iter()
-            .map(|Reverse((_, _, i))| i)
-            .collect(),
-        total > limit,
-    )
-}
-
-fn entry(root: &Path, path: &Path) -> Option<Entry> {
-    let meta = std::fs::symlink_metadata(path).ok()?;
-    let name = path.file_name()?.to_string_lossy().into_owned();
-    let mut e = make_entry(path.to_path_buf(), name, meta);
-    e.rel = Some(relative_parent(root, path));
-    Some(e)
+    /// Query changes while scanning; unused when `index` can be reused.
+    pub updates: Receiver<Update>,
 }
 
 pub fn spawn(req: Request, tx: Sender<SearchMsg>, ctx: egui::Context) {
     std::thread::spawn(move || {
-        let query = Query::new(&req.query);
-        let index = match req.index.clone() {
-            Some(index) if index.show_hidden == req.show_hidden => index,
-            _ => {
-                let shared = Shared {
-                    req: &req,
-                    query: &query,
-                    count: AtomicUsize::new(0),
-                    candidates: Mutex::new(Vec::new()),
-                    tx: &tx,
-                    ctx: &ctx,
-                };
-                WalkBuilder::new(&req.root)
-                    .hidden(!req.show_hidden)
+        let job = Job {
+            req: &req,
+            tx: &tx,
+            ctx: &ctx,
+        };
+        let reusable = req
+            .index
+            .clone()
+            .filter(|index| index.show_hidden == req.show_hidden);
+        // `streamed`: how many matched during the scan, when those results are
+        // already the full answer for the final query.
+        let (index, mut rev, mut query, mut streamed) = match reusable {
+            Some(index) => (index, 0, req.query.as_deref().map(Query::new), None),
+            None => match job.scan() {
+                Some(s) => (s.index, s.rev, s.query, Some(s.matched)),
+                None => return,
+            },
+        };
+        // Pick up a query typed just as the scan finished.
+        while let Ok(update) = req.updates.try_recv() {
+            rev = update.rev;
+            query = update.query.as_deref().map(Query::new);
+            streamed = None;
+        }
+        if streamed.is_some_and(|total| total <= MAX_RESULTS) {
+            job.send(SearchMsg {
+                rev,
+                done: true,
+                index: Some(index),
+                ..job.msg()
+            });
+            return;
+        }
+        let (best, total) = match &query {
+            Some(q) => index.best_matches(0..index.len(), q, MAX_RESULTS, &req.cancel),
+            None => (Vec::new(), 0),
+        };
+        let batch = entries(&req.root, index.paths(&best), &req.cancel);
+        if req.cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        job.send(SearchMsg {
+            rev,
+            batch,
+            done: true,
+            truncated: total > MAX_RESULTS,
+            replace: true,
+            index: Some(index),
+            ..job.msg()
+        });
+    });
+}
+
+/// A finished scan and the query revision it ended on.
+struct Scanned {
+    index: Arc<Index>,
+    rev: u64,
+    query: Option<Query>,
+    /// Items matching that query; the streamed results are complete when it fits the limit.
+    matched: usize,
+}
+
+struct Job<'a> {
+    req: &'a Request,
+    tx: &'a Sender<SearchMsg>,
+    ctx: &'a egui::Context,
+}
+
+impl Job<'_> {
+    fn msg(&self) -> SearchMsg {
+        SearchMsg {
+            tab_id: self.req.tab_id,
+            generation: self.req.generation,
+            rev: 0,
+            batch: Vec::new(),
+            done: false,
+            truncated: false,
+            replace: false,
+            index: None,
+        }
+    }
+
+    fn send(&self, msg: SearchMsg) {
+        let _ = self.tx.send(msg);
+        self.ctx.request_repaint();
+    }
+
+    /// Walks the tree into a new index while streaming matches for the latest
+    /// query. Returns the index with the query revision current at the end, or
+    /// `None` when cancelled.
+    fn scan(&self) -> Option<Scanned> {
+        let req = self.req;
+        let shared = Mutex::new(Index::new(req.show_hidden));
+        let walking = AtomicBool::new(true);
+        let mut rev = 0;
+        let mut query = req.query.as_deref().map(Query::new);
+        let mut matched = 0;
+        let (root, show_hidden, cancel) = (&req.root, req.show_hidden, &*req.cancel);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                WalkBuilder::new(root)
+                    .hidden(!show_hidden)
                     .ignore(false)
                     .git_ignore(false)
                     .git_global(false)
@@ -355,83 +710,119 @@ pub fn spawn(req: Request, tx: Sender<SearchMsg>, ctx: egui::Context) {
                             .unwrap_or(4),
                     )
                     .build_parallel()
-                    .visit(&mut VisitorBuilder(&shared));
-                Arc::new(Index {
-                    candidates: shared.candidates.into_inner().expect("lock poisoned"),
-                    show_hidden: req.show_hidden,
-                })
+                    .visit(&mut VisitorBuilder {
+                        shared: &shared,
+                        cancel,
+                    });
+                walking.store(false, Ordering::Release);
+            });
+            // Items scored against the current query, and matches sent for it.
+            let (mut scored, mut sent, mut replace) = (0, 0, true);
+            let mut updates_open = true;
+            loop {
+                let finished = !walking.load(Ordering::Acquire);
+                if req.cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+                let (paths, end) = {
+                    let index = shared.lock().expect("lock poisoned");
+                    let end = index.len();
+                    let best = match &query {
+                        Some(q) => {
+                            let (best, total) =
+                                index.best_matches(scored..end, q, MAX_RESULTS - sent, &req.cancel);
+                            matched += total;
+                            best
+                        }
+                        None => Vec::new(),
+                    };
+                    (index.paths(&best), end)
+                };
+                let batch = entries(&req.root, paths, &req.cancel);
+                scored = end;
+                if replace || !batch.is_empty() {
+                    sent += batch.len();
+                    self.send(SearchMsg {
+                        rev,
+                        batch,
+                        replace,
+                        ..self.msg()
+                    });
+                    replace = false;
+                }
+                if finished {
+                    break;
+                }
+                let update = if updates_open {
+                    match req.updates.recv_timeout(STREAM_EVERY) {
+                        Ok(update) => Some(update),
+                        Err(RecvTimeoutError::Timeout) => None,
+                        Err(RecvTimeoutError::Disconnected) => {
+                            updates_open = false;
+                            None
+                        }
+                    }
+                } else {
+                    std::thread::sleep(STREAM_EVERY);
+                    None
+                };
+                if let Some(mut update) = update {
+                    while let Ok(newer) = req.updates.try_recv() {
+                        update = newer;
+                    }
+                    rev = update.rev;
+                    query = update.query.as_deref().map(Query::new);
+                    (scored, sent, matched, replace) = (0, 0, 0, true);
+                }
             }
-        };
-        if req.cancel.load(Ordering::Relaxed) {
-            return;
-        }
-        let (matches, truncated) = best_matches(&index, &query, MAX_RESULTS, &req.cancel);
-        let mut batch = Vec::new();
-        for i in matches {
-            if req.cancel.load(Ordering::Relaxed) {
-                return;
-            }
-            if let Some(e) = entry(&req.root, &index.candidates[i].path) {
-                batch.push(e);
-            }
-        }
-        let _ = tx.send(SearchMsg {
-            tab_id: req.tab_id,
-            generation: req.generation,
-            batch,
-            done: true,
-            truncated,
-            replace: true,
-            index: Some(index),
         });
-        ctx.request_repaint();
-    });
+        if req.cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        let index = shared.into_inner().expect("lock poisoned");
+        Some(Scanned {
+            index: Arc::new(index),
+            rev,
+            query,
+            matched,
+        })
+    }
 }
 
-struct Shared<'a> {
-    req: &'a Request,
-    query: &'a Query,
-    count: AtomicUsize,
-    candidates: Mutex<Vec<Candidate>>,
-    tx: &'a Sender<SearchMsg>,
-    ctx: &'a egui::Context,
+struct VisitorBuilder<'a> {
+    shared: &'a Mutex<Index>,
+    cancel: &'a AtomicBool,
 }
-struct VisitorBuilder<'a>(&'a Shared<'a>);
 impl<'s> ParallelVisitorBuilder<'s> for VisitorBuilder<'s> {
     fn build(&mut self) -> Box<dyn ParallelVisitor + 's> {
         Box::new(Visitor {
-            shared: self.0,
-            buf: Vec::new(),
-            candidates: Vec::new(),
+            shared: self.shared,
+            cancel: self.cancel,
+            chunk: Index::new(false),
+            flushed: Instant::now(),
         })
     }
 }
 struct Visitor<'a> {
-    shared: &'a Shared<'a>,
-    buf: Vec<Entry>,
-    candidates: Vec<Candidate>,
+    shared: &'a Mutex<Index>,
+    cancel: &'a AtomicBool,
+    chunk: Index,
+    flushed: Instant,
 }
 impl Visitor<'_> {
     fn flush(&mut self) {
-        let s = self.shared;
-        if !self.buf.is_empty() && !s.req.cancel.load(Ordering::Relaxed) {
-            let _ = s.tx.send(SearchMsg {
-                tab_id: s.req.tab_id,
-                generation: s.req.generation,
-                batch: std::mem::take(&mut self.buf),
-                done: false,
-                truncated: false,
-                replace: false,
-                index: None,
-            });
-            s.ctx.request_repaint();
+        if !self.chunk.items.is_empty() {
+            self.shared
+                .lock()
+                .expect("lock poisoned")
+                .append(&mut self.chunk);
         }
+        self.flushed = Instant::now();
     }
 }
 impl ParallelVisitor for Visitor<'_> {
     fn visit(&mut self, de: Result<DirEntry, ignore::Error>) -> WalkState {
-        let s = self.shared;
-        if s.req.cancel.load(Ordering::Relaxed) {
+        if self.cancel.load(Ordering::Relaxed) {
             return WalkState::Quit;
         }
         let Ok(de) = de else {
@@ -443,20 +834,11 @@ impl ParallelVisitor for Visitor<'_> {
         let is_dir = de
             .file_type()
             .is_some_and(|t| t.is_dir() || (t.is_symlink() && de.path().is_dir()));
-        self.candidates.push(Candidate {
-            path: de.path().to_path_buf(),
-            is_dir,
-        });
-        let name = de.file_name().to_string_lossy();
-        if s.query.score_name(&name, is_dir).is_some()
-            && s.count.fetch_add(1, Ordering::Relaxed) < MAX_RESULTS
-        {
-            if let Some(e) = entry(&s.req.root, de.path()) {
-                self.buf.push(e);
-            }
-            if self.buf.len() >= BATCH {
-                self.flush();
-            }
+        self.chunk.push(de.path(), is_dir);
+        // Hand items over regularly, so a slow walk still streams results.
+        let n = self.chunk.items.len();
+        if n >= CHUNK || (n.is_multiple_of(64) && self.flushed.elapsed() >= STREAM_EVERY) {
+            self.flush();
         }
         WalkState::Continue
     }
@@ -464,11 +846,6 @@ impl ParallelVisitor for Visitor<'_> {
 impl Drop for Visitor<'_> {
     fn drop(&mut self) {
         self.flush();
-        self.shared
-            .candidates
-            .lock()
-            .expect("lock poisoned")
-            .append(&mut self.candidates);
     }
 }
 
@@ -513,31 +890,94 @@ mod tests {
 
     #[test]
     fn late_best_matches_survive_the_result_limit() {
-        let mut candidates: Vec<_> = (0..MAX_RESULTS + 5)
-            .map(|i| Candidate {
-                path: PathBuf::from(format!("/root/n---d-{i:06}")),
-                is_dir: false,
-            })
-            .collect();
-        let exact = candidates.len();
-        candidates.push(Candidate {
-            path: "/root/ND".into(),
-            is_dir: false,
-        });
-        let index = Index {
-            candidates,
-            show_hidden: false,
-        };
-        let (best, truncated) = best_matches(
-            &index,
+        let mut index = Index::new(false);
+        for i in 0..MAX_RESULTS + 5 {
+            index.push(
+                Path::new(&format!("/root/sub{}/n---d-{i:06}", i % 7)),
+                false,
+            );
+        }
+        let exact = index.len();
+        index.push(Path::new("/root/ND"), false);
+        let (best, total) = index.best_matches(
+            0..index.len(),
             &Query::new("nd"),
             MAX_RESULTS,
             &AtomicBool::new(false),
         );
-        assert!(truncated);
+        assert!(total > MAX_RESULTS);
         assert_eq!(best.len(), MAX_RESULTS);
         assert_eq!(best[0], exact);
-        assert!(best.iter().all(|&i| i < index.candidates.len()));
+        assert_eq!(index.path(exact), Path::new("/root/ND"));
+        assert_eq!(index.path(3), Path::new("/root/sub3/n---d-000003"));
+    }
+
+    #[test]
+    fn index_chunks_keep_paths_when_merged() {
+        let mut a = Index::new(false);
+        a.push(Path::new("/r/a/one"), false);
+        a.push(Path::new("/r/a/two"), true);
+        let mut b = Index::new(false);
+        b.push(Path::new("/r/b/three"), false);
+        b.push(Path::new("/r/b/four"), false);
+        a.append(&mut b);
+        assert!(b.items.is_empty());
+        assert_eq!(a.dirs.len(), 2);
+        let paths: Vec<_> = (0..a.len()).map(|i| a.path(i)).collect();
+        assert_eq!(
+            paths,
+            ["/r/a/one", "/r/a/two", "/r/b/three", "/r/b/four"].map(PathBuf::from)
+        );
+        assert!(a.items[1].is_dir && !a.items[2].is_dir);
+    }
+
+    #[test]
+    fn highlights_follow_the_alignment_that_ranked_the_name() {
+        // "port" ranks on the word "Port", not the end of "Export".
+        assert_eq!(
+            Query::new("port").highlights("Export-Port.txt"),
+            [7, 8, 9, 10]
+        );
+        // The best subsequence takes the later, word-start 'n'.
+        assert_eq!(Query::new("nd").highlights("n------nice-Doc"), [7, 12]);
+        assert_eq!(Query::new("nd").highlights("NaDya"), [0, 2]);
+    }
+
+    #[test]
+    fn type_categories_and_unknown_filters() {
+        let q = Query::new("type:image cat");
+        assert!(q.unknown.is_empty());
+        assert!(q.score_name("Cat.JPG", false).is_some());
+        assert!(q.score_name("cat.txt", false).is_none());
+        assert!(q.score_name("cat.jpg", true).is_none());
+        assert!(Query::new("type:doc").score_name("cv.pdf", false).is_some());
+        assert_eq!(Query::new("size:>1M report").unknown, ["size:>1M"]);
+        assert_eq!(Query::new("type:pictures").unknown, ["type:pictures"]);
+        assert_eq!(Query::new("ext:").unknown, ["ext:"]);
+        // Not filter-shaped: a drive letter, a time, quoted text.
+        assert!(Query::new("c: 10:30 \"a:b\"").unknown.is_empty());
+    }
+
+    #[test]
+    fn ascii_fast_path_agrees_with_unicode_matching() {
+        for (query, name) in [
+            ("nd", "NaDya"),
+            ("ND", "a-nd.TXT"),
+            ("\"Nd\"", "a-ND"),
+            ("=readme.md", "README.md"),
+            ("é", "cafe"),
+            ("rpt fin", "Report-final"),
+        ] {
+            let q = Query::new(query);
+            let lower = name.to_lowercase();
+            let slow = !q.exact.as_ref().is_some_and(|e| e != &lower)
+                && q.literals.iter().all(|s| lower.contains(s))
+                && q.terms.iter().all(|t| {
+                    let mut c = lower.chars();
+                    t.iter().all(|&x| c.any(|y| y == x))
+                });
+            assert_eq!(q.matches(name), slow, "{query:?} / {name}");
+        }
     }
 
     #[test]

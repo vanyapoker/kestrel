@@ -823,6 +823,8 @@ impl App {
                 restart_at: None,
                 index: None,
                 active_query: String::new(),
+                rev: 0,
+                live: None,
             });
             self.restart_search();
         }
@@ -836,8 +838,14 @@ impl App {
         let tab_id = tab.id;
         let Some(s) = tab.search.as_mut() else { return };
         if s.running && s.index.is_none() {
-            // Finish the query-independent scan instead of restarting the walk
-            // at every keystroke. The final index reranks the latest query.
+            // Keep the query-independent scan going instead of restarting the walk
+            // at every keystroke; it re-checks what it found against the new query.
+            if let Some(live) = &s.live {
+                s.rev += 1;
+                s.active_query = s.query.clone();
+                let query = (s.flatten || !s.query.trim().is_empty()).then(|| s.query.clone());
+                let _ = live.send(search::Update { rev: s.rev, query });
+            }
             s.restart_at = None;
             s.follow_best = true;
             tab.apply_view(&self.sizes, hidden);
@@ -847,6 +855,8 @@ impl App {
         s.cancel.store(true, Ordering::Relaxed);
         s.cancel = Arc::new(AtomicBool::new(false));
         s.generation += 1;
+        s.rev = 0;
+        s.live = None;
         s.restart_at = None;
         s.truncated = false;
         s.follow_best = true;
@@ -859,14 +869,17 @@ impl App {
         s.running = s.flatten || !s.query.trim().is_empty();
         s.active_query = s.query.clone();
         if s.running {
+            let (live, updates) = channel();
+            s.live = Some(live);
             let req = search::Request {
                 tab_id,
                 generation: s.generation,
                 root: s.root.clone(),
-                query: s.query.clone(),
+                query: Some(s.query.clone()),
                 show_hidden: hidden,
                 cancel: s.cancel.clone(),
                 index: s.index.clone(),
+                updates,
             };
             search::spawn(req, self.search_tx.clone(), self.ctx.clone());
         }
@@ -990,13 +1003,18 @@ impl App {
             }
             if msg.done {
                 s.running = false;
+                s.live = None;
                 s.truncated = msg.truncated;
                 if let Some(index) = msg.index {
                     s.index = Some(index);
                 }
-                if s.active_query != s.query {
+                if s.active_query != s.query || msg.rev != s.rev {
                     s.restart_at = Some(now);
                 }
+            }
+            // Results for a query that has since changed; the scan sends newer ones.
+            if msg.rev != s.rev {
+                continue;
             }
             if msg.replace {
                 tab.entries = msg.batch;

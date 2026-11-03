@@ -3,7 +3,14 @@
 ## Search
 
 Type to filter a folder; Ctrl+F searches subfolders. Queries support `ext:pdf,jpg`,
-`type:folder`, `type:file`, `"literal phrase"`, and `=exact-name.txt`.
+`type:folder`, `type:file`, `"literal phrase"`, and `=exact-name.txt`. `type:` also
+takes a kind of file: `image`, `video`, `audio` (or `music`), `document` (or `doc`),
+`archive`, `code`, or `text`. The status bar flags anything that looks like a
+filter but isn't one, such as `size:>1M`.
+
+Matches show up while subfolders are still being scanned, and editing the query
+mid-scan re-checks everything found so far. Later queries reuse the scan; press
+F5 to pick up files added deep inside the folder since then.
 
 ## Custom actions
 
