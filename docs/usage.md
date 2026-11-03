@@ -43,7 +43,7 @@ through `sh -c`. Kestrel quotes path placeholders, so don't add your own quotes:
 `match` limits an action to selections whose names all match one of its patterns.
 `terminal = true` (or `yes`) runs it in a terminal via `xdg-terminal-exec`. Saving
 from the editor keeps your comments; mistakes in the file are reported instead of
-silently skipped.
+silently skipped. See [examples](custom_actions.md) for more ideas.
 
 ## Shell file pickers
 

@@ -108,6 +108,7 @@ cargo test --locked
 Written in Rust with [egui](https://github.com/emilk/egui). The vendored
 [egui-winit patches](vendor/egui-winit/KESTREL_PATCHES.md) support drag and drop
 on Hyprland. See [advanced usage](docs/usage.md) for custom actions, shell
-pickers, and release packaging.
+pickers, and release packaging, and [custom action examples](docs/custom_actions.md)
+for ready-made ones to copy.
 
 [MIT](LICENSE)
