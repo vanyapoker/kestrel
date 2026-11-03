@@ -31,6 +31,12 @@ newer; check `BUILD-INFO.txt` for glibc requirements, and build from source on o
 systems. The installer stops before installing anything if either is missing.
 Update by installing the next release.
 
+## Documentation
+
+- [Advanced usage](docs/usage.md): search filters, custom actions, shell pickers,
+  and release packaging.
+- [Custom action examples](docs/custom_actions.md): ready-made actions to copy.
+
 ## Shortcuts
 
 | Key | Action |
@@ -107,8 +113,6 @@ cargo test --locked
 
 Written in Rust with [egui](https://github.com/emilk/egui). The vendored
 [egui-winit patches](vendor/egui-winit/KESTREL_PATCHES.md) support drag and drop
-on Hyprland. See [advanced usage](docs/usage.md) for custom actions, shell
-pickers, and release packaging, and [custom action examples](docs/custom_actions.md)
-for ready-made ones to copy.
+on Hyprland.
 
 [MIT](LICENSE)
