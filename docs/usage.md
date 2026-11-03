@@ -14,7 +14,12 @@ F5 to pick up files added deep inside the folder since then.
 
 ## Custom actions
 
-Add commands to `~/.config/kestrel/actions.conf`, then press F5 to reload:
+Run your own shell commands on the selection. Open **Custom actions: add or
+edit…** from the command palette, Help (F1), or any right-click Actions menu to
+add, reorder and test them: the editor previews the exact command for what's
+selected, and starts you off with a few examples. Saving writes
+`~/.config/kestrel/actions.conf`, which you can also edit by hand (press F5 to
+reload it):
 
 ```ini
 [Convert to WebP]
@@ -26,10 +31,19 @@ run = nvim {files}
 terminal = true
 ```
 
-Actions appear in the command palette and context menu. Commands run through
-`sh -c` in the current folder. Kestrel quotes path placeholders: `{file}`,
-`{files}`, `{dir}`, `{name}`, `{stem}`, and `{ext}`; don't add your own quotes.
-`terminal = true` uses `xdg-terminal-exec`.
+Actions appear in the command palette and the right-click Actions menu; ones that
+don't use the selection also appear when you right-click empty space. Commands run
+through `sh -c`. Kestrel quotes path placeholders, so don't add your own quotes:
+
+- `{file}`, `{name}`, `{stem}`, `{ext}`: each selected item; the command runs once
+  per item, in that item's folder. A failure doesn't stop the others.
+- `{files}`: all selected paths in one command.
+- `{dir}`: the item's folder, or the current folder.
+
+`match` limits an action to selections whose names all match one of its patterns.
+`terminal = true` (or `yes`) runs it in a terminal via `xdg-terminal-exec`. Saving
+from the editor keeps your comments; mistakes in the file are reported instead of
+silently skipped.
 
 ## Shell file pickers
 

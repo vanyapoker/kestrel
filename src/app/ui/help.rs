@@ -1,5 +1,6 @@
 //! Help (F1): how search works, then every command and key, with a filter.
 
+use crate::actions::{CustomAction, PLACEHOLDERS};
 use crate::palette::{COMMANDS, OTHER_KEYS, entry_score, fuzzy_score};
 use crate::theme::*;
 use eframe::egui::{
@@ -25,16 +26,36 @@ const SEARCH_INTRO: &str = "Type in any folder to filter it. Ctrl+F searches sub
     Ctrl+Shift+F lists them all flat. In the search box, ↑/↓ choose, Enter opens, Esc closes \
     and F5 rescans. Filters combine with words: “report ext:pdf”.";
 
-/// Draws the help window; returns true once it should close.
-pub(super) fn show(ui: &mut Ui, filter: &mut String, focus: &mut bool) -> bool {
+const ACTIONS_INTRO: &str = "Your own shell commands for the selected items, in the command \
+    palette and the right-click Actions menu. Kestrel fills in and quotes these placeholders, \
+    so don't add quotes around them:";
+
+/// What the help window asks for after a frame.
+pub(super) enum Outcome {
+    Keep,
+    Close,
+    EditActions,
+}
+
+/// Draws the help window, with the user's custom actions in their own section.
+pub(super) fn show(
+    ui: &mut Ui,
+    filter: &mut String,
+    focus: &mut bool,
+    custom: &[CustomAction],
+) -> Outcome {
     let screen = ui.ctx().content_rect();
     ui.set_width(640.0_f32.min(screen.width() - 48.0));
-    let mut close = ui.input_mut(|i| crate::app::take(i, Modifiers::NONE, Key::F1));
+    let mut outcome = if ui.input_mut(|i| crate::app::take(i, Modifiers::NONE, Key::F1)) {
+        Outcome::Close
+    } else {
+        Outcome::Keep
+    };
     ui.label(RichText::new("Help").size(16.0).strong());
     ui.add_space(4.0);
     let resp = ui.add(
         TextEdit::singleline(filter)
-            .hint_text("Filter commands, keys and search syntax…")
+            .hint_text("Filter commands, keys, search syntax and actions…")
             .desired_width(f32::INFINITY),
     );
     if std::mem::take(focus) {
@@ -73,6 +94,27 @@ pub(super) fn show(ui: &mut Ui, filter: &mut String, focus: &mut bool) -> bool {
             .map(|c| (c.name.to_string(), c.keys.to_string(), c.keywords))
             .collect(),
     );
+    let placeholders = ranked(
+        PLACEHOLDERS
+            .iter()
+            .map(|&(p, what)| (what.to_string(), p.to_string(), "custom action placeholder"))
+            .collect(),
+    );
+    let mine = ranked(
+        custom
+            .iter()
+            .map(|a| {
+                let scope = if !a.patterns.trim().is_empty() {
+                    a.patterns.trim().to_string()
+                } else if a.uses_selection() {
+                    "Any item".to_string()
+                } else {
+                    "No selection needed".to_string()
+                };
+                (a.name.clone(), scope, "custom action")
+            })
+            .collect(),
+    );
     let keys = ranked(
         OTHER_KEYS
             .iter()
@@ -104,6 +146,36 @@ pub(super) fn show(ui: &mut Ui, filter: &mut String, focus: &mut bool) -> bool {
                         }
                     });
             }
+            if !placeholders.is_empty() || !mine.is_empty() || q.is_empty() {
+                heading(ui, "CUSTOM ACTIONS");
+                if q.is_empty() {
+                    ui.label(RichText::new(ACTIONS_INTRO).color(pal().dim));
+                    ui.add_space(6.0);
+                }
+                Grid::new("help_placeholders")
+                    .num_columns(2)
+                    .spacing(vec2(24.0, 6.0))
+                    .show(ui, |ui| {
+                        for (what, placeholder) in &placeholders {
+                            ui.label(RichText::new(placeholder).monospace().color(pal().accent));
+                            ui.label(what);
+                            ui.end_row();
+                        }
+                    });
+                if !mine.is_empty() {
+                    ui.add_space(6.0);
+                    key_grid(ui, &mine);
+                }
+                ui.add_space(6.0);
+                let label = if custom.is_empty() {
+                    "Add custom actions…"
+                } else {
+                    "Edit custom actions…"
+                };
+                if ui.button(label).clicked() {
+                    outcome = Outcome::EditActions;
+                }
+            }
             if !commands.is_empty() {
                 heading(ui, "COMMANDS");
                 ui.label(
@@ -117,16 +189,23 @@ pub(super) fn show(ui: &mut Ui, filter: &mut String, focus: &mut bool) -> bool {
                 heading(ui, "MORE KEYS");
                 key_grid(ui, &keys);
             }
-            if search.is_empty() && commands.is_empty() && keys.is_empty() {
+            if search.is_empty()
+                && commands.is_empty()
+                && keys.is_empty()
+                && placeholders.is_empty()
+                && mine.is_empty()
+            {
                 ui.label(RichText::new("No matches").color(pal().faint));
             }
         });
     ui.add_space(8.0);
     ui.horizontal(|ui| {
-        close |= ui.button("Close").clicked();
+        if ui.button("Close").clicked() {
+            outcome = Outcome::Close;
+        }
         ui.label(RichText::new("Esc or F1").size(12.0).color(pal().faint));
     });
-    close
+    outcome
 }
 
 fn heading(ui: &mut Ui, text: &str) {

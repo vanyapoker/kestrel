@@ -10,9 +10,9 @@ use eframe::egui::{
 };
 
 use super::{
-    Columns, FOLDER_LINE, ROW_H, RowEnv, RowPaint, background_drop, chevron, drag_autoscroll,
-    drop_hover, empty_state, paint_cell, paint_name, paint_row, paint_tile, record_folder,
-    row_interactions, rubber_band, scroll_area, sort_arrow,
+    Columns, FOLDER_LINE, ROW_H, RowEnv, RowPaint, background_drop, background_menu, chevron,
+    drag_autoscroll, drop_hover, empty_state, paint_cell, paint_name, paint_row, paint_tile,
+    record_folder, row_interactions, rubber_band, scroll_area, sort_arrow,
 };
 
 impl App {
@@ -284,6 +284,7 @@ impl App {
         let pane = &mut self.panes[p];
         let tab = &mut pane.tabs[pane.active];
         let full = ui.available_rect_before_wrap();
+        background_menu(ui, p, tab, full, actions);
         let cols = Columns::new(full.left(), full.right());
         let query = tab.query();
         let in_search = tab.search.is_some();
@@ -449,6 +450,7 @@ impl App {
         let pane = &mut self.panes[p];
         let tab = &mut pane.tabs[pane.active];
         let full = ui.available_rect_before_wrap();
+        background_menu(ui, p, tab, full, actions);
         let mode = tab.mode;
         let query = tab.query();
         // Search results also show their folder: one more line under each name.

@@ -351,6 +351,7 @@ impl App {
         };
         let (mut confirm, mut cancel) = (false, false);
         let (mut load_workspace, mut delete_workspace) = (None, None);
+        let (mut save_actions, mut open_actions_file, mut edit_actions) = (false, false, false);
         let mut resolved = None;
         let frame = Frame::new()
             .fill(pal().panel)
@@ -370,7 +371,19 @@ impl App {
                     });
                     confirm &= !name.trim().is_empty();
                 }
-                Dialog::Help { filter, focus } => cancel |= super::help::show(ui, filter, focus),
+                Dialog::Help { filter, focus } => {
+                    match super::help::show(ui, filter, focus, &self.custom_actions) {
+                        super::help::Outcome::Keep => {}
+                        super::help::Outcome::Close => cancel = true,
+                        super::help::Outcome::EditActions => edit_actions = true,
+                    }
+                }
+                Dialog::Actions(editor) => match editor.show(ui) {
+                    super::actions_editor::Outcome::Keep => {}
+                    super::actions_editor::Outcome::Save => save_actions = true,
+                    super::actions_editor::Outcome::Close => cancel = true,
+                    super::actions_editor::Outcome::OpenFile => open_actions_file = true,
+                },
                 Dialog::Workspaces => {
                     ui.set_width(540.0_f32.min(ctx.content_rect().width() - 48.0));
                     ui.label(RichText::new("Workspaces").size(16.0).strong());
@@ -618,7 +631,34 @@ impl App {
             }
         });
         if modal.should_close() {
-            cancel = true;
+            match &mut self.dialog {
+                // Unsaved edits ask first instead of vanishing on Esc.
+                Some(Dialog::Actions(editor)) if editor.dirty => editor.confirm_discard = true,
+                _ => cancel = true,
+            }
+        }
+        if save_actions && let Some(Dialog::Actions(editor)) = &self.dialog {
+            match crate::actions::save(&editor.doc, &editor.file) {
+                Ok(_) => {
+                    let n = editor.doc.actions.len();
+                    self.dialog = None;
+                    self.reload_actions();
+                    let s = if n == 1 { "" } else { "s" };
+                    self.toast(format!("Saved {n} custom action{s}"));
+                }
+                Err(error) => self.toast_error(format!("Could not save actions: {error}")),
+            }
+            return;
+        }
+        if edit_actions {
+            self.run_cmd(crate::palette::Cmd::EditActions);
+            return;
+        }
+        if open_actions_file {
+            if let Some(Dialog::Actions(editor)) = self.dialog.take() {
+                crate::fsops::open_default(&editor.file);
+            }
+            return;
         }
         if let (Some(how), Some(Dialog::Conflicts(_))) = (resolved, &self.dialog) {
             if let Some(Dialog::Conflicts(c)) = self.dialog.take() {
@@ -710,7 +750,7 @@ impl App {
                     Vec::new(),
                     None,
                 )),
-                Some(Dialog::Conflicts(_) | Dialog::Help { .. }) | None => {}
+                Some(Dialog::Conflicts(_) | Dialog::Help { .. } | Dialog::Actions(_)) | None => {}
             }
         } else if cancel {
             self.dialog = None;

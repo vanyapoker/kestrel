@@ -54,6 +54,7 @@ pub enum Cmd {
     Help,
     CopyToOtherPane,
     MoveToOtherPane,
+    EditActions,
     SortName,
     SortSize,
     SortModified,
@@ -147,6 +148,7 @@ pub const COMMANDS: &[Command] = &[
     c(Cmd::SortType, "Sort by type", "", "order extension kind"),
     c(Cmd::ReverseSort, "Reverse sort order", "", "ascending descending"),
     c(Cmd::CancelJob, "Cancel current file operation", "", "stop abort"),
+    c(Cmd::EditActions, "Custom actions: add or edit…", "", "scripts shell commands user"),
     c(Cmd::Help, "Help: commands and search syntax", "F1", "shortcuts keys keyboard filters"),
 ];
 

@@ -24,6 +24,7 @@ const FOLDER_LINE: f32 = 16.0;
 /// Preferred tile width for a folder shown in the inspector.
 const INSPECTOR_TILE: f32 = 112.0;
 
+pub(super) mod actions_editor;
 mod drag;
 mod glyphs;
 mod help;
@@ -1483,6 +1484,77 @@ fn background_drop(ui: &mut Ui, tab: &Tab, rect: Rect, actions: &mut Vec<Action>
     }
 }
 
+/// Custom actions to run, then a way to edit them; shared by the right-click menus.
+fn custom_action_items(
+    ui: &mut Ui,
+    p: usize,
+    custom: &[(usize, &crate::actions::CustomAction)],
+    actions: &mut Vec<Action>,
+) {
+    ui.set_min_width(190.0);
+    if custom.is_empty() {
+        ui.label(RichText::new("None for this selection").color(pal().faint));
+    }
+    for (i, a) in custom {
+        if ui.button(&a.name).clicked() {
+            actions.push(Action::FocusPane(p));
+            actions.push(Action::Custom(*i));
+            ui.close();
+        }
+    }
+    ui.separator();
+    if ui.button("Edit custom actions…").clicked() {
+        actions.push(Action::FocusPane(p));
+        actions.push(Action::Cmd(Cmd::EditActions));
+        ui.close();
+    }
+}
+
+/// Right-click on empty space: create, paste, a terminal, and the custom actions
+/// that work without a selection. Call before drawing rows, so rows stay on top.
+fn background_menu(ui: &mut Ui, p: usize, tab: &Tab, rect: Rect, actions: &mut Vec<Action>) {
+    let resp = ui.interact(rect, ui.id().with(("background_menu", p)), Sense::click());
+    resp.context_menu(|ui| {
+        ui.set_min_width(190.0);
+        let mut item = |ui: &mut Ui, label: &str, keys: &str, cmd: Cmd| {
+            if ui
+                .add(egui::Button::new(label).shortcut_text(keys))
+                .clicked()
+            {
+                actions.push(Action::FocusPane(p));
+                actions.push(Action::Cmd(cmd));
+                ui.close();
+            }
+        };
+        if tab.search.is_none() {
+            item(ui, "New folder", "Ctrl+Shift+N", Cmd::NewFolder);
+            item(ui, "New empty file", "", Cmd::NewFile);
+            item(ui, "Paste", "Ctrl+V", Cmd::Paste);
+            ui.separator();
+        }
+        item(ui, "Open terminal here", "Ctrl+Alt+T", Cmd::OpenTerminal);
+        item(ui, "Select all", "Ctrl+A", Cmd::SelectAll);
+        let custom = ui
+            .ctx()
+            .data(|d| {
+                d.get_temp::<Arc<Vec<crate::actions::CustomAction>>>(egui::Id::new(
+                    "custom_actions",
+                ))
+            })
+            .unwrap_or_default();
+        let custom: Vec<_> = custom
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.applies(&[]))
+            .collect();
+        let mut run = Vec::new();
+        ui.menu_button("Actions", |ui| {
+            custom_action_items(ui, p, &custom, &mut run)
+        });
+        actions.extend(run);
+    });
+}
+
 /// What every row of one list shares when handling interaction.
 #[derive(Clone, Copy)]
 struct RowEnv<'a> {
@@ -1631,17 +1703,9 @@ fn row_interactions(
             .filter(|(_, a)| a.applies(&targets))
             .collect();
         let mut run_custom = Vec::new();
-        if !custom.is_empty() {
-            ui.menu_button("Actions", |ui| {
-                for (i, a) in custom {
-                    if ui.button(&a.name).clicked() {
-                        run_custom.push(Action::FocusPane(p));
-                        run_custom.push(Action::Custom(i));
-                        ui.close();
-                    }
-                }
-            });
-        }
+        ui.menu_button("Actions", |ui| {
+            custom_action_items(ui, p, &custom, &mut run_custom);
+        });
         ui.separator();
         item(ui, "Copy path", "Alt+C", Action::CopyPath(e.path.clone()));
         let term = if e.is_dir {

@@ -1515,9 +1515,13 @@ fn help_lists_commands_and_search_syntax_and_filters_them() {
     }
     assert!(matches!(d.app.dialog, Some(Dialog::Help { .. })));
     let shown = |d: &Driver, t: &str| d.texts.iter().any(|(s, _)| s == t);
-    for text in ["SEARCH", "ext:pdf,jpg", "COMMANDS", "New tab", "Ctrl+T"] {
+    for text in ["SEARCH", "ext:pdf,jpg", "CUSTOM ACTIONS", "{file}"] {
         assert!(shown(&d, text), "{text} missing");
     }
+    d.frame(vec![Event::Text("new tab".into())]);
+    d.frame(Vec::new());
+    assert!(shown(&d, "COMMANDS") && shown(&d, "New tab") && shown(&d, "Ctrl+T"));
+    d.frame(vec![press(Key::A, Modifiers::COMMAND)]);
     // Rows further down are reached by filtering, keys included.
     d.frame(vec![Event::Text("tab 1".into())]);
     d.frame(Vec::new());
@@ -1599,6 +1603,163 @@ fn palette_copies_and_moves_the_selection_to_the_other_pane() {
     d.frame(vec![press(Key::Enter, Modifiers::NONE)]);
     d.until("copied", |_| dir.join("a.txt").exists());
     assert!(dir.join("dest/a.txt").exists());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+fn open_actions_editor(d: &mut Driver) {
+    d.app.palette.show();
+    d.frame(Vec::new());
+    d.frame(vec![Event::Text("custom actions".into())]);
+    d.frame(vec![press(Key::Enter, Modifiers::NONE)]);
+    for _ in 0..4 {
+        d.frame(Vec::new());
+    }
+    assert!(matches!(d.app.dialog, Some(Dialog::Actions(_))));
+}
+
+#[test]
+fn actions_editor_starts_from_examples_and_saves_them() {
+    let dir = sandbox("actions-editor-new");
+    let file = dir.join("config/kestrel/actions.conf");
+    let mut d = Driver::new(dir.clone());
+    d.app.actions_file = Some(file.clone());
+    d.until("listing", |a| !a.tab().loading);
+    open_actions_editor(&mut d);
+    assert!(d.texts.iter().any(|(t, _)| t == "No custom actions yet"));
+    d.click_text("Add examples");
+    d.frame(Vec::new());
+    assert!(d.texts.iter().any(|(t, _)| t == "Convert to WebP"));
+    d.click_text("Save");
+    d.frame(Vec::new());
+    assert!(d.app.dialog.is_none());
+    let saved = crate::actions::read(&fs::read_to_string(&file).unwrap());
+    let settings = |a: &crate::actions::CustomAction| {
+        (
+            a.name.clone(),
+            a.patterns.clone(),
+            a.run.clone(),
+            a.terminal,
+        )
+    };
+    assert_eq!(
+        saved.actions.iter().map(settings).collect::<Vec<_>>(),
+        crate::actions::examples()
+            .iter()
+            .map(settings)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(d.app.custom_actions.len(), 3);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn actions_editor_previews_keeps_comments_and_asks_before_discarding() {
+    let dir = sandbox("actions-editor-edit");
+    let file = dir.join("actions.conf");
+    let original = "# mine\n[Count lines]\nmatch = *.txt\nrun = wc -l {file}\n# note\n";
+    fs::write(&file, original).unwrap();
+    let mut d = Driver::new(dir.clone());
+    d.app.actions_file = Some(file.clone());
+    d.app.reload_actions();
+    d.until("listing", |a| !a.tab().loading);
+    d.app.tab_mut().select_path(&dir.join("a.txt"));
+    open_actions_editor(&mut d);
+    // The preview shows the exact, quoted command for the selection.
+    let expected = format!("wc -l '{}'", dir.join("a.txt").display());
+    assert!(
+        d.texts.iter().any(|(t, _)| t == &expected),
+        "preview missing"
+    );
+    assert!(
+        d.texts
+            .iter()
+            .any(|(t, _)| t.starts_with("Runs once for each selected item"))
+    );
+
+    // An edit, then Esc: asks instead of dropping the change.
+    let Some(Dialog::Actions(editor)) = &mut d.app.dialog else {
+        unreachable!()
+    };
+    editor.doc.actions[0].run = "wc -w {flie}".into();
+    editor.dirty = true;
+    d.frame(Vec::new());
+    assert!(
+        d.texts
+            .iter()
+            .any(|(t, _)| t.contains("{flie} isn't a placeholder"))
+    );
+    d.frame(vec![press(Key::Escape, Modifiers::NONE)]);
+    d.frame(Vec::new());
+    assert!(matches!(d.app.dialog, Some(Dialog::Actions(_))));
+    d.click_text("Discard");
+    d.frame(Vec::new());
+    assert!(d.app.dialog.is_none());
+    assert_eq!(fs::read_to_string(&file).unwrap(), original);
+
+    // Saving an edit keeps the comments around it.
+    open_actions_editor(&mut d);
+    let Some(Dialog::Actions(editor)) = &mut d.app.dialog else {
+        unreachable!()
+    };
+    editor.doc.actions[0].run = "wc -w {file}".into();
+    editor.dirty = true;
+    d.frame(Vec::new());
+    d.click_text("Save");
+    d.frame(Vec::new());
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        "# mine\n[Count lines]\nmatch = *.txt\nrun = wc -w {file}\n# note\n"
+    );
+    assert_eq!(d.app.custom_actions[0].run, "wc -w {file}");
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn empty_space_menu_offers_actions_without_a_selection_and_help_lists_them() {
+    let dir = sandbox("actions-background");
+    let file = dir.join("actions.conf");
+    fs::write(
+        &file,
+        "[Lazygit]\nrun = lazygit\nterminal = true\n[Shrink]\nmatch = *.png\nrun = optipng {file}\n",
+    )
+    .unwrap();
+    let mut d = Driver::new(dir.clone());
+    d.app.actions_file = Some(file);
+    d.app.reload_actions();
+    d.until("listing", |a| !a.tab().loading);
+    d.frame(Vec::new());
+    // Below the last row is empty space.
+    d.move_to(Pos2::new(600.0, 700.0));
+    d.mouse_button(PointerButton::Secondary, true);
+    d.mouse_button(PointerButton::Secondary, false);
+    d.frame(Vec::new());
+    assert!(d.texts.iter().any(|(t, _)| t == "New folder"));
+    d.click_text("Actions");
+    d.frame(Vec::new());
+    assert!(d.texts.iter().any(|(t, _)| t == "Lazygit"));
+    assert!(
+        !d.texts.iter().any(|(t, _)| t == "Shrink"),
+        "needs a selection"
+    );
+    assert!(d.texts.iter().any(|(t, _)| t == "Edit custom actions…"));
+    // A click elsewhere closes the menu.
+    d.move_to(Pos2::new(600.0, 500.0));
+    d.button(true);
+    d.button(false);
+    d.frame(Vec::new());
+    assert!(!d.texts.iter().any(|(t, _)| t == "Edit custom actions…"));
+
+    // Help lists them, and its button opens the editor.
+    d.frame(vec![press(Key::F1, Modifiers::NONE)]);
+    d.frame(vec![Event::Text("lazygit".into())]);
+    for _ in 0..3 {
+        d.frame(Vec::new());
+    }
+    assert!(d.texts.iter().any(|(t, _)| t == "Lazygit"));
+    assert!(d.texts.iter().any(|(t, _)| t == "No selection needed"));
+    d.click_text("Edit custom actions…");
+    d.frame(Vec::new());
+    assert!(matches!(d.app.dialog, Some(Dialog::Actions(_))));
     fs::remove_dir_all(dir).unwrap();
 }
 

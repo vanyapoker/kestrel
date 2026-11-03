@@ -94,6 +94,7 @@ enum Dialog {
         filter: String,
         focus: bool,
     },
+    Actions(Box<ui::actions_editor::ActionsEditor>),
 }
 
 /// Editor for permissions and ownership of `paths`.
@@ -253,6 +254,8 @@ pub struct App {
     closed_tabs: Vec<tabs::Closed>,
     workspaces: std::collections::BTreeMap<String, crate::session::Session>,
     workspace_file: Option<PathBuf>,
+    /// `actions.conf`; tests leave it unset or point it at a sandbox.
+    actions_file: Option<PathBuf>,
     next_tab_id: u64,
     list_tx: Sender<Listing>,
     list_rx: Receiver<Listing>,
@@ -377,6 +380,8 @@ impl App {
                 Err(error) => app.toast_error(format!("Could not load workspaces: {error}")),
             }
         }
+        app.actions_file = crate::actions::file();
+        app.reload_actions();
         app.devices = crate::devices::scan();
         app.devices_rx = Some(crate::devices::watch(app.ctx.clone()));
         app
@@ -407,6 +412,7 @@ impl App {
             closed_tabs: Vec::new(),
             workspaces: Default::default(),
             workspace_file: None,
+            actions_file: None,
             next_tab_id: 0,
             list_tx,
             list_rx,
@@ -420,7 +426,7 @@ impl App {
             devices_rx: None,
             dev_tx,
             dev_rx,
-            custom_actions: Arc::new(crate::actions::load()),
+            custom_actions: Arc::default(),
             props_cache: None,
             checksums: HashMap::new(),
             checksums_pending: HashSet::new(),
@@ -1438,6 +1444,29 @@ impl App {
         })));
     }
 
+    /// Rereads the actions file. Problems are announced, so a typo doesn't make an
+    /// action vanish without a word.
+    fn reload_actions(&mut self) {
+        let doc = self
+            .actions_file
+            .as_deref()
+            .map(crate::actions::load_document)
+            .unwrap_or_default();
+        let broken = doc.problems.len()
+            + doc
+                .actions
+                .iter()
+                .filter(|a| !a.errors().is_empty())
+                .count();
+        self.custom_actions = Arc::new(crate::actions::runnable(doc));
+        if broken > 0 {
+            let s = if broken == 1 { "" } else { "s" };
+            self.toast_error(format!(
+                "actions.conf has {broken} problem{s}; open Custom actions to fix"
+            ));
+        }
+    }
+
     fn run_custom(&mut self, index: usize) {
         let Some(action) = self.custom_actions.get(index).cloned() else {
             return;
@@ -1832,8 +1861,20 @@ impl App {
                 }
             }
             Cmd::Refresh => {
-                self.custom_actions = Arc::new(crate::actions::load());
+                self.reload_actions();
                 self.refresh()
+            }
+            Cmd::EditActions => {
+                let Some(file) = self.actions_file.clone() else {
+                    return self.toast_error("No home folder to keep custom actions in");
+                };
+                let editor = ui::actions_editor::ActionsEditor::new(
+                    crate::actions::load_document(&file),
+                    file,
+                    self.tab().targets(),
+                    self.tab().path.clone(),
+                );
+                self.dialog = Some(Dialog::Actions(Box::new(editor)));
             }
             Cmd::ToggleHidden => {
                 self.show_hidden = !self.show_hidden;
