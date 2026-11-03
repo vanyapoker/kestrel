@@ -364,6 +364,7 @@ impl App {
                     });
                     confirm &= !name.trim().is_empty();
                 }
+                Dialog::Help { filter, focus } => cancel |= super::help::show(ui, filter, focus),
                 Dialog::Workspaces => {
                     ui.set_width(540.0_f32.min(ctx.content_rect().width() - 48.0));
                     ui.label(RichText::new("Workspaces").size(16.0).strong());
@@ -703,7 +704,7 @@ impl App {
                     Vec::new(),
                     None,
                 )),
-                Some(Dialog::Conflicts(_)) | None => {}
+                Some(Dialog::Conflicts(_) | Dialog::Help { .. }) | None => {}
             }
         } else if cancel {
             self.dialog = None;

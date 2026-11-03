@@ -90,6 +90,10 @@ enum Dialog {
     },
     /// A copy or move whose items already exist in the destination.
     Conflicts(Box<Conflicts>),
+    Help {
+        filter: String,
+        focus: bool,
+    },
 }
 
 /// Editor for permissions and ownership of `paths`.
@@ -1912,6 +1916,12 @@ impl App {
             Cmd::UnbookmarkFolder => self.apply(Action::Unbookmark(self.tab().path.clone())),
             // Sorting by the current key again flips the order.
             Cmd::ReverseSort => self.apply(Action::Sort(self.tab().sort)),
+            Cmd::Help => {
+                self.dialog = Some(Dialog::Help {
+                    filter: String::new(),
+                    focus: true,
+                })
+            }
         }
     }
 
@@ -2443,6 +2453,7 @@ impl App {
                 (alt, Key::ArrowRight, Forward),
                 (alt, Key::ArrowUp, GoUp),
                 (alt, Key::Home, GoHome),
+                (none, Key::F1, Help),
                 (none, Key::F2, Rename),
                 (none, Key::F3, TogglePreview),
                 (none, Key::Space, TogglePreview),

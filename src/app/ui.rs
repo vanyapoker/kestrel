@@ -24,6 +24,7 @@ const INSPECTOR_TILE: f32 = 112.0;
 
 mod drag;
 mod glyphs;
+mod help;
 mod inspector;
 mod overlays;
 mod preview;

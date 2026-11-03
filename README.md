@@ -35,6 +35,7 @@ the next release.
 | Key | Action |
 |---|---|
 | Start typing / Esc | Filter folder / clear filter |
+| F1 | Help: every command, key and search filter |
 | Ctrl+P / Ctrl+K | Command palette / go to folder or tab |
 | Ctrl+L | Edit path (Tab completes folders) |
 | Enter / Backspace | Open / parent folder |

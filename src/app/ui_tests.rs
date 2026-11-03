@@ -1505,6 +1505,48 @@ fn palette_scrolls_lists_recent_first_and_switches_modes() {
 }
 
 #[test]
+fn help_lists_commands_and_search_syntax_and_filters_them() {
+    let dir = sandbox("help");
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| !a.tab().loading);
+    d.frame(vec![press(Key::F1, Modifiers::NONE)]);
+    for _ in 0..4 {
+        d.frame(Vec::new());
+    }
+    assert!(matches!(d.app.dialog, Some(Dialog::Help { .. })));
+    let shown = |d: &Driver, t: &str| d.texts.iter().any(|(s, _)| s == t);
+    for text in ["SEARCH", "ext:pdf,jpg", "COMMANDS", "New tab", "Ctrl+T"] {
+        assert!(shown(&d, text), "{text} missing");
+    }
+    // Rows further down are reached by filtering, keys included.
+    d.frame(vec![Event::Text("tab 1".into())]);
+    d.frame(Vec::new());
+    assert!(shown(&d, "Switch to tab 1–9") && shown(&d, "Ctrl+1…9"));
+    assert!(!shown(&d, "ext:pdf,jpg"));
+    d.frame(vec![
+        press(Key::A, Modifiers::COMMAND),
+        Event::Text("zip".into()),
+    ]);
+    d.frame(Vec::new());
+    assert!(shown(&d, "Compress to .zip"));
+    assert!(!shown(&d, "New tab"));
+    d.frame(vec![press(Key::F1, Modifiers::NONE)]);
+    d.frame(Vec::new());
+    assert!(d.app.dialog.is_none());
+    // Also from the palette, and Esc closes it.
+    d.app.palette.show();
+    d.frame(Vec::new());
+    d.frame(vec![Event::Text("help".into())]);
+    d.frame(vec![press(Key::Enter, Modifiers::NONE)]);
+    d.frame(Vec::new());
+    assert!(matches!(d.app.dialog, Some(Dialog::Help { .. })));
+    d.frame(vec![press(Key::Escape, Modifiers::NONE)]);
+    d.frame(Vec::new());
+    assert!(d.app.dialog.is_none());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn typing_a_filter_selects_the_best_fuzzy_match() {
     let dir = sandbox("fuzzy-filter");
     for name in ["Named", "NaDya", "nd-notes", "ND"] {

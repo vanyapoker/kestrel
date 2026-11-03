@@ -51,6 +51,7 @@ pub enum Cmd {
     FocusOtherPane,
     UnbookmarkFolder,
     ReverseSort,
+    Help,
     SortName,
     SortSize,
     SortModified,
@@ -142,6 +143,20 @@ pub const COMMANDS: &[Command] = &[
     c(Cmd::SortType, "Sort by type", "", "order extension kind"),
     c(Cmd::ReverseSort, "Reverse sort order", "", "ascending descending"),
     c(Cmd::CancelJob, "Cancel current file operation", "", "stop abort"),
+    c(Cmd::Help, "Help: commands and search syntax", "F1", "shortcuts keys keyboard filters"),
+];
+
+/// Keys that aren't palette commands, listed in Help with the commands.
+pub const OTHER_KEYS: &[(&str, &str)] = &[
+    ("Command palette", "Ctrl+P"),
+    ("Filter this folder", "Start typing"),
+    ("Clear filter or selection", "Esc"),
+    ("Open", "Enter"),
+    ("Switch to tab 1–9", "Ctrl+1…9"),
+    ("Select or deselect item", "Ctrl+Space / Ctrl+click"),
+    ("Extend selection", "Shift+arrows / Shift+click"),
+    ("Move between Miller columns", "← / →"),
+    ("Back / forward", "Mouse back / forward"),
 ];
 
 /// Entries remembered as recently run.
