@@ -1415,6 +1415,96 @@ fn goto_shortcut_works_in_search_and_recents_survive_session_restore() {
 }
 
 #[test]
+fn palette_lists_only_applicable_commands_with_their_state() {
+    let dir = sandbox("palette-context");
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| !a.tab().loading);
+    d.app.places.bookmarks = vec![("Sandbox".into(), dir.clone())];
+    d.app.run_cmd(Cmd::SelectAll);
+    d.app.palette.show();
+    d.frame(Vec::new());
+    d.frame(Vec::new());
+    let shown = |d: &Driver, t: &str| d.texts.iter().any(|(s, _)| s == t);
+    for hidden in [
+        "Extract here",
+        "Restore from trash",
+        "Undo",
+        "Cancel current file operation",
+        "Back",
+        "Next tab",
+        "Switch to other pane",
+        "Bookmark this folder",
+    ] {
+        assert!(!shown(&d, hidden), "{hidden} should be hidden");
+    }
+    for listed in ["Copy", "Move to trash", "Remove this folder from bookmarks"] {
+        assert!(shown(&d, listed), "{listed} should be listed");
+    }
+    d.frame(vec![Event::Text("hidden".into())]);
+    d.frame(Vec::new());
+    assert!(shown(&d, "Toggle hidden files") && shown(&d, "Off"));
+    d.frame(vec![press(Key::Enter, Modifiers::NONE)]);
+    assert!(d.app.show_hidden && !d.app.palette.open);
+    d.app.palette.show();
+    d.frame(Vec::new());
+    d.frame(vec![Event::Text("ctrl+h".into())]);
+    d.frame(Vec::new());
+    assert!(shown(&d, "On"));
+    d.frame(vec![press(Key::Enter, Modifiers::NONE)]);
+    assert!(!d.app.show_hidden);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn palette_scrolls_lists_recent_first_and_switches_modes() {
+    let dir = sandbox("palette-scroll");
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| !a.tab().loading);
+    d.app.palette.show();
+    d.frame(Vec::new());
+    for _ in 0..20 {
+        d.frame(vec![press(Key::ArrowDown, Modifiers::NONE)]);
+    }
+    d.frame(Vec::new());
+    assert_eq!(d.app.palette.selected, 20);
+    let y = |d: &Driver, t: &str| {
+        d.texts
+            .iter()
+            .find(|(s, _)| s == t)
+            .map(|(_, r)| r.center().y)
+    };
+    // The first rows scrolled up out of the list to keep the selection in view.
+    assert!(y(&d, "Search in this folder (recursive)").unwrap() < 100.0);
+    d.frame(vec![press(Key::Escape, Modifiers::NONE)]);
+
+    d.app.palette.show();
+    d.frame(Vec::new());
+    d.frame(vec![Event::Text("reverse sort".into())]);
+    d.frame(vec![press(Key::Enter, Modifiers::NONE)]);
+    assert!(!d.app.tab().ascending);
+    d.app.palette.show();
+    d.frame(Vec::new());
+    d.frame(Vec::new());
+    assert!(
+        y(&d, "Reverse sort order").unwrap() < y(&d, "Search in this folder (recursive)").unwrap()
+    );
+    assert_eq!(
+        d.app.session().recent_commands,
+        vec!["Reverse sort order".to_string()]
+    );
+
+    // Ctrl+K switches to Go To and closes it; Ctrl+P switches back and closes.
+    d.modifiers = Modifiers::COMMAND;
+    d.frame(vec![press(Key::K, Modifiers::COMMAND)]);
+    assert!(d.app.palette.open && d.app.palette.goto);
+    d.frame(vec![press(Key::P, Modifiers::COMMAND)]);
+    assert!(d.app.palette.open && !d.app.palette.goto);
+    d.frame(vec![press(Key::P, Modifiers::COMMAND)]);
+    assert!(!d.app.palette.open);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn typing_a_filter_selects_the_best_fuzzy_match() {
     let dir = sandbox("fuzzy-filter");
     for name in ["Named", "NaDya", "nd-notes", "ND"] {

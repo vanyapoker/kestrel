@@ -9,40 +9,108 @@ use eframe::egui::{
 
 use super::{dialog_buttons, name_field, ops_name, stem_chars};
 
+/// Rows that fit before the palette list scrolls.
+const PALETTE_ROWS: f32 = 14.0;
+
+/// One palette row.
+struct Item {
+    name: String,
+    /// Shortcut for commands; a path or other detail for the rest.
+    detail: String,
+    keywords: &'static str,
+    state: Option<(&'static str, bool)>,
+    action: Action,
+}
+
+impl Item {
+    fn new(name: String, detail: String, action: Action) -> Self {
+        Self {
+            name,
+            detail,
+            keywords: "",
+            state: None,
+            action,
+        }
+    }
+}
+
 impl App {
-    pub(in crate::app) fn palette_ui(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
-        if !self.palette.open {
-            return;
-        }
-        let goto = self.palette.goto;
-        // Commands, then places to jump to. Go To instead lists folders and tabs.
-        let mut items: Vec<(String, String, Action)> = COMMANDS
+    /// Commands that can run now, then places, actions and devices.
+    fn palette_items(&mut self) -> Vec<Item> {
+        let mut items: Vec<Item> = COMMANDS
             .iter()
-            .map(|&(c, name, keys)| (name.to_string(), keys.to_string(), Action::Cmd(c)))
+            .filter(|c| self.cmd_applies(c.cmd))
+            .map(|c| Item {
+                name: c.name.to_string(),
+                detail: c.keys.to_string(),
+                keywords: c.keywords,
+                state: self.cmd_state(c.cmd),
+                action: Action::Cmd(c.cmd),
+            })
             .collect();
+        // "Go home" already covers the home folder.
+        let mut seen = std::collections::HashSet::from([crate::fsops::home_dir()]);
         for (name, path) in self.places.places.iter().chain(&self.places.bookmarks) {
-            items.push((
-                format!("Go to {name}"),
-                path.display().to_string(),
-                Action::Navigate(path.clone()),
-            ));
+            if seen.insert(path.clone()) {
+                items.push(Item::new(
+                    format!("Go to {name}"),
+                    path.display().to_string(),
+                    Action::Navigate(path.clone()),
+                ));
+            }
         }
-        let targets = self.tab().targets();
+        let tab = self.tab();
+        let targets = tab.targets();
         for (i, a) in self.custom_actions.iter().enumerate() {
             if a.applies(&targets) {
-                items.push((
+                items.push(Item::new(
                     format!("Action: {}", a.name),
                     String::new(),
                     Action::Custom(i),
                 ));
             }
         }
+        // Looking up apps reads the file, so it happens once per file, not per frame.
+        let file = tab
+            .cursor_entry()
+            .filter(|e| !e.is_dir)
+            .map(|e| e.path.clone());
+        if self.palette.open_with.as_ref().map(|(p, _)| p) != file.as_ref() {
+            self.palette.open_with = file.map(|p| {
+                let choices = crate::apps::choices(&p);
+                (p, choices)
+            });
+        }
+        if let Some((path, choices)) = &self.palette.open_with {
+            let tab = self.tab();
+            let paths: Vec<_> = if tab.marked.is_empty() {
+                vec![path.clone()]
+            } else {
+                tab.view
+                    .iter()
+                    .map(|&i| &tab.entries[i])
+                    .filter(|e| !e.is_dir && tab.marked.contains(&e.path))
+                    .map(|e| e.path.clone())
+                    .collect()
+            };
+            for app in choices.apps.iter().take(12) {
+                let default = choices.default.as_deref() == Some(app.id.as_str());
+                let mut item = Item::new(
+                    format!("Open with {}", app.name),
+                    if default { "default" } else { "" }.to_string(),
+                    Action::OpenWith(app.clone(), paths.clone()),
+                );
+                item.keywords = "application program";
+                items.push(item);
+            }
+        }
         for d in &self.devices {
             let action = match &d.mount {
+                Some(m) if !seen.insert(m.clone()) => continue,
                 Some(m) => Action::Navigate(m.clone()),
                 None => Action::Device(DevOp::Mount, d.dev.clone()),
             };
-            items.push((
+            items.push(Item::new(
                 format!("Go to {}", d.name),
                 d.path().display().to_string(),
                 action,
@@ -53,55 +121,125 @@ impl App {
             .iter()
             .filter(|d| d.removable && d.mount.is_some())
         {
-            items.push((
+            items.push(Item::new(
                 format!("Eject {}", d.name),
                 d.dev.display().to_string(),
                 Action::Device(DevOp::Eject, d.dev.clone()),
             ));
         }
-        if goto {
-            items = self.goto_items();
+        items
+    }
+
+    pub(in crate::app) fn palette_ui(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        if !self.palette.open {
+            return;
         }
+        let goto = self.palette.goto;
+        let mut items = if goto {
+            self.goto_items()
+                .into_iter()
+                .map(|(name, detail, action)| Item::new(name, detail, action))
+                .collect()
+        } else {
+            self.palette_items()
+        };
         let q = self.palette.query.trim().to_string();
-        let mut scored: Vec<usize> = if goto {
+        let recent = |name: &str| {
+            self.palette
+                .recent
+                .iter()
+                .position(|r| r == name)
+                .unwrap_or(usize::MAX)
+        };
+        let order: Vec<usize> = if goto {
             let query = crate::search::Query::new(&q);
             let mut ranked: Vec<_> = items
                 .iter()
                 .enumerate()
-                .filter_map(|(i, (name, path, _))| {
+                .filter_map(|(i, it)| {
                     query
-                        .score(name)
-                        .max(query.score(path))
+                        .score(&it.name)
+                        .max(query.score(&it.detail))
                         .map(|score| (score, i))
                 })
                 .collect();
             ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
             ranked.into_iter().map(|(_, i)| i).collect()
+        } else if q.is_empty() {
+            // Recently used first, then the usual order.
+            let mut all: Vec<usize> = (0..items.len()).collect();
+            all.sort_by_key(|&i| recent(&items[i].name));
+            all
         } else {
             let mut ranked: Vec<_> = items
                 .iter()
                 .enumerate()
-                .filter_map(|(i, (name, _, _))| palette::fuzzy_score(&q, name).map(|s| (s, i)))
+                .filter_map(|(i, it)| {
+                    palette::entry_score(&q, &it.name, it.keywords, &it.detail).map(|s| (s, i))
+                })
                 .collect();
-            ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+            // Ties go to recently used, then shorter names: "copy" picks Copy over Copy path.
+            ranked.sort_by(|a, b| {
+                b.0.cmp(&a.0)
+                    .then_with(|| recent(&items[a.1].name).cmp(&recent(&items[b.1].name)))
+                    .then(items[a.1].name.len().cmp(&items[b.1].name.len()))
+                    .then(a.1.cmp(&b.1))
+            });
             ranked.into_iter().map(|(_, i)| i).collect()
         };
-        scored.truncate(if goto { 9 } else { 14 });
-        let n = scored.len();
-        let sel = &mut self.palette.selected;
-        let (mut run, mut close) = (false, false);
+        let n = order.len();
+        let p = &mut self.palette;
+        let (mut run, mut close, mut switch) = (false, false, None);
         ctx.input_mut(|i| {
-            if crate::app::take(i, Modifiers::NONE, Key::ArrowDown) && n > 0 {
-                *sel = (*sel + 1) % n;
+            use crate::app::take;
+            let before = p.selected;
+            if n > 0 {
+                if take(i, Modifiers::NONE, Key::ArrowDown) {
+                    p.selected = (p.selected + 1) % n;
+                }
+                if take(i, Modifiers::NONE, Key::ArrowUp) {
+                    p.selected = (p.selected + n - 1) % n;
+                }
+                if take(i, Modifiers::NONE, Key::PageDown) {
+                    p.selected = (p.selected + 8).min(n - 1);
+                }
+                if take(i, Modifiers::NONE, Key::PageUp) {
+                    p.selected = p.selected.saturating_sub(8);
+                }
             }
-            if crate::app::take(i, Modifiers::NONE, Key::ArrowUp) && n > 0 {
-                *sel = (*sel + n - 1) % n;
+            p.scroll_to_selected |= p.selected != before;
+            run = take(i, Modifiers::NONE, Key::Enter);
+            close = take(i, Modifiers::NONE, Key::Escape);
+            // The opening shortcut closes the palette; the other one switches modes.
+            if take(i, Modifiers::COMMAND, Key::P)
+                || take(i, Modifiers::COMMAND | Modifiers::SHIFT, Key::P)
+            {
+                if goto {
+                    switch = Some(false)
+                } else {
+                    close = true
+                }
             }
-            run = crate::app::take(i, Modifiers::NONE, Key::Enter);
-            close = crate::app::take(i, Modifiers::NONE, Key::Escape);
+            if take(i, Modifiers::COMMAND, Key::K) {
+                if goto {
+                    close = true
+                } else {
+                    switch = Some(true)
+                }
+            }
         });
-        *sel = (*sel).min(n.saturating_sub(1));
+        if let Some(goto) = switch {
+            self.palette.switch_mode(goto);
+            return; // the other list is built next frame
+        }
+        self.palette.selected = self.palette.selected.min(n.saturating_sub(1));
 
+        let screen = ctx.content_rect();
+        let width = 520.0_f32.min(screen.width() - 48.0);
+        let row_h = if goto { 48.0 } else { 28.0 };
+        let list_h = (PALETTE_ROWS * row_h)
+            .min(screen.height() - 180.0)
+            .max(row_h * 3.0);
         let area = egui::Area::new(egui::Id::new("palette_area"))
             .anchor(Align2::CENTER_TOP, vec2(0.0, 70.0));
         let modal = egui::Modal::new(egui::Id::new("palette"))
@@ -115,7 +253,7 @@ impl App {
                     .inner_margin(Margin::same(8)),
             )
             .show(ctx, |ui| {
-                ui.set_width(520.0);
+                ui.set_width(width);
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut self.palette.query)
                         .hint_text(if goto {
@@ -133,63 +271,53 @@ impl App {
                 }
                 if resp.changed() {
                     self.palette.selected = 0;
+                    self.palette.scroll_to_selected = true;
                 }
                 ui.add_space(6.0);
-                let mut clicked = None;
-                for (row, &i) in scored.iter().enumerate() {
-                    let (name, keys, _) = &items[i];
-                    let (rect, r) = ui.allocate_exact_size(
-                        vec2(ui.available_width(), if goto { 48.0 } else { 28.0 }),
-                        Sense::click(),
-                    );
-                    let selected = row == self.palette.selected;
-                    if selected || r.hovered() {
-                        ui.painter().rect_filled(
-                            rect,
-                            CornerRadius::same(5),
-                            if selected { pal().select } else { pal().hover },
-                        );
-                    }
-                    if goto {
-                        let painter = ui.painter().with_clip_rect(rect.shrink(6.0));
-                        painter.text(
-                            rect.left_top() + vec2(10.0, 4.0),
-                            Align2::LEFT_TOP,
-                            name,
-                            FontId::proportional(BODY),
-                            pal().text,
-                        );
-                        painter.text(
-                            rect.left_top() + vec2(10.0, 26.0),
-                            Align2::LEFT_TOP,
-                            keys,
-                            FontId::proportional(12.0),
-                            pal().faint,
-                        );
-                        r.clone().on_hover_text(keys);
-                    } else {
-                        ui.painter().text(
-                            rect.left_center() + vec2(10.0, 0.0),
-                            Align2::LEFT_CENTER,
-                            name,
-                            FontId::proportional(BODY),
-                            pal().text,
-                        );
-                        ui.painter().with_clip_rect(rect).text(
-                            rect.right_center() - vec2(10.0, 0.0),
-                            Align2::RIGHT_CENTER,
-                            keys,
-                            FontId::proportional(12.0),
-                            pal().faint,
-                        );
-                    }
-                    if r.clicked() {
-                        clicked = Some(row);
-                    }
-                }
                 if n == 0 {
                     ui.label(RichText::new("No matches").color(pal().faint));
+                    return None;
                 }
+                // Only a moving pointer takes the highlight, so keys and wheel scrolling keep it.
+                let pointer_moved = ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO);
+                let mut clicked = None;
+                // Sized from the rows; shrinking to content would keep the last, shorter height.
+                let gap = ui.spacing().item_spacing.y;
+                let height = (n as f32 * (row_h + gap) - gap).min(list_h);
+                ScrollArea::vertical()
+                    .min_scrolled_height(height)
+                    .max_height(height)
+                    .auto_shrink(false)
+                    .show(ui, |ui| {
+                        for (row, &i) in order.iter().enumerate() {
+                            let item = &items[i];
+                            let (rect, r) = ui.allocate_exact_size(
+                                vec2(ui.available_width(), row_h),
+                                Sense::click(),
+                            );
+                            if r.hovered() && pointer_moved {
+                                self.palette.selected = row;
+                            }
+                            let selected = row == self.palette.selected;
+                            if selected && self.palette.scroll_to_selected {
+                                r.scroll_to_me(None);
+                            }
+                            if selected {
+                                ui.painter()
+                                    .rect_filled(rect, CornerRadius::same(5), pal().select);
+                            }
+                            if goto {
+                                goto_row(ui, rect, item);
+                                r.clone().on_hover_text(&item.detail);
+                            } else {
+                                command_row(ui, rect, item);
+                            }
+                            if r.clicked() {
+                                clicked = Some(row);
+                            }
+                        }
+                    });
+                self.palette.scroll_to_selected = false;
                 clicked
             });
         if let Some(row) = modal.inner {
@@ -197,9 +325,12 @@ impl App {
             run = true;
         }
         if run {
-            if let Some(&i) = scored.get(self.palette.selected) {
-                let action = items.swap_remove(i).2;
-                actions.push(action);
+            if let Some(&i) = order.get(self.palette.selected) {
+                let item = items.swap_remove(i);
+                if !goto {
+                    self.palette.remember(&item.name);
+                }
+                actions.push(item.action);
             }
             close = true;
         }
@@ -609,4 +740,71 @@ impl App {
                 }
             });
     }
+}
+
+/// A Go To row: name over its location.
+fn goto_row(ui: &egui::Ui, rect: egui::Rect, item: &Item) {
+    let painter = ui.painter().with_clip_rect(rect.shrink(6.0));
+    painter.text(
+        rect.left_top() + vec2(10.0, 4.0),
+        Align2::LEFT_TOP,
+        &item.name,
+        FontId::proportional(BODY),
+        pal().text,
+    );
+    painter.text(
+        rect.left_top() + vec2(10.0, 26.0),
+        Align2::LEFT_TOP,
+        &item.detail,
+        FontId::proportional(12.0),
+        pal().faint,
+    );
+}
+
+/// A command row: name on the left; state pill and shortcut on the right.
+fn command_row(ui: &egui::Ui, rect: egui::Rect, item: &Item) {
+    let painter = ui.painter().with_clip_rect(rect);
+    let mid = rect.center().y;
+    let mut right = rect.right() - 10.0;
+    if !item.detail.is_empty() {
+        let keys =
+            painter.layout_no_wrap(item.detail.clone(), FontId::proportional(12.0), pal().faint);
+        right -= keys.size().x;
+        painter.galley(
+            egui::pos2(right, mid - keys.size().y / 2.0),
+            keys,
+            pal().faint,
+        );
+        right -= 10.0;
+    }
+    if let Some((label, on)) = item.state {
+        let color = if on { pal().text } else { pal().dim };
+        let text = painter.layout_no_wrap(label.to_string(), FontId::proportional(11.0), color);
+        let pill = egui::Rect::from_min_max(
+            egui::pos2(right - text.size().x - 16.0, mid - 9.0),
+            egui::pos2(right, mid + 9.0),
+        );
+        let (fill, stroke) = if on {
+            (pal().accent.gamma_multiply(0.25), pal().accent)
+        } else {
+            (pal().surface, pal().border)
+        };
+        painter.rect(
+            pill,
+            CornerRadius::same(9),
+            fill,
+            Stroke::new(1.0, stroke),
+            egui::StrokeKind::Inside,
+        );
+        painter.galley(pill.center() - text.size() / 2.0, text, color);
+        right = pill.left() - 8.0;
+    }
+    let name_clip = egui::Rect::from_min_max(rect.min, egui::pos2(right, rect.max.y));
+    painter.with_clip_rect(name_clip).text(
+        rect.left_center() + vec2(10.0, 0.0),
+        Align2::LEFT_CENTER,
+        &item.name,
+        FontId::proportional(BODY),
+        pal().text,
+    );
 }

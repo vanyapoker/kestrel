@@ -32,6 +32,8 @@ pub struct Session {
     pub sidebar_width: Option<f32>,
     pub preview_width: Option<f32>,
     pub recent_dirs: Vec<PathBuf>,
+    /// Recently run palette entries, newest first.
+    pub recent_commands: Vec<String>,
     pub split_ratio: f32,
 }
 
@@ -47,6 +49,7 @@ impl Default for Session {
             sidebar_width: None,
             preview_width: None,
             recent_dirs: Vec::new(),
+            recent_commands: Vec::new(),
             split_ratio: 0.5,
         }
     }
@@ -136,6 +139,11 @@ impl Session {
                 out += &format!("recent {path}\n");
             }
         }
+        for name in self.recent_commands.iter().take(8) {
+            if !name.contains('\n') {
+                out += &format!("recent_command {name}\n");
+            }
+        }
         for pane in &self.panes {
             out += &format!("pane {}\n", pane.active);
             for t in &pane.tabs {
@@ -181,6 +189,9 @@ pub fn parse(text: &str) -> Session {
                 if !s.recent_dirs.contains(&path) {
                     s.recent_dirs.push(path);
                 }
+            }
+            "recent_command" if s.recent_commands.len() < 8 && !rest.is_empty() => {
+                s.recent_commands.push(rest.to_string())
             }
             "pane" => s.panes.push(PaneState {
                 tabs: Vec::new(),
@@ -267,6 +278,7 @@ mod tests {
             sidebar_width: Some(210.0),
             preview_width: Some(400.0),
             recent_dirs: vec!["/home/a b".into(), "/tmp".into()],
+            recent_commands: vec!["Toggle split view".into(), "Go to Downloads".into()],
             split_ratio: 0.65,
         };
         assert_eq!(parse(&s.to_text()), s);

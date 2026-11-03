@@ -126,7 +126,9 @@ impl App {
             return;
         }
         let mut session = self.session();
-        session.recent_dirs.clear(); // Navigation history remains global.
+        // Navigation and command history remain global.
+        session.recent_dirs.clear();
+        session.recent_commands.clear();
         let previous = self.workspaces.insert(name.to_string(), session);
         if let Some(path) = &self.workspace_file
             && let Err(error) = crate::workspaces::save(path, &self.workspaces)
@@ -150,7 +152,9 @@ impl App {
             return;
         };
         let recents = self.recent_dirs.clone();
+        let commands = std::mem::take(&mut self.palette.recent);
         self.restore(&session, true);
+        self.palette.recent = commands;
         for path in recents.into_iter().rev() {
             self.remember_dir(path);
         }

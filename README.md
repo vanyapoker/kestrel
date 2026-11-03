@@ -59,7 +59,10 @@ the next release.
 
 Use Shift+arrows or Ctrl/Shift+click for multiple selection. In Miller columns,
 ←/→ moves between parent and child columns. Shortcuts leave typing and cursor
-movement in text fields alone. The command palette lists more actions.
+movement in text fields alone. The command palette lists more actions: only
+those that apply to the current selection, with recently used ones first and
+toggles showing their state. Search by name, by a shortcut ("ctrl+h"), or by
+words like "mkdir" or "unzip".
 
 In file dialogs, **Ctrl+Enter** confirms, **Ctrl+L** edits the path, and **Esc**
 clears a filter or cancels. Saving over an existing file asks for confirmation.

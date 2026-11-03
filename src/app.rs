@@ -1,4 +1,5 @@
 mod columns;
+mod commands;
 mod goto;
 mod icons;
 mod preview_text;
@@ -523,6 +524,7 @@ impl App {
     fn restore(&mut self, s: &crate::session::Session, tabs: bool) {
         self.split_ratio = s.split_ratio;
         self.recent_dirs = s.recent_dirs.clone();
+        self.palette.recent = s.recent_commands.clone();
         self.show_hidden = s.show_hidden;
         self.show_preview = s.show_preview;
         self.show_sidebar = s.show_sidebar;
@@ -621,6 +623,7 @@ impl App {
             sidebar_width: Some(self.sidebar_width),
             preview_width: Some(self.preview_width),
             recent_dirs: self.recent_dirs.clone(),
+            recent_commands: self.palette.recent.clone(),
             split_ratio: self.split_ratio,
         }
     }
@@ -1874,6 +1877,23 @@ impl App {
             Cmd::SortModified => self.apply(Action::Sort(SortKey::Modified)),
             Cmd::SortType => self.apply(Action::Sort(SortKey::Kind)),
             Cmd::CancelJob => self.ops.cancel.store(true, Ordering::Relaxed),
+            Cmd::NextTab | Cmd::PrevTab => {
+                let pane = &self.panes[self.active_pane];
+                let n = pane.tabs.len();
+                let step = if cmd == Cmd::NextTab { 1 } else { n - 1 };
+                self.apply(Action::SwitchTab(
+                    self.active_pane,
+                    (pane.active + step) % n,
+                ));
+            }
+            Cmd::FocusOtherPane => {
+                if self.panes.len() > 1 {
+                    self.apply(Action::FocusPane(1 - self.active_pane));
+                }
+            }
+            Cmd::UnbookmarkFolder => self.apply(Action::Unbookmark(self.tab().path.clone())),
+            // Sorting by the current key again flips the order.
+            Cmd::ReverseSort => self.apply(Action::Sort(self.tab().sort)),
         }
     }
 
