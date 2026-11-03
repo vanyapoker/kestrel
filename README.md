@@ -26,9 +26,10 @@ Update with `kestrel-update`. Remove with `kestrel-uninstall`.
 
 **Prefer a prebuilt binary?** Download and extract the Linux x86_64 archive from
 [Releases](https://github.com/vanyapoker/kestrel/releases), then run its `./install.sh`.
-It includes the same desktop and file-dialog integration. Check `BUILD-INFO.txt`
-for glibc requirements; build from source on older systems. Update by installing
-the next release.
+It includes the same desktop and file-dialog integration. It needs libheif 1.20 or
+newer; check `BUILD-INFO.txt` for glibc requirements, and build from source on older
+systems. The installer stops before installing anything if either is missing.
+Update by installing the next release.
 
 ## Shortcuts
 

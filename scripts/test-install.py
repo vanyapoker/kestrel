@@ -39,6 +39,7 @@ class InstallationTests(unittest.TestCase):
         shutil.copy(REPO / "scripts/install-prebuilt.sh", self.bundle / "install.sh")
         shutil.copy(REPO / "scripts/integrate.sh", self.bundle / "scripts/integrate.sh")
         (self.bundle / "kestrel").write_text("#!/bin/sh\nexit 0\n")
+        (self.bundle / "kestrel").chmod(0o755)
         (self.bundle / "VERSION").write_text("test\n")
 
     def run_script(self, path, *args):
@@ -92,6 +93,17 @@ class InstallationTests(unittest.TestCase):
         self.assertIn("default=wlr", conf.read_text())
         self.uninstall()
         self.assertEqual(conf.read_text(), f"[preferred]\ndefault=wlr\n{KEY}=gtk\n")
+
+    def test_missing_libraries_stop_before_installing(self):
+        error = "kestrel: error while loading shared libraries: libheif.so.1: cannot open shared object file"
+        (self.bundle / "kestrel").write_text(f"#!/bin/sh\necho '{error}' >&2\nexit 127\n")
+        result = subprocess.run(["bash", str(self.bundle / "install.sh")], env=self.env,
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("libheif.so.1", result.stderr)
+        self.assertIn("libheif 1.20 or newer", result.stderr)
+        self.assertFalse((self.home / ".local/bin").exists())
+        self.assertFalse((self.data / "applications/kestrel.desktop").exists())
 
     def test_missing_preferred_section_and_fresh_install(self):
         conf = self.portals / "hyprland-portals.conf"

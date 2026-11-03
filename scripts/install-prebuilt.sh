@@ -15,6 +15,18 @@ bundle_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 data_dir="${XDG_DATA_HOME:-$HOME/.local/share}"
 version="$(cat "$bundle_dir/VERSION")"
 
+# Every library is resolved at startup, so a missing or too old libheif or glibc
+# fails here, before anything is installed.
+if ! output="$("$bundle_dir/kestrel" --version 2>&1)"; then
+    {
+        echo "Kestrel $version can't run on this system:"
+        printf '  %s\n' "$output"
+        echo "It needs libheif 1.20 or newer (for example the libheif package) and the glibc"
+        echo "versions listed in BUILD-INFO.txt. Older systems can build from source instead."
+    } >&2
+    exit 1
+fi
+
 install -Dm755 "$bundle_dir/kestrel" "$HOME/.local/bin/kestrel"
 rm -f "$HOME/.local/bin/kestrel-update"
 install -Dm644 "$bundle_dir/assets/kestrel.svg" "$data_dir/icons/hicolor/scalable/apps/kestrel.svg"
