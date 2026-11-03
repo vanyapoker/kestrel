@@ -1,6 +1,6 @@
 # Kestrel
 
-A keyboard-friendly file manager for [Omarchy](https://omarchy.org), inspired by [File Pilot](https://filepilot.tech).
+A fast and beautiful file manager for [Omarchy](https://omarchy.org), inspired by [File Pilot](https://filepilot.tech).
 
 [![Kestrel with the command palette open over a folder, with code thumbnails in the preview panel](assets/screenshots/overview.png)](assets/screenshots/overview.png)
 
@@ -56,12 +56,14 @@ Update by installing the next release.
 | Ctrl+S / Ctrl+Shift+A | Select by pattern / invert selection |
 | F2 / Ctrl+Shift+N | Rename (batch for multiple items) / new folder |
 | Delete / Shift+Delete | Trash / permanently delete |
+| Shift+drag / Ctrl+drag | Always move / always copy dropped files |
 | Alt+C / Ctrl+Alt+T | Copy path / open terminal here |
 | F5 | Refresh |
 
-Use Shift+arrows or Ctrl/Shift+click for multiple selection. In Miller columns,
-←/→ moves between parent and child columns. Shortcuts leave typing and cursor
-movement in text fields alone. The command palette lists more actions: only
+Use Shift+arrows or Ctrl/Shift+click for multiple selection, or drag a box on empty
+space (Ctrl adds to the selection). A plain drag moves files on the same drive and
+copies them to another. In Miller columns, ←/→ moves between parent and child
+columns. Shortcuts leave typing and cursor movement in text fields alone. The command palette lists more actions: only
 those that apply to the current selection, with recently used ones first and
 toggles showing their state. Search by name, by a shortcut ("ctrl+h"), or by
 words like "mkdir" or "unzip".

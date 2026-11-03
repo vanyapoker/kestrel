@@ -1,6 +1,6 @@
 //! Help (F1): how search works, then every command and key, with a filter.
 
-use crate::palette::{COMMANDS, OTHER_KEYS, entry_score};
+use crate::palette::{COMMANDS, OTHER_KEYS, entry_score, fuzzy_score};
 use crate::theme::*;
 use eframe::egui::{
     Align2, CornerRadius, FontId, Grid, Key, Modifiers, RichText, ScrollArea, Sense, TextEdit, Ui,
@@ -49,7 +49,10 @@ pub(super) fn show(ui: &mut Ui, filter: &mut String, focus: &mut bool) -> bool {
             .into_iter()
             .enumerate()
             .filter_map(|(i, (name, keys, keywords))| {
-                entry_score(q, &name, keywords, &keys).map(|s| (s, i, name, keys))
+                // Here the keys are something to look up too: "drag" finds Shift+drag.
+                let by_keys = fuzzy_score(q, &keys).map(|s| s - 2);
+                let score = entry_score(q, &name, keywords, &keys).max(by_keys)?;
+                Some((score, i, name, keys))
             })
             .collect();
         if !q.is_empty() {

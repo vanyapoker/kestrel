@@ -155,6 +155,16 @@ pub const OTHER_KEYS: &[(&str, &str)] = &[
     ("Switch to tab 1–9", "Ctrl+1…9"),
     ("Select or deselect item", "Ctrl+Space / Ctrl+click"),
     ("Extend selection", "Shift+arrows / Shift+click"),
+    (
+        "Select with a box; Ctrl adds to the selection",
+        "Drag on empty space",
+    ),
+    (
+        "Drop files: move on the same drive, copy to another",
+        "Drag",
+    ),
+    ("Always move dropped files", "Shift+drag"),
+    ("Always copy dropped files", "Ctrl+drag"),
     ("Move between Miller columns", "← / →"),
     ("Back / forward", "Mouse back / forward"),
 ];

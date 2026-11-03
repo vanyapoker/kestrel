@@ -1530,6 +1530,14 @@ fn help_lists_commands_and_search_syntax_and_filters_them() {
     d.frame(Vec::new());
     assert!(shown(&d, "Compress to .zip"));
     assert!(!shown(&d, "New tab"));
+    // Keys are searchable too: "drag" finds the drag modifiers.
+    d.frame(vec![
+        press(Key::A, Modifiers::COMMAND),
+        Event::Text("drag".into()),
+    ]);
+    d.frame(Vec::new());
+    assert!(shown(&d, "Always move dropped files") && shown(&d, "Shift+drag"));
+    assert!(shown(&d, "Always copy dropped files") && shown(&d, "Ctrl+drag"));
     d.frame(vec![press(Key::F1, Modifiers::NONE)]);
     d.frame(Vec::new());
     assert!(d.app.dialog.is_none());
