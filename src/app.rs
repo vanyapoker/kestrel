@@ -364,7 +364,7 @@ impl App {
                 chosen: Vec::new(),
                 req,
             });
-            app.devices = crate::devices::scan();
+            app.devices = crate::devices::scan_block();
             app.devices_rx = Some(crate::devices::watch(app.ctx.clone()));
             return app;
         }
@@ -382,7 +382,7 @@ impl App {
         }
         app.actions_file = crate::actions::file();
         app.reload_actions();
-        app.devices = crate::devices::scan();
+        app.devices = crate::devices::scan_block();
         app.devices_rx = Some(crate::devices::watch(app.ctx.clone()));
         app
     }
@@ -2251,8 +2251,16 @@ impl App {
             .iter()
             .find(|d| d.dev == r.dev)
             .and_then(|d| d.mount.clone());
-        // Rescan now rather than wait for the watcher, so the sidebar updates at once.
-        self.devices = crate::devices::scan();
+        // Rescan the disks now so the sidebar updates at once. Phones and cameras
+        // take half a second to list, so keep what we have until the watcher
+        // notices the change.
+        let mut devices = crate::devices::scan_block();
+        devices.extend(
+            self.devices
+                .drain(..)
+                .filter(|d| d.disk.as_os_str().is_empty()),
+        );
+        self.devices = devices;
         let verb = match r.op {
             DevOp::Mount => "mount",
             DevOp::Unmount => "unmount",

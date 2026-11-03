@@ -63,6 +63,14 @@ fn in_media_dir(mnt: &str) -> bool {
 }
 
 pub fn scan() -> Vec<Device> {
+    let mut devices = scan_block();
+    devices.extend(scan_gvfs());
+    devices
+}
+
+/// Disks and partitions only. Fast enough for startup; `scan_gvfs` can take half a
+/// second, so the first full scan happens in `watch`.
+pub fn scan_block() -> Vec<Device> {
     let out = Command::new("lsblk")
         .args([
             "-P",
@@ -71,12 +79,10 @@ pub fn scan() -> Vec<Device> {
             "PATH,PKNAME,TYPE,FSTYPE,LABEL,MOUNTPOINT,HOTPLUG,PARTTYPE,SIZE",
         ])
         .output();
-    let mut devices = match out {
+    match out {
         Ok(o) if o.status.success() => parse_lsblk(&String::from_utf8_lossy(&o.stdout)),
         _ => Vec::new(),
-    };
-    devices.extend(scan_gvfs());
-    devices
+    }
 }
 
 fn scan_gvfs() -> Vec<Device> {
@@ -249,7 +255,8 @@ fn unescape(s: &str) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-/// Rescans when the mount table or the set of block devices changes.
+/// Scans once right away, then rescans when the mount table or the set of block
+/// devices changes.
 pub fn watch(ctx: egui::Context) -> Receiver<Vec<Device>> {
     let (tx, rx) = channel();
     std::thread::spawn(move || {
@@ -273,7 +280,12 @@ pub fn watch(ctx: egui::Context) -> Receiver<Vec<Device>> {
             blocks.extend(others);
             (mounts, blocks)
         };
+        // Taken before the scan, so a change during it still triggers a rescan.
         let mut last = signature();
+        if tx.send(scan()).is_err() {
+            return;
+        }
+        ctx.request_repaint();
         // A new disk shows up before udev has probed its label, and gvfs takes a moment
         // to notice a camera; look again shortly after.
         let mut recheck = 0;
