@@ -1632,9 +1632,7 @@ fn row_interactions(
             item(ui, "Restore", "", Action::Cmd(Cmd::Restore));
         }
         let mut open_with = Vec::new();
-        if !e.is_dir {
-            open_with_menu(ui, tab, vi, e, p, &mut open_with);
-        }
+        open_with_menu(ui, tab, vi, e, p, &mut open_with);
         if e.is_dir {
             item(ui, "Open in new tab", "", Action::NewTab(e.path.clone()));
             if bookmarks.iter().any(|(_, b)| *b == e.path) {
@@ -1769,7 +1767,10 @@ fn open_with_menu(
     const SHOWN: usize = 12;
     ui.menu_button("Open with", |ui| {
         let paths: Vec<PathBuf> = if tab.is_selected(vi) {
-            tab.targets().into_iter().filter(|t| !t.is_dir()).collect()
+            tab.targets()
+                .into_iter()
+                .filter(|t| t.is_dir() == e.is_dir)
+                .collect()
         } else {
             vec![e.path.clone()]
         };
@@ -1788,6 +1789,9 @@ fn open_with_menu(
                 actions.push(Action::OpenWith(app.clone(), paths.clone()));
                 ui.close();
             }
+        }
+        if e.is_dir {
+            return; // a folder default would hijack every "open folder" in other apps
         }
         ui.separator();
         ui.menu_button(format!("Always open {what} with"), |ui| {

@@ -17,6 +17,8 @@ pub struct DesktopApp {
     exec: String,
     terminal: bool,
     mimes: Vec<String>,
+    /// An IDE, or a terminal text editor: offered for opening folders.
+    folder_editor: bool,
 }
 
 struct Db {
@@ -265,6 +267,7 @@ fn parse_desktop(id: &str, path: &Path) -> Option<DesktopApp> {
     let text = std::fs::read_to_string(path).ok()?;
     let mut in_entry = false;
     let (mut name, mut exec, mut mimes, mut terminal) = (None, None, Vec::new(), false);
+    let mut categories: HashSet<String> = HashSet::new();
     for line in text.lines().map(str::trim) {
         if line.starts_with('[') {
             in_entry = line == "[Desktop Entry]";
@@ -288,6 +291,7 @@ fn parse_desktop(id: &str, path: &Path) -> Option<DesktopApp> {
                     .collect()
             }
             "Terminal" => terminal = v.trim() == "true",
+            "Categories" => categories = v.split(';').map(|c| c.trim().to_string()).collect(),
             "Type" if v.trim() != "Application" => return None,
             "Hidden" if v.trim() == "true" => return None,
             _ => {}
@@ -299,6 +303,8 @@ fn parse_desktop(id: &str, path: &Path) -> Option<DesktopApp> {
         exec: exec?,
         terminal,
         mimes,
+        folder_editor: categories.contains("IDE")
+            || (categories.contains("TextEditor") && terminal),
     })
 }
 
@@ -335,6 +341,14 @@ pub fn choices(path: &Path) -> Choices {
                 .iter()
                 .filter(|a| a.mimes.iter().any(|am| db.canonical(am) == *m));
             for a in added.chain(declared) {
+                if !apps.iter().any(|x| x.id == a.id) {
+                    apps.push(a.clone());
+                }
+            }
+        }
+        if mime == "inode/directory" {
+            // Editors rarely declare the folder type but open one as a project.
+            for a in db.apps.iter().filter(|a| a.folder_editor) {
                 if !apps.iter().any(|x| x.id == a.id) {
                     apps.push(a.clone());
                 }
@@ -476,8 +490,17 @@ pub fn launch(app: &DesktopApp, paths: &[PathBuf]) -> Result<(), String> {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .process_group(0); // keep running after Kestrel exits
-        if let Some(dir) = group.first().and_then(|p| p.parent()) {
-            cmd.current_dir(dir);
+        // A folder is opened as the working directory, so terminal editors start inside it.
+        match group.as_slice() {
+            [dir] if dir.is_dir() => {
+                cmd.current_dir(dir);
+            }
+            [first, ..] => {
+                if let Some(dir) = first.parent() {
+                    cmd.current_dir(dir);
+                }
+            }
+            [] => {}
         }
         cmd.spawn()
             .map_err(|e| format!("Couldn't start {}: {e}", app.name))?;
@@ -496,6 +519,7 @@ mod tests {
             exec: exec.into(),
             terminal: false,
             mimes: vec![],
+            folder_editor: false,
         }
     }
 
@@ -526,5 +550,31 @@ mod tests {
         assert!(glob_match("*.md", "readme.md"));
         assert!(glob_match("makefile", "makefile"));
         assert!(!glob_match("*.md", "readme.mdx"));
+    }
+
+    #[test]
+    fn folders_are_offered_to_ides_and_terminal_editors_only() {
+        let dir = std::env::temp_dir().join(format!("kestrel-apps-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let parse = |name: &str, extra: &str| {
+            let file = dir.join(name);
+            std::fs::write(
+                &file,
+                format!("[Desktop Entry]\nType=Application\nName=X\nExec=x %F\n{extra}\n"),
+            )
+            .unwrap();
+            parse_desktop(name, &file).unwrap().folder_editor
+        };
+        assert!(parse(
+            "ide.desktop",
+            "Categories=Utility;TextEditor;Development;IDE;"
+        ));
+        assert!(parse(
+            "tui.desktop",
+            "Categories=Utility;TextEditor;\nTerminal=true"
+        ));
+        assert!(!parse("gui.desktop", "Categories=Utility;TextEditor;"));
+        assert!(!parse("view.desktop", "Categories=Graphics;Viewer;"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
