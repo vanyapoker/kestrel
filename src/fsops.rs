@@ -375,7 +375,7 @@ pub fn places() -> Places {
     if let Some(root) = trash.parent() {
         let _ = fs::create_dir_all(root.join("info"));
     }
-    if fs::create_dir_all(&trash).is_ok() {
+    if fs::create_dir_all(trash).is_ok() {
         places.push(("Trash".to_string(), trash.to_path_buf()));
     }
 
