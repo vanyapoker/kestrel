@@ -180,7 +180,11 @@ pub fn list(path: &Path, cancelled: &dyn Fn() -> bool) -> Result<Tree, String> {
                     let _ = child.kill();
                 }
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => return Err("bsdtar failed".into()),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("bsdtar failed".into());
+            }
         }
     };
     let _ = child.kill();

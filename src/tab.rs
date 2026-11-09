@@ -396,6 +396,36 @@ impl Tab {
         self.rebuild_view(show_hidden);
     }
 
+    /// Exchanges all per-directory state with `other`; tab identity and view settings stay.
+    pub(crate) fn swap_directory(&mut self, other: &mut Tab) {
+        macro_rules! swap { ($($field:ident),* $(,)?) => { $(std::mem::swap(&mut self.$field, &mut other.$field);)* }; }
+        swap!(
+            path,
+            listing_id,
+            entries,
+            view,
+            base,
+            cursor,
+            marked,
+            anchor,
+            filter,
+            loading,
+            error,
+            generation,
+            cancel,
+            select_after_load,
+            center_after_load,
+            center_cursor,
+            scroll_to_cursor,
+            force_offset,
+            scroll_offset,
+            viewport_h,
+            grid_cols,
+            disk,
+            reload_at
+        );
+    }
+
     /// Rebuilds `view` after only the filter changed, reusing the sorted order.
     pub fn refilter(&mut self, sizes: &HashMap<PathBuf, u64>, show_hidden: bool) {
         if self.base.len() != self.entries.len() {
@@ -500,6 +530,17 @@ mod tests {
             .collect();
         t.apply_view(&HashMap::new(), true);
         t
+    }
+
+    #[test]
+    fn swap_directory_swaps_sorted_base() {
+        let mut a = tab_with(&["b", "a"]);
+        let mut b = tab_with(&["a", "b"]);
+        let (base_a, base_b) = (a.base.clone(), b.base.clone());
+        assert_ne!(base_a, base_b);
+        a.swap_directory(&mut b);
+        assert_eq!(a.base, base_b);
+        assert_eq!(b.base, base_a);
     }
 
     #[test]

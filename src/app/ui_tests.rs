@@ -480,6 +480,7 @@ fn miller_columns_watch_passive_directories_and_reject_stale_or_pruned_results()
             generation: generation.saturating_sub(1),
             soft: true,
             result: Err("stale result".into()),
+            disk: None,
         })
         .unwrap();
     d.frame(Vec::new());
@@ -506,6 +507,7 @@ fn miller_columns_watch_passive_directories_and_reject_stale_or_pruned_results()
             generation,
             soft: false,
             result: Err("pruned result".into()),
+            disk: None,
         })
         .unwrap();
     d.frame(Vec::new());
@@ -640,6 +642,7 @@ fn miller_columns_error_recovery_refresh_and_deleted_active_ancestors() {
             generation,
             soft: false,
             result: Err("Permission denied".into()),
+            disk: None,
         })
         .unwrap();
     d.frame(Vec::new());

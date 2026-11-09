@@ -274,12 +274,15 @@ pub struct Places {
 }
 
 /// The home trash's `files` folder, where trashed items live.
-pub fn trash_dir() -> PathBuf {
-    std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| home_dir().join(".local/share"))
-        .join("Trash/files")
+pub fn trash_dir() -> &'static Path {
+    static TRASH: std::sync::LazyLock<PathBuf> = std::sync::LazyLock::new(|| {
+        std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .unwrap_or_else(|| home_dir().join(".local/share"))
+            .join("Trash/files")
+    });
+    &TRASH
 }
 
 pub fn in_trash(path: &Path) -> bool {
@@ -350,7 +353,7 @@ pub fn special(path: &Path) -> Option<Special> {
         // Unused XDG dirs often point at $HOME itself.
         m.insert(home, Special::Home);
         m.insert(PathBuf::from("/"), Special::Root);
-        m.insert(trash_dir(), Special::Trash);
+        m.insert(trash_dir().to_path_buf(), Special::Trash);
         m
     })
     .get(path)
@@ -373,7 +376,7 @@ pub fn places() -> Places {
         let _ = fs::create_dir_all(root.join("info"));
     }
     if fs::create_dir_all(&trash).is_ok() {
-        places.push(("Trash".to_string(), trash));
+        places.push(("Trash".to_string(), trash.to_path_buf()));
     }
 
     let mut bookmarks = Vec::new();
@@ -488,12 +491,22 @@ pub fn percent_decode(s: &str) -> String {
 }
 
 pub fn open_default(path: &Path) {
-    let _ = std::process::Command::new("xdg-open")
+    let child = std::process::Command::new("xdg-open")
         .arg(path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
+    if let Ok(child) = child {
+        reap(child);
+    }
+}
+
+/// Waits for a launched program on a throwaway thread so it never lingers as a zombie.
+fn reap(mut child: std::process::Child) {
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
 }
 
 pub fn open_terminal(dir: &Path) {
@@ -509,7 +522,8 @@ pub fn open_terminal(dir: &Path) {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn();
-        if spawned.is_ok() {
+        if let Ok(child) = spawned {
+            reap(child);
             return;
         }
     }

@@ -652,7 +652,7 @@ impl Worker {
                     Ok(()) => {}
                     Err(e) => done.errors.push(format!("Could not empty the trash: {e}")),
                 }
-                done.dirs.push(crate::fsops::trash_dir());
+                done.dirs.push(crate::fsops::trash_dir().to_path_buf());
                 done.summary = "Emptied the trash".into();
             }
             JobKind::Delete => {

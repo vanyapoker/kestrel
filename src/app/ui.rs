@@ -1049,10 +1049,11 @@ impl App {
                         util::human_size(bytes),
                         if all_known { "" } else { "+" }
                     )));
-                    if tab
-                        .entries
-                        .iter()
-                        .any(|e| e.is_dir && self.sizing.contains(&e.path))
+                    if !self.sizing.is_empty()
+                        && tab
+                            .entries
+                            .iter()
+                            .any(|e| e.is_dir && self.sizing.contains(&e.path))
                     {
                         ui.add(egui::Spinner::new().size(11.0).color(pal().dim));
                     }
@@ -1738,21 +1739,40 @@ fn open_with_menu(
     p: usize,
     actions: &mut Vec<Action>,
 ) {
-    let choices = crate::apps::choices(&e.path);
+    use std::sync::Arc;
+    // The menu body runs every frame while the context menu is open; the app database
+    // lookup is I/O, so reuse one result briefly.
+    type Cache = (PathBuf, Instant, Arc<crate::apps::Choices>);
+    let id = egui::Id::new("open_with_cache");
+    let cached = ui
+        .ctx()
+        .data(|d| d.get_temp::<Cache>(id))
+        .filter(|(path, at, _)| {
+            *path == e.path && at.elapsed() < std::time::Duration::from_secs(2)
+        });
+    let choices = match cached {
+        Some((_, _, choices)) => choices,
+        None => {
+            let choices = Arc::new(crate::apps::choices(&e.path));
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(id, (e.path.clone(), Instant::now(), choices.clone())));
+            choices
+        }
+    };
     if choices.apps.is_empty() {
         return;
     }
-    let paths: Vec<PathBuf> = if tab.is_selected(vi) {
-        tab.targets().into_iter().filter(|t| !t.is_dir()).collect()
-    } else {
-        vec![e.path.clone()]
-    };
     let what = match e.path.extension() {
         Some(ext) => format!(".{} files", ext.to_string_lossy()),
         None => "files like this".into(),
     };
     const SHOWN: usize = 12;
     ui.menu_button("Open with", |ui| {
+        let paths: Vec<PathBuf> = if tab.is_selected(vi) {
+            tab.targets().into_iter().filter(|t| !t.is_dir()).collect()
+        } else {
+            vec![e.path.clone()]
+        };
         ui.set_min_width(200.0);
         for app in choices.apps.iter().take(SHOWN) {
             let default = choices.default.as_deref() == Some(app.id.as_str());

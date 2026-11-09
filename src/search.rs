@@ -498,9 +498,6 @@ impl Index {
                 heap.push(rank);
             }
         };
-        if limit == 0 {
-            return (Vec::new(), 0);
-        }
         let (best, total) = range
             .into_par_iter()
             .with_min_len(4096)
@@ -910,6 +907,21 @@ mod tests {
         assert_eq!(best[0], exact);
         assert_eq!(index.path(exact), Path::new("/root/ND"));
         assert_eq!(index.path(3), Path::new("/root/sub3/n---d-000003"));
+    }
+
+    #[test]
+    fn zero_limit_still_counts_matches() {
+        let mut index = Index::new(false);
+        for i in 0..10 {
+            index.push(Path::new(&format!("/root/n---d-{i}")), false);
+        }
+        let (best, total) = index.best_matches(
+            0..index.len(),
+            &Query::new("nd"),
+            0,
+            &AtomicBool::new(false),
+        );
+        assert_eq!((best, total), (vec![], 10));
     }
 
     #[test]

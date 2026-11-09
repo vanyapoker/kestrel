@@ -135,6 +135,9 @@ fn render_cached(path: &Path, renderer: Renderer) -> Option<ColorImage> {
 }
 
 pub(crate) fn render_raster(path: &Path, max: u32) -> Result<Rendered, String> {
+    if is_cancelled() {
+        return Err("cancelled".into());
+    }
     if std::fs::metadata(path)
         .map(|m| m.len() > MAX_IMAGE_FILE)
         .unwrap_or(false)
@@ -373,6 +376,7 @@ struct Cached {
     request: u64,
     kind: Kind,
     value: Thumb,
+    last_seen: u64,
 }
 
 struct Request {
@@ -404,8 +408,8 @@ pub struct Thumbs {
     queue: Arc<Queue>,
     rx: Receiver<ResultMsg>,
     next_request: u64,
-    /// Requested this frame; protected from eviction.
-    touched: HashSet<PathBuf>,
+    /// Poll counter; entries requested in the current frame are protected from eviction.
+    frame: u64,
 }
 
 impl Thumbs {
@@ -453,7 +457,7 @@ impl Thumbs {
             queue,
             rx,
             next_request: 0,
-            touched: HashSet::new(),
+            frame: 0,
         }
     }
 
@@ -462,9 +466,11 @@ impl Thumbs {
         if crate::util::is_gvfs(path) {
             return;
         }
-        self.touched.insert(path.to_path_buf());
-        if self.cache.get(path).is_some_and(|c| c.kind == kind) {
-            return;
+        if let Some(c) = self.cache.get_mut(path) {
+            c.last_seen = self.frame;
+            if c.kind == kind {
+                return;
+            }
         }
         self.invalidate(path);
         self.next_request += 1;
@@ -474,6 +480,7 @@ impl Thumbs {
                 request: self.next_request,
                 kind,
                 value: Thumb::Pending,
+                last_seen: self.frame,
             },
         );
         self.order.push_back(path.to_path_buf());
@@ -533,6 +540,22 @@ impl Thumbs {
             .retain(|r| r.path != path);
     }
 
+    /// `invalidate` for many paths with one pass over the order and queue.
+    pub fn invalidate_many(&mut self, paths: &HashSet<PathBuf>) {
+        if paths.is_empty() {
+            return;
+        }
+        for p in paths {
+            self.cache.remove(p);
+        }
+        self.order.retain(|p| !paths.contains(p));
+        self.queue
+            .stack
+            .lock()
+            .expect("lock poisoned")
+            .retain(|r| !paths.contains(&r.path));
+    }
+
     fn accept(&mut self, ctx: &egui::Context, msg: ResultMsg) {
         let request = msg.request;
         let Some(cached) = self.cache.get_mut(&request.path) else {
@@ -557,17 +580,30 @@ impl Thumbs {
     }
 
     pub fn poll(&mut self, ctx: &egui::Context) {
-        while let Ok(msg) = self.rx.try_recv() {
+        // Uploads are capped per frame so a burst of results cannot stall one frame.
+        const MAX_UPLOADS_PER_FRAME: usize = 16;
+        let mut accepted = 0;
+        while accepted < MAX_UPLOADS_PER_FRAME {
+            let Ok(msg) = self.rx.try_recv() else { break };
             self.accept(ctx, msg);
+            accepted += 1;
         }
-        // Evict oldest entries that weren't visible this frame, including pending work.
+        if accepted == MAX_UPLOADS_PER_FRAME {
+            ctx.request_repaint();
+        }
+        // Evict oldest entries that weren't requested this frame, including pending work.
         let mut guard = self.order.len();
+        let mut evicted = false;
         while self.cache.len() > CACHE_CAP && guard > 0 {
             guard -= 1;
             let Some(p) = self.order.pop_front() else {
                 break;
             };
-            if self.touched.contains(&p) {
+            if self
+                .cache
+                .get(&p)
+                .is_some_and(|c| c.last_seen == self.frame)
+            {
                 self.order.push_back(p);
             } else {
                 self.cache.remove(&p);
@@ -576,10 +612,13 @@ impl Thumbs {
                     .lock()
                     .expect("lock poisoned")
                     .retain(|r| r.path != p);
+                evicted = true;
             }
         }
-        self.order.retain(|p| self.cache.contains_key(p));
-        self.touched.clear();
+        if evicted {
+            self.order.retain(|p| self.cache.contains_key(p));
+        }
+        self.frame += 1;
     }
 }
 
@@ -767,7 +806,7 @@ mod tests {
             }),
             rx,
             next_request: 0,
-            touched: HashSet::new(),
+            frame: 0,
         }
     }
 

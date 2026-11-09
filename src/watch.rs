@@ -4,50 +4,75 @@ use eframe::egui;
 use notify::{EventKind, RecursiveMode, Watcher as _};
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::{Arc, Mutex};
 
 pub struct Watcher {
     inner: Option<notify::RecommendedWatcher>,
     watched: HashSet<PathBuf>,
-    rx: Receiver<PathBuf>,
+    /// Changed paths since the last `drain`; bounded by distinct paths, not event count.
+    pending: Arc<Mutex<HashSet<PathBuf>>>,
 }
 
 impl Watcher {
     pub fn new(ctx: egui::Context) -> Self {
-        let (tx, rx) = channel();
+        let pending = Arc::new(Mutex::new(HashSet::new()));
+        let sink = pending.clone();
         let inner = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             let Ok(ev) = res else { return };
             // Opening/reading files (including our own previews) must not trigger reloads.
             if matches!(ev.kind, EventKind::Access(_)) {
                 return;
             }
-            for p in ev.paths {
-                let _ = tx.send(p);
+            let was_empty = {
+                let mut set = sink.lock().unwrap_or_else(|e| e.into_inner());
+                let was_empty = set.is_empty();
+                set.extend(ev.paths);
+                was_empty
+            };
+            if was_empty {
+                ctx.request_repaint();
             }
-            ctx.request_repaint();
         })
         .ok();
         Self {
             inner,
             watched: HashSet::new(),
-            rx,
+            pending,
         }
     }
 
-    /// Makes the watched set equal to `wanted`.
+    /// Makes the watched set equal to `wanted`; paths that cannot be watched are retried next sync.
     pub fn sync(&mut self, wanted: HashSet<PathBuf>) {
         let Some(w) = self.inner.as_mut() else { return };
-        for p in self.watched.difference(&wanted) {
-            let _ = w.unwatch(p);
+        self.watched.retain(|p| {
+            let keep = wanted.contains(p);
+            if !keep {
+                let _ = w.unwatch(p);
+            }
+            keep
+        });
+        let mut reported = false;
+        for p in wanted {
+            if self.watched.contains(&p) {
+                continue;
+            }
+            match w.watch(&p, RecursiveMode::NonRecursive) {
+                Ok(()) => {
+                    self.watched.insert(p);
+                }
+                Err(e) if !reported => {
+                    reported = true;
+                    eprintln!("kestrel: cannot watch {}: {e}", p.display());
+                }
+                Err(_) => {}
+            }
         }
-        for p in wanted.difference(&self.watched) {
-            let _ = w.watch(p, RecursiveMode::NonRecursive);
-        }
-        self.watched = wanted;
     }
 
-    /// Paths that changed since the last call.
+    /// Distinct paths that changed since the last call.
     pub fn drain(&self) -> Vec<PathBuf> {
-        self.rx.try_iter().collect()
+        std::mem::take(&mut *self.pending.lock().unwrap_or_else(|e| e.into_inner()))
+            .into_iter()
+            .collect()
     }
 }

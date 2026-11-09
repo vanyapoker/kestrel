@@ -14,34 +14,6 @@ impl Drop for Columns {
     }
 }
 
-fn swap_directory(a: &mut Tab, b: &mut Tab) {
-    macro_rules! swap { ($($field:ident),* $(,)?) => { $(std::mem::swap(&mut a.$field, &mut b.$field);)* }; }
-    swap!(
-        path,
-        listing_id,
-        entries,
-        view,
-        cursor,
-        marked,
-        anchor,
-        filter,
-        loading,
-        error,
-        generation,
-        cancel,
-        select_after_load,
-        center_after_load,
-        center_cursor,
-        scroll_to_cursor,
-        force_offset,
-        scroll_offset,
-        viewport_h,
-        grid_cols,
-        disk,
-        reload_at
-    );
-}
-
 pub(super) fn find_listing(panes: &mut [Pane], id: u64) -> Option<&mut Tab> {
     for tab in panes.iter_mut().flat_map(|p| &mut p.tabs) {
         if tab.listing_id == id {
@@ -265,8 +237,8 @@ impl App {
             return;
         }
         let old = tab.path.clone();
-        swap_directory(tab, &mut cols.items[cols.active]);
-        swap_directory(tab, &mut cols.items[index]);
+        tab.swap_directory(&mut cols.items[cols.active]);
+        tab.swap_directory(&mut cols.items[index]);
         cols.items[index].path = tab.path.clone();
         cols.active = index;
         cols.scroll_to_active = true;

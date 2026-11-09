@@ -4,7 +4,7 @@ use eframe::egui::{self, Color32, ColorImage, FontId, TextFormat, text::LayoutJo
 use std::io::Read;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -515,6 +515,8 @@ impl Preview {
         let (res_tx, res_rx) = channel::<Response>();
         let generation = Arc::new(AtomicU64::new(0));
         let worker_generation = generation.clone();
+        const MAX_LOADS: usize = 2;
+        let running = Arc::new(AtomicUsize::new(0));
         std::thread::Builder::new()
             .name("preview".into())
             .spawn(move || {
@@ -537,9 +539,26 @@ impl Preview {
                         req.id,
                         worker_generation.clone(),
                     );
+                    // Abandoned loads keep running until they notice cancellation; cap them
+                    // so rapid selection changes cannot pile up decoders.
+                    while running.load(Ordering::Acquire) >= MAX_LOADS && !cancelled() {
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    if cancelled() {
+                        continue;
+                    }
+                    running.fetch_add(1, Ordering::AcqRel);
+                    let release = running.clone();
                     let spawned = std::thread::Builder::new()
                         .name("preview-load".into())
                         .spawn(move || {
+                            struct Release(Arc<AtomicUsize>);
+                            impl Drop for Release {
+                                fn drop(&mut self) {
+                                    self.0.fetch_sub(1, Ordering::Release);
+                                }
+                            }
+                            let _release = Release(release);
                             let for_tools = generation.clone();
                             thumbs::set_cancel(Box::new(move || {
                                 for_tools.load(Ordering::Relaxed) != id
@@ -563,6 +582,9 @@ impl Preview {
                             };
                             let _ = done_tx.send(payload);
                         });
+                    if spawned.is_err() {
+                        running.fetch_sub(1, Ordering::Release);
+                    }
                     let started = Instant::now();
                     let payload = loop {
                         if spawned.is_err() {

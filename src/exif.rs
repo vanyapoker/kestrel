@@ -91,9 +91,10 @@ pub fn rows(chunk: &[u8]) -> Vec<(String, String)> {
 /// "2024:05:01 14:22:10" → "2024-05-01 14:22", matching how file dates are shown.
 fn format_date(raw: &str) -> String {
     match raw.split_once(' ') {
-        Some((date, time)) if date.len() == 10 && time.len() >= 5 => {
-            format!("{} {}", date.replace(':', "-"), &time[..5])
-        }
+        Some((date, time)) if date.len() == 10 => match time.get(..5) {
+            Some(hm) => format!("{} {}", date.replace(':', "-"), hm),
+            None => raw.to_string(),
+        },
         _ => raw.to_string(),
     }
 }
@@ -227,6 +228,12 @@ impl<'a> Tiff<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_date_handles_short_and_non_ascii_time() {
+        assert_eq!(format_date("2024:05:01 12:3é"), "2024:05:01 12:3é");
+        assert_eq!(format_date("2024:05:01 14:22:10"), "2024-05-01 14:22");
+    }
 
     /// Writes a TIFF block in either byte order from (tag, type, count, payload) entries.
     struct Builder {

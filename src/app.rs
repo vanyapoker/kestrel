@@ -36,6 +36,7 @@ struct Listing {
     generation: u64,
     soft: bool,
     result: Result<Vec<Entry>, String>,
+    disk: Option<(u64, u64)>,
 }
 
 pub struct Pane {
@@ -641,14 +642,17 @@ impl App {
     /// Writes the session if it changed. Checked every couple of seconds, so a
     /// crash loses little, and once more on exit.
     fn save_session(&mut self, force: bool) {
-        let Some(file) = self.session_file.clone() else {
+        if self.session_file.is_none() {
             return;
-        };
+        }
         let now = Instant::now();
         if !force && now < self.next_session_check {
             return;
         }
         self.next_session_check = now + Duration::from_secs(2);
+        let Some(file) = self.session_file.clone() else {
+            return;
+        };
         let text = self.session().to_text();
         if text != self.saved_session {
             match crate::session::save(&file, &text) {
@@ -944,7 +948,7 @@ impl App {
                 continue;
             }
             tab.loading = false;
-            tab.disk = fsops::disk_space(&tab.path);
+            tab.disk = l.disk;
             // `view` indexes the old entries; selection is restored by path below.
             let path_at =
                 |vi: Option<usize>| vi.and_then(|vi| tab.entry(vi)).map(|e| e.path.clone());
@@ -1080,15 +1084,14 @@ impl App {
 
         // File watcher: debounce, then soft-reload affected tabs.
         // A file being written reports thousands of events a second; handle each path once.
-        let mut changed = self.watcher.drain();
-        changed.sort_unstable();
-        changed.dedup();
+        let changed = self.watcher.drain();
+        let mut stale: HashSet<PathBuf> = HashSet::new();
         for p in changed {
             self.size_service.changed(&p);
-            self.thumbs.invalidate(&p);
             if let Some(parent) = p.parent() {
-                self.thumbs.invalidate(parent); // a folder tile previews its children
+                stale.insert(parent.to_path_buf()); // a folder tile previews its children
             }
+            stale.insert(p.clone());
             if self
                 .preview
                 .path
@@ -1113,6 +1116,7 @@ impl App {
                 }
             }
         }
+        self.thumbs.invalidate_many(&stale);
         let mut next_wake: Option<Instant> = None;
         let mut search_due = false;
         let active_id = self.tab().id;
@@ -1180,26 +1184,26 @@ impl App {
 
     /// Gather interests independently of tab listing cancellation, including passive columns.
     fn sync_sizes(&mut self, now: Instant) {
-        let mut wanted = Vec::new();
+        let mut wanted: Vec<&Path> = Vec::new();
         for tab in self
             .panes
             .iter()
             .flat_map(|p| &p.tabs)
             .filter(|t| t.search.is_none())
         {
-            let mut add = |tab: &Tab| {
+            fn add<'a>(wanted: &mut Vec<&'a Path>, tab: &'a Tab) {
                 wanted.extend(
                     tab.entries
                         .iter()
                         .filter(|e| e.is_dir && !e.is_link)
-                        .map(|e| e.path.clone()),
+                        .map(|e| e.path.as_path()),
                 );
-            };
-            add(tab);
+            }
+            add(&mut wanted, tab);
             if let Some(c) = &tab.columns {
                 for (i, item) in c.items.iter().enumerate() {
                     if i != c.active {
-                        add(item);
+                        add(&mut wanted, item);
                     }
                 }
             }
@@ -2775,11 +2779,13 @@ fn start_listing(tab: &mut Tab, tx: &Sender<Listing>, ctx: &egui::Context, soft:
         if cancel.load(Ordering::Relaxed) {
             return;
         }
+        let disk = fsops::disk_space(&path);
         let _ = tx.send(Listing {
             listing_id,
             generation,
             soft,
             result,
+            disk,
         });
         ctx.request_repaint();
     });

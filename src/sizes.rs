@@ -223,6 +223,21 @@ impl Sizes {
         }
     }
 
+    /// Stores `size`, reporting whether it differs; allocates only for new keys.
+    fn set_size(sizes: &mut HashMap<PathBuf, u64>, path: &Path, size: u64) -> bool {
+        match sizes.get_mut(path) {
+            Some(s) if *s == size => false,
+            Some(s) => {
+                *s = size;
+                true
+            }
+            None => {
+                sizes.insert(path.to_path_buf(), size);
+                true
+            }
+        }
+    }
+
     /// Reconcile interests from all tabs/columns. An ancestor job covers child
     /// requests; an ancestor request waits for an existing child job, then reuses
     /// its cached total. Cancelled jobs retain their reservation until Done.
@@ -230,19 +245,14 @@ impl Sizes {
     /// it is recomputed.
     pub fn sync(
         &mut self,
-        mut wanted: Vec<PathBuf>,
+        mut wanted: Vec<&Path>,
         sizes: &mut HashMap<PathBuf, u64>,
         sizing: &mut HashSet<PathBuf>,
         now: Instant,
     ) -> bool {
-        wanted.sort_by(|a, b| {
-            a.components()
-                .count()
-                .cmp(&b.components().count())
-                .then(a.cmp(b))
-        });
+        wanted.sort_by_cached_key(|p| (p.components().count(), *p));
         wanted.dedup();
-        let pinned: HashSet<_> = wanted.iter().cloned().collect();
+        let pinned: HashSet<&Path> = wanted.iter().copied().collect();
         for job in self.jobs.values() {
             if !wanted.iter().any(|p| overlaps(p, &job.path)) {
                 job.cancel.store(true, Ordering::Relaxed);
@@ -256,15 +266,16 @@ impl Sizes {
         {
             let mut cache = self.cache.lock().expect("lock poisoned");
             if now >= self.sweep_at || cache.len() > MAX_CACHED.max(pinned.len()) {
-                cache
-                    .retain(|p, v| now.saturating_duration_since(v.at) < TTL || pinned.contains(p));
+                cache.retain(|p, v| {
+                    now.saturating_duration_since(v.at) < TTL || pinned.contains(p.as_path())
+                });
                 // Open rows stay pinned, even when a directory has more entries
                 // than the history budget. Otherwise eviction would cause an
                 // endless cycle of rescanning those rows. Evict history in chunks.
                 if cache.len() > MAX_CACHED.max(pinned.len()) {
                     let mut oldest: Vec<_> = cache
                         .iter()
-                        .filter(|(p, _)| !pinned.contains(*p))
+                        .filter(|(p, _)| !pinned.contains(p.as_path()))
                         .map(|(p, v)| (p.clone(), v.at))
                         .collect();
                     let remove = (cache.len() - MAX_CACHED.max(pinned.len()))
@@ -285,10 +296,10 @@ impl Sizes {
                 self.sweep_at = now + Duration::from_secs(1);
             }
             sizing.clear();
-            for path in &wanted {
+            for &path in &wanted {
                 if let Some(value) = cache.get(path) {
                     changed |= match value.size() {
-                        Some(size) => sizes.insert(path.clone(), size) != Some(size),
+                        Some(size) => Self::set_size(sizes, path, size),
                         None => sizes.remove(path).is_some(),
                     };
                     self.previous.remove(path);
@@ -298,10 +309,10 @@ impl Sizes {
                         continue;
                     }
                 } else if let Some(&size) = self.previous.get(path) {
-                    changed |= sizes.insert(path.clone(), size) != Some(size);
+                    changed |= Self::set_size(sizes, path, size);
                 } else {
                     changed |= sizes.remove(path).is_some();
-                    sizing.insert(path.clone());
+                    sizing.insert(path.to_path_buf());
                 }
                 if self.jobs.len() >= self.pool.current_num_threads()
                     || self.jobs.values().any(|j| overlaps(&j.path, path))
@@ -315,13 +326,13 @@ impl Sizes {
                 self.jobs.insert(
                     generation,
                     Job {
-                        path: path.clone(),
+                        path: path.to_path_buf(),
                         cancel: cancel.clone(),
                         stale: stale.clone(),
                     },
                 );
                 let (path, cache, tx, ctx) = (
-                    path.clone(),
+                    path.to_path_buf(),
                     self.cache.clone(),
                     self.tx.clone(),
                     self.ctx.clone(),
@@ -469,7 +480,7 @@ mod tests {
         }
         fn sync(&mut self, paths: &[PathBuf]) {
             self.service.sync(
-                paths.to_vec(),
+                paths.iter().map(PathBuf::as_path).collect(),
                 &mut self.sizes,
                 &mut self.sizing,
                 Instant::now(),
