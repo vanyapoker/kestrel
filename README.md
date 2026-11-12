@@ -60,7 +60,7 @@ Update by installing the next release.
 | Ctrl+Z / Ctrl+D | Undo / duplicate |
 | Ctrl+A / Ctrl+Space | Select all / toggle selected item |
 | Ctrl+S / Ctrl+Shift+A | Select by pattern / invert selection |
-| F2 / Ctrl+Shift+N | Rename (batch for multiple items) / new folder |
+| F2 / Ctrl+Shift+N / Ctrl+N | Rename (batch for multiple items) / new folder / new file |
 | Delete / Shift+Delete | Trash / permanently delete |
 | Shift+drag / Ctrl+drag | Always move / always copy dropped files |
 | Alt+C / Ctrl+Alt+T | Copy path / open terminal here |
@@ -82,8 +82,11 @@ clears a filter or cancels. Saving over an existing file asks for confirmation.
 Installation selects Kestrel for Open / Save dialogs in apps using
 xdg-desktop-portal, preserving other portal backends and restoring the previous
 chooser setting on uninstall. Reopen apps after installation.
-Apps with their own file pickers keep them. For Firefox, set
-`widget.use-xdg-desktop-portal.file-picker` to `1` in `about:config` if needed.
+The dialog applies the calling app's file-type filters and opens over its window
+(Wayland compositors with xdg-foreign). Installation also sets `GTK_USE_PORTAL=1`
+(`environment.d`; log out and in once) for GTK3 apps, and adds
+`widget.use-xdg-desktop-portal.file-picker` to `user.js` in each Firefox profile
+found (restart Firefox). Uninstall reverts both.
 
 To make Kestrel your default file manager:
 

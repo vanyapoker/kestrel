@@ -2641,6 +2641,28 @@ fn create_dialog_field_is_focused() {
 }
 
 #[test]
+fn new_file_hotkey_opens_create_dialog() {
+    let dir = sandbox("new-file-hotkey");
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| a.row_rects.contains_key(&dir.join("a.txt")));
+    let m = Modifiers::COMMAND;
+    d.modifiers = m;
+    d.frame(vec![Event::Key {
+        key: Key::N,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: m,
+    }]);
+    d.frame(Vec::new());
+    assert!(matches!(
+        d.app.dialog,
+        Some(Dialog::Create { kind: NewKind::File, .. })
+    ));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn compress_dialog_creates_archive() {
     let dir = sandbox("compress-dialog");
     let mut d = Driver::new(dir.clone());
@@ -2712,15 +2734,41 @@ fn picker_app(dir: &Path, kind: crate::picker::Kind, name: &str) -> Driver {
         accept_label: String::new(),
         dir: None,
         name: name.into(),
+        filters: Vec::new(),
+        filter_index: 0,
+        parent: String::new(),
+        app: String::new(),
     };
     d.app.picker = Some(Picker {
         name: req.name.clone(),
         focus: false,
+        filter_index: 0,
         chosen: Vec::new(),
         req,
     });
     d.until("listing", |a| a.row_rects.contains_key(&dir.join("a.txt")));
     d
+}
+
+#[test]
+fn picker_filter_hides_non_matching_files() {
+    use crate::picker::{self, Filter};
+    let dir = sandbox("picker-filter");
+    fs::write(dir.join("q.png"), "q").unwrap();
+    // The filter is process-wide and tests run in parallel, so it excludes only the
+    // uniquely named `q.png` (names starting with `q`) instead of everything but `.txt`.
+    picker::set_active(Some(Filter {
+        name: "No q".into(),
+        rules: vec![(0, "[!q]*".into())],
+    }));
+    let mut d = picker_app(&dir, picker::Kind::Open, "");
+    d.until("filtered listing", |a| {
+        a.row_rects.contains_key(&dir.join("a.txt"))
+    });
+    let shown = d.app.row_rects.contains_key(&dir.join("q.png"));
+    picker::set_active(None);
+    assert!(!shown, "q.png should be filtered out");
+    fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

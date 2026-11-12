@@ -394,6 +394,20 @@ impl App {
                 {
                     actions.push(Action::PickConfirm);
                 }
+                if p.req.filters.len() > 1 && p.req.kind != crate::picker::Kind::Folder {
+                    let shown = p.req.filters[p.filter_index.min(p.req.filters.len() - 1)]
+                        .name
+                        .clone();
+                    egui::ComboBox::from_id_salt("picker_filter")
+                        .selected_text(shown)
+                        .show_ui(ui, |ui| {
+                            for (i, f) in p.req.filters.iter().enumerate() {
+                                if ui.selectable_label(i == p.filter_index, &f.name).clicked() {
+                                    actions.push(Action::PickFilter(i));
+                                }
+                            }
+                        });
+                }
                 if saving {
                     let id = egui::Id::new("picker_name");
                     let focus = std::mem::take(&mut p.focus);

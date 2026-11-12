@@ -495,6 +495,9 @@ impl Tab {
                 if !show_hidden && !in_search && e.hidden {
                     return None;
                 }
+                if !crate::picker::allows(&e.name, e.is_dir) {
+                    return None;
+                }
                 query.score_name(&e.name, e.is_dir).map(|score| (i, score))
             })
             .collect();

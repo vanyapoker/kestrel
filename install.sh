@@ -118,8 +118,6 @@ case ":$PATH:" in
     *) echo "   Note: $BIN is not on your PATH; launch Kestrel from the app launcher." ;;
 esac
 
-echo "   Firefox: set widget.use-xdg-desktop-portal.file-picker to 1 in about:config to use Kestrel for uploads."
-
 optional=()
 command -v pdftoppm >/dev/null || optional+=(poppler)
 command -v ffmpeg >/dev/null || optional+=(ffmpeg)

@@ -29,6 +29,9 @@ use wayland_client::protocol::{
     wl_pointer, wl_pointer::WlPointer, wl_registry::WlRegistry, wl_seat::WlSeat, wl_shm,
     wl_shm::WlShm, wl_shm_pool::WlShmPool, wl_surface::WlSurface,
 };
+use wayland_protocols::xdg::foreign::zv2::client::{
+    zxdg_imported_v2::ZxdgImportedV2, zxdg_importer_v2::ZxdgImporterV2,
+};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum, event_created_child};
 
 const URI_LIST: &str = "text/uri-list";
@@ -333,6 +336,10 @@ pub struct WlDnd {
     surface: WlSurface,
     compositor: WlCompositor,
     shm: WlShm,
+    /// xdg-foreign importer; `None` when the compositor lacks it.
+    importer: Option<ZxdgImporterV2>,
+    /// Keeps the parent link alive for the window lifetime.
+    imported: Option<ZxdgImportedV2>,
     rx: Receiver<DndEvent>,
     /// Writing to this stops the dispatch thread.
     wake_tx: OwnedFd,
@@ -424,6 +431,7 @@ impl WlDnd {
             globals.bind(&qh, 3..=3, ()).map_err(|e| e.to_string())?;
         let compositor: WlCompositor = globals.bind(&qh, 4..=6, ()).map_err(|e| e.to_string())?;
         let shm: WlShm = globals.bind(&qh, 1..=1, ()).map_err(|e| e.to_string())?;
+        let importer: Option<ZxdgImporterV2> = globals.bind(&qh, 1..=1, ()).ok();
         // SAFETY: the caller guarantees `surface` is a live `wl_surface` (see `# Safety`).
         let surface_id = unsafe { ObjectId::from_ptr(WlSurface::interface(), surface.cast()) }
             .map_err(|e| e.to_string())?;
@@ -459,6 +467,8 @@ impl WlDnd {
             surface,
             compositor,
             shm,
+            importer,
+            imported: None,
             rx,
             wake_tx,
             thread: Some(thread),
@@ -467,6 +477,18 @@ impl WlDnd {
             writer: Some(wl.clipboard_writer()),
         });
         Ok(wl)
+    }
+
+    /// Makes our window a child of the foreign toplevel named by an xdg-foreign `handle`.
+    /// No-op when the compositor lacks xdg-foreign.
+    pub fn set_parent(&mut self, handle: &str) {
+        let Some(importer) = &self.importer else {
+            return;
+        };
+        let imported = importer.import_toplevel(handle.to_owned(), &self.qh, ());
+        imported.set_parent_of(&self.surface);
+        self.imported = Some(imported);
+        let _ = self.conn.flush();
     }
 
     pub fn poll(&self) -> Vec<DndEvent> {
@@ -929,7 +951,9 @@ ignore_events!(
     WlSurface,
     WlShm,
     WlShmPool,
-    WlBuffer
+    WlBuffer,
+    ZxdgImporterV2,
+    ZxdgImportedV2
 );
 
 impl Dispatch<WlPointer, ()> for State {

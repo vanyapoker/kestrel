@@ -220,7 +220,7 @@ impl App {
             self.sync_inspector();
         }
         let title = if let Some(picker) = &self.picker {
-            format!("{} — Kestrel", picker.req.heading())
+            format!("{} — Kestrel", picker.req.window_title())
         } else {
             format!("{} — Kestrel", self.tab().path.display())
         };
@@ -1529,7 +1529,7 @@ fn background_menu(ui: &mut Ui, p: usize, tab: &Tab, rect: Rect, actions: &mut V
         };
         if tab.search.is_none() {
             item(ui, "New folder", "Ctrl+Shift+N", Cmd::NewFolder);
-            item(ui, "New empty file", "", Cmd::NewFile);
+            item(ui, "New empty file", "Ctrl+N", Cmd::NewFile);
             item(ui, "Paste", "Ctrl+V", Cmd::Paste);
             ui.separator();
         }

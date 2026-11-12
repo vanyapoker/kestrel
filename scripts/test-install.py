@@ -116,6 +116,26 @@ class InstallationTests(unittest.TestCase):
         self.install()
         self.assertIn(f"{KEY}=kestrel", conf.read_text())
 
+    def test_firefox_and_gtk_integration(self):
+        first = self.home / ".mozilla/firefox/abc.default"
+        second = self.config / "mozilla/firefox/xyz.default"
+        for d in (first, second):
+            d.mkdir(parents=True)
+            (d / "prefs.js").write_text("")
+        preset = 'user_pref("a", 1);\n'
+        (second / "user.js").write_text(preset)
+        self.install()
+        self.install()
+        for d in (first, second):
+            self.assertEqual((d / "user.js").read_text().count("// kestrel begin"), 1)
+        self.assertIn(preset, (second / "user.js").read_text())
+        env_file = self.config / "environment.d/kestrel-portal.conf"
+        self.assertEqual(env_file.read_text(), "GTK_USE_PORTAL=1\n")
+        self.uninstall()
+        self.assertFalse((first / "user.js").exists())
+        self.assertEqual((second / "user.js").read_text(), preset)
+        self.assertFalse(env_file.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

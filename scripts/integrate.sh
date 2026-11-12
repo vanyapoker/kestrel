@@ -31,6 +31,25 @@ edit_preference() {
     rm -f "$tmp"
 }
 
+# Firefox profile directories (those holding prefs.js) in every known install layout.
+firefox_profiles() {
+    local root
+    for root in "$HOME/.mozilla/firefox" "$config/mozilla/firefox" \
+        "$HOME/.var/app/org.mozilla.firefox/.mozilla/firefox" "$HOME/snap/firefox/common/.mozilla/firefox"; do
+        [ -d "$root" ] || continue
+        find "$root" -maxdepth 2 -name prefs.js -printf '%h\n'
+    done
+}
+
+# Drops the block between our markers from a user.js, keeping everything else.
+strip_firefox_block() {
+    local file="$1" tmp
+    tmp="$(mktemp "${file}.XXXXXX")"
+    awk '/^\/\/ kestrel begin$/ { skip=1; next } /^\/\/ kestrel end$/ { skip=0; next } !skip { print }' "$file" > "$tmp"
+    cat "$tmp" > "$file"
+    rm -f "$tmp"
+}
+
 refresh() {
     update-desktop-database "$data/applications" 2>/dev/null || true
     gtk-update-icon-cache -q "$data/icons/hicolor" 2>/dev/null || true
@@ -57,6 +76,15 @@ if [ "${1:-}" = --uninstall ]; then
         done < "$data/kestrel/portal-configs"
         rm -f "$data/kestrel/portal-configs"
     fi
+    if [ -f "$data/kestrel/firefox-profiles" ]; then
+        while IFS= read -r userjs; do
+            [ -f "$userjs" ] || continue
+            strip_firefox_block "$userjs"
+            if ! grep -q '[^[:space:]]' "$userjs"; then rm -f "$userjs"; fi
+        done < "$data/kestrel/firefox-profiles"
+        rm -f "$data/kestrel/firefox-profiles"
+    fi
+    rm -f "$config/environment.d/kestrel-portal.conf"
     rm -f "$bin/kestrel" "$bin/kestrel-update" "$bin/kestrel-uninstall" \
         "$data/applications/kestrel.desktop" \
         "$data/icons/hicolor/scalable/apps/kestrel.svg" \
@@ -108,6 +136,23 @@ if ! grep -Fxq "$conf" "$data/kestrel/portal-configs" 2>/dev/null; then
     printf '%s\n' "$conf" >> "$data/kestrel/portal-configs"
 fi
 
+# GTK3 apps skip the portal unless asked; GTK4 and Qt already use it.
+mkdir -p "$config/environment.d"
+printf 'GTK_USE_PORTAL=1\n' > "$config/environment.d/kestrel-portal.conf"
+
+# Firefox only uses the portal file picker when its pref says so.
+firefox_updated=0
+while IFS= read -r profile; do
+    [ -n "$profile" ] || continue
+    userjs="$profile/user.js"
+    [ ! -f "$userjs" ] || strip_firefox_block "$userjs"
+    printf '// kestrel begin\nuser_pref("widget.use-xdg-desktop-portal.file-picker", 1);\n// kestrel end\n' >> "$userjs"
+    if ! grep -Fxq "$userjs" "$data/kestrel/firefox-profiles" 2>/dev/null; then
+        printf '%s\n' "$userjs" >> "$data/kestrel/firefox-profiles"
+    fi
+    firefox_updated=1
+done < <(firefox_profiles)
+
 # Absolute Exec works even when ~/.local/bin is absent from the launcher's PATH.
 # Escape Desktop Entry reserved characters and literal field-code percent signs.
 KESTREL_DESKTOP_EXE="$bin/kestrel" awk '
@@ -131,3 +176,9 @@ printf '#!/usr/bin/env bash\nexec bash %q --uninstall\n' "$data/kestrel/integrat
 chmod 755 "$bin/kestrel-uninstall"
 refresh
 echo 'File dialogs configured for apps using xdg-desktop-portal. Reopen apps to use them.'
+echo 'Log out and in once so GTK apps pick up GTK_USE_PORTAL=1.'
+if [ "$firefox_updated" = 1 ]; then
+    echo 'Firefox: restart it to use Kestrel for uploads.'
+else
+    echo 'Firefox: set widget.use-xdg-desktop-portal.file-picker to 1 in about:config to use Kestrel for uploads.'
+fi

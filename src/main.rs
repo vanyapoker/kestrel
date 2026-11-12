@@ -66,7 +66,7 @@ fn main() -> eframe::Result {
         session::load()
     };
     let (title, app_id, size) = match &picker {
-        Some(p) => (p.heading(), "kestrel-picker", [980.0, 640.0]),
+        Some(p) => (p.window_title(), "kestrel-picker", [980.0, 640.0]),
         None => ("Kestrel".to_string(), "kestrel", [1280.0, 800.0]),
     };
 

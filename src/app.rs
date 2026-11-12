@@ -235,6 +235,8 @@ enum Action {
     /// Choose the folder being viewed (folder pickers).
     PickHere,
     PickCancel,
+    /// Choose the file-type filter at this index (pickers).
+    PickFilter(usize),
 }
 
 /// State of a file-picker window (`kestrel --pick`).
@@ -243,6 +245,8 @@ struct Picker {
     /// File name being typed when saving.
     name: String,
     focus: bool,
+    /// Index into `req.filters` of the filter in use.
+    filter_index: usize,
     /// What was chosen; printed on exit.
     chosen: Vec<PathBuf>,
 }
@@ -359,9 +363,14 @@ impl App {
         }
         if let Some(req) = picker {
             app.show_preview = false;
+            let filter_index = req.filter_index;
+            if req.kind != crate::picker::Kind::Folder {
+                crate::picker::set_active(req.filters.get(filter_index).cloned());
+            }
             app.picker = Some(Picker {
                 name: req.name.clone(),
                 focus: true,
+                filter_index,
                 chosen: Vec::new(),
                 req,
             });
@@ -2116,6 +2125,15 @@ impl App {
                 }
             }
             Action::PickCancel => self.ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Action::PickFilter(i) => {
+                if let Some(p) = &mut self.picker
+                    && let Some(f) = p.req.filters.get(i)
+                {
+                    p.filter_index = i;
+                    crate::picker::set_active(Some(f.clone()));
+                    self.refilter_all();
+                }
+            }
             Action::Click { vi, ctrl, shift } => {
                 let tab = self.tab_mut();
                 if shift {
@@ -2527,6 +2545,7 @@ impl App {
                 (shift, Key::Delete, DeletePermanently),
                 (none, Key::Delete, Trash),
                 (cs, Key::N, NewFolder),
+                (ctrl, Key::N, NewFile),
                 (ctrl, Key::A, SelectAll),
                 (cs, Key::A, InvertSelection),
                 (ctrl, Key::S, SelectPattern),
@@ -2643,7 +2662,16 @@ impl App {
             match unsafe {
                 crate::wl_dnd::WlDnd::new(d.display.as_ptr(), w.surface.as_ptr(), self.ctx.clone())
             } {
-                Ok(wl) => self.wl = Some(wl),
+                Ok(mut wl) => {
+                    if let Some(handle) = self
+                        .picker
+                        .as_ref()
+                        .and_then(|p| p.req.parent.strip_prefix("wayland:"))
+                    {
+                        wl.set_parent(handle);
+                    }
+                    self.wl = Some(wl);
+                }
                 Err(e) => eprintln!("kestrel: system drag and drop unavailable: {e}"),
             }
         }
@@ -2692,6 +2720,9 @@ impl eframe::App for App {
             let mut out = std::io::stdout().lock();
             for path in &p.chosen {
                 let _ = writeln!(out, "{}", path.display());
+            }
+            if !p.chosen.is_empty() && p.req.filters.len() > 1 {
+                let _ = writeln!(out, "#filter {}", p.filter_index);
             }
             let _ = out.flush();
         }

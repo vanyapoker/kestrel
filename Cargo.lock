@@ -1808,6 +1808,7 @@ dependencies = [
  "trash",
  "wayland-backend",
  "wayland-client",
+ "wayland-protocols",
  "wayland-protocols-wlr",
  "zbus",
 ]
