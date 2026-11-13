@@ -12,6 +12,12 @@ Matches show up while subfolders are still being scanned, and editing the query
 mid-scan re-checks everything found so far. Later queries reuse the scan; press
 F5 to pick up files added deep inside the folder since then.
 
+## Run shell scripts
+
+Right-click a `.sh` file and choose **Run in terminal** to run it with Bash.
+The script runs in its containing folder. This requires `xdg-terminal-exec`.
+Run only scripts you trust.
+
 ## Custom actions
 
 Run your own shell commands on the selection. Open **Custom actions: add or

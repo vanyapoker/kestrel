@@ -1628,6 +1628,9 @@ fn row_interactions(
             }
         };
         item(ui, "Open", "Enter", Action::OpenEntry(vi));
+        if !e.is_dir && e.path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("sh")) {
+            item(ui, "Run in terminal", "", Action::RunScript(e.path.clone()));
+        }
         if crate::fsops::in_trash(&tab.path) {
             item(ui, "Restore", "", Action::Cmd(Cmd::Restore));
         }

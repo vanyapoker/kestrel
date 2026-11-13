@@ -2692,6 +2692,21 @@ fn compress_dialog_creates_archive() {
 }
 
 #[test]
+fn shell_script_context_menu_offers_run_in_terminal() {
+    let dir = sandbox("run-script-menu");
+    let script = dir.join("hello world.sh");
+    fs::write(&script, "echo hello\n").unwrap();
+    let mut d = Driver::new(dir.clone());
+    d.until("script listing", |a| a.row_rects.contains_key(&script));
+    d.move_to(d.row(&script).center());
+    d.mouse_button(PointerButton::Secondary, true);
+    d.mouse_button(PointerButton::Secondary, false);
+    d.frame(Vec::new());
+    assert!(d.texts.iter().any(|(text, _)| text == "Run in terminal"));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn compress_from_context_menu() {
     let dir = sandbox("ctx-compress");
     let mut d = Driver::new(dir.clone());

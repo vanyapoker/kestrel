@@ -211,6 +211,7 @@ enum Action {
     Sort(SortKey),
     CopyPath(PathBuf),
     OpenTerminal(PathBuf),
+    RunScript(PathBuf),
     ClearFilter,
     Cmd(Cmd),
     /// Run the custom action at this index on the selection.
@@ -2176,6 +2177,21 @@ impl App {
             }
             Action::CopyPath(p) => self.set_text_clipboard(p.display().to_string()),
             Action::OpenTerminal(p) => fsops::open_terminal(&p),
+            Action::RunScript(path) => {
+                let mut command = std::process::Command::new("xdg-terminal-exec");
+                command.arg("bash").arg(&path);
+                if let Some(parent) = path.parent() {
+                    command.current_dir(parent);
+                }
+                match command.spawn() {
+                    Ok(mut child) => {
+                        std::thread::spawn(move || {
+                            let _ = child.wait();
+                        });
+                    }
+                    Err(e) => self.toast_error(format!("Could not open terminal: {e}")),
+                }
+            }
             Action::ClearFilter => {
                 self.tab_mut().filter.clear();
                 let (sizes, hidden) = (&self.sizes, self.show_hidden);
