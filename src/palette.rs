@@ -110,7 +110,7 @@ pub const COMMANDS: &[Command] = &[
     c(Cmd::UnbookmarkFolder, "Remove this folder from bookmarks", "", "unbookmark favorite"),
     c(Cmd::ToggleHidden, "Toggle hidden files", "Ctrl+H", "dotfiles show hide"),
     c(Cmd::NewFolder, "New folder", "Ctrl+Shift+N", "mkdir directory create"),
-    c(Cmd::NewFile, "New empty file", "", "touch create"),
+    c(Cmd::NewFile, "New empty file", "Ctrl+N", "touch create"),
     c(Cmd::Undo, "Undo", "Ctrl+Z", ""),
     c(Cmd::Rename, "Rename", "F2", "mv"),
     c(Cmd::BatchRename, "Batch rename selection…", "", "bulk mass"),

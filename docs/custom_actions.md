@@ -32,12 +32,31 @@ run = pdfunite {files} {dir}/merged.pdf && notify-send "Kestrel" "Created merged
 
 [Images to one PDF]
 match = *.png, *.jpg, *.jpeg
-run = magick {files} {dir}/combined.pdf
+run = w=$(magick identify -format '%w\n' {files} | sort -n | head -n1) && magick {files} -resize "${w}x" -units PixelsPerInch -density 72 {dir}/combined.pdf
 ```
 
 Actions without a terminal only report failures, so `&& notify-send …` is an easy
 way to confirm one worked. Both overwrite an existing `merged.pdf` or
-`combined.pdf`.
+`combined.pdf`. The image action scales every page to the width of the narrowest
+image, keeping each image's aspect ratio. Fixing the density at 72 keeps photos
+that carry their own DPI from coming out at a different page size.
+
+## Set as wallpaper
+
+Right-click an image and make it the desktop background. This one is for Omarchy,
+whose `omarchy-theme-bg-set` links the image as the current background and tells
+the shell to show it. Select a single image: with several, each one runs in turn
+and the last wins.
+
+```ini
+[Set as wallpaper]
+match = *.png, *.jpg, *.jpeg, *.webp, *.gif, *.bmp
+run = omarchy-theme-bg-set {file} && notify-send "Kestrel" "Wallpaper set"
+```
+
+On other desktops swap in your wallpaper tool, for example
+`run = pkill swaybg; setsid swaybg -m fill -i {file}` or
+`run = swww img {file}`.
 
 ## Copy text from a screenshot
 
