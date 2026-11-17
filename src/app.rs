@@ -1,5 +1,6 @@
 mod columns;
 mod commands;
+mod git;
 mod goto;
 mod icons;
 mod preview_text;
@@ -52,6 +53,14 @@ struct Clip {
 }
 
 enum Dialog {
+    CloneRepo {
+        dir: PathBuf,
+        url: String,
+        name: String,
+        /// The user typed a folder name; stop deriving it from the URL.
+        name_edited: bool,
+        focus: bool,
+    },
     SaveWorkspace {
         name: String,
         focus: bool,
@@ -212,6 +221,12 @@ enum Action {
     CopyPath(PathBuf),
     OpenTerminal(PathBuf),
     RunScript(PathBuf),
+    Lazygit {
+        root: PathBuf,
+        filter: Option<PathBuf>,
+    },
+    GitInit(PathBuf),
+    CloneDialog(PathBuf),
     ClearFilter,
     Cmd(Cmd),
     /// Run the custom action at this index on the selection.
@@ -291,6 +306,12 @@ pub struct App {
     checksums_pending: HashSet<PathBuf>,
     checksum_tx: Sender<(PathBuf, crate::props::Sums)>,
     checksum_rx: Receiver<(PathBuf, crate::props::Sums)>,
+    git_marks: bool,
+    git_tx: Sender<git::GitListing>,
+    git_rx: Receiver<git::GitListing>,
+    /// Listings with a status run in flight; `true` asks for one more run afterwards.
+    git_inflight: HashMap<u64, bool>,
+    window_focused: bool,
     action_tx: Sender<Result<String, String>>,
     action_rx: Receiver<Result<String, String>>,
     dev_rx: Receiver<crate::devices::DevResult>,
@@ -405,6 +426,7 @@ impl App {
         let (dev_tx, dev_rx) = channel();
         let (action_tx, action_rx) = channel();
         let (checksum_tx, checksum_rx) = channel();
+        let (git_tx, git_rx) = channel();
         let mut app = Self {
             preview: Preview::new(ctx.clone()),
             inspector: Vec::new(),
@@ -443,6 +465,11 @@ impl App {
             checksums_pending: HashSet::new(),
             checksum_tx,
             checksum_rx,
+            git_marks: true,
+            git_tx,
+            git_rx,
+            git_inflight: HashMap::new(),
+            window_focused: true,
             action_tx,
             action_rx,
             dev_busy: HashSet::new(),
@@ -549,6 +576,7 @@ impl App {
         self.show_hidden = s.show_hidden;
         self.show_preview = s.show_preview;
         self.show_sidebar = s.show_sidebar;
+        self.git_marks = s.git_marks;
         // Sections are keyed by their static titles; ignore names we no longer have.
         self.collapsed = ["PLACES", "BOOKMARKS", "DEVICES"]
             .into_iter()
@@ -640,6 +668,7 @@ impl App {
             show_hidden: self.show_hidden,
             show_preview: self.show_preview,
             show_sidebar: self.show_sidebar,
+            git_marks: self.git_marks,
             collapsed,
             sidebar_width: Some(self.sidebar_width),
             preview_width: Some(self.preview_width),
@@ -946,6 +975,7 @@ impl App {
             }
         }
 
+        let git_marks = self.git_marks;
         while let Ok(l) = self.list_rx.try_recv() {
             if l.result.is_err() && self.repair_missing_column(l.listing_id, l.generation) {
                 continue;
@@ -994,6 +1024,9 @@ impl App {
                 }
             }
             tab.apply_view(sizes, hidden);
+            if git_marks {
+                git::start_git(tab, &mut self.git_inflight, &self.git_tx, &self.ctx);
+            }
             if let Some(p) = tab.select_after_load.take() {
                 tab.select_path(&p);
                 tab.center_cursor = std::mem::take(&mut tab.center_after_load);
@@ -1001,6 +1034,26 @@ impl App {
                 tab.restore_selection(kept.0, kept.1);
             }
         }
+
+        while let Ok(g) = self.git_rx.try_recv() {
+            let again = self.git_inflight.remove(&g.listing_id).unwrap_or(false);
+            if !self.git_marks {
+                continue;
+            }
+            if let Some(tab) = columns::find_listing(&mut self.panes, g.listing_id) {
+                if tab.generation == g.generation && tab.path == g.path {
+                    tab.git = g.marks;
+                }
+                if again {
+                    git::start_git(tab, &mut self.git_inflight, &self.git_tx, &self.ctx);
+                }
+            }
+        }
+        let focused = ctx.input(|i| i.focused);
+        if focused && !self.window_focused && self.git_marks {
+            self.refresh_git();
+        }
+        self.window_focused = focused;
 
         let mut searched = HashSet::new();
         while let Ok(msg) = self.search_rx.try_recv() {
@@ -1295,8 +1348,17 @@ impl App {
                 | JobKind::EmptyTrash
                 | JobKind::PasteImage
                 | JobKind::Properties
+                | JobKind::Clone
         ) {
             self.toast(done.summary);
+        }
+        if done.kind == JobKind::Clone
+            && !done.cancelled
+            && done.errors.is_empty()
+            && let Some(repo) = done.created.first()
+            && repo.parent() == Some(self.tab().path.as_path())
+        {
+            self.navigate(repo.clone(), History::Push);
         }
     }
 
@@ -1933,6 +1995,19 @@ impl App {
                 }
             }
             Cmd::OpenTerminal => fsops::open_terminal(&self.tab().path.clone()),
+            Cmd::Lazygit => match crate::git::repo_root(&self.tab().path) {
+                Some(root) => self.open_lazygit(&root, None),
+                None => self.toast_error("Not inside a git repository"),
+            },
+            Cmd::CloneRepo => self.open_clone_dialog(self.tab().path.clone()),
+            Cmd::ToggleGitMarks => {
+                self.git_marks = !self.git_marks;
+                if self.git_marks {
+                    self.refresh_git();
+                } else {
+                    self.clear_git();
+                }
+            }
             Cmd::EditPath => {
                 // A trailing slash lists the subfolders straight away.
                 let path = self.tab().path.display().to_string();
@@ -2178,20 +2253,12 @@ impl App {
             Action::CopyPath(p) => self.set_text_clipboard(p.display().to_string()),
             Action::OpenTerminal(p) => fsops::open_terminal(&p),
             Action::RunScript(path) => {
-                let mut command = std::process::Command::new("xdg-terminal-exec");
-                command.arg("bash").arg(&path);
-                if let Some(parent) = path.parent() {
-                    command.current_dir(parent);
-                }
-                match command.spawn() {
-                    Ok(mut child) => {
-                        std::thread::spawn(move || {
-                            let _ = child.wait();
-                        });
-                    }
-                    Err(e) => self.toast_error(format!("Could not open terminal: {e}")),
-                }
+                let cwd = path.parent().unwrap_or(Path::new("/")).to_path_buf();
+                self.spawn_in_terminal(&cwd, &["bash".as_ref(), path.as_os_str()]);
             }
+            Action::Lazygit { root, filter } => self.open_lazygit(&root, filter.as_deref()),
+            Action::GitInit(dir) => self.git_init(dir),
+            Action::CloneDialog(dir) => self.open_clone_dialog(dir),
             Action::ClearFilter => {
                 self.tab_mut().filter.clear();
                 let (sizes, hidden) = (&self.sizes, self.show_hidden);
@@ -2577,6 +2644,7 @@ impl App {
                 (ctrl, Key::W, CloseTab),
                 (alt, Key::C, CopyPath),
                 (ctrl | alt, Key::T, OpenTerminal),
+                (ctrl | alt, Key::G, Lazygit),
             ];
             if take(i, ctrl, Key::P) || take(i, cs, Key::P) {
                 self.palette.show();

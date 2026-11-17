@@ -6,6 +6,7 @@ mod complete;
 mod devices;
 mod exif;
 mod fsops;
+mod git;
 mod heif;
 mod ops;
 mod palette;

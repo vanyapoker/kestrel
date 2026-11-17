@@ -469,6 +469,36 @@ impl App {
                     name_field(ui, "Rename", name, focus, stem, &mut confirm);
                     dialog_buttons(ui, "Rename", false, &mut confirm, &mut cancel);
                 }
+                Dialog::CloneRepo { dir, url, name, name_edited, focus } => {
+                    let before = url.clone();
+                    let all = url.chars().count();
+                    name_field(ui, "Clone repository", url, focus, all, &mut confirm);
+                    if *url != before && !*name_edited {
+                        *name = crate::git::repo_name(url);
+                    }
+                    ui.add_space(8.0);
+                    ui.label(RichText::new("Folder name").color(pal().dim));
+                    let edit = ui.add(
+                        egui::TextEdit::singleline(name)
+                            .id(egui::Id::new("clone_folder"))
+                            .desired_width(f32::INFINITY)
+                            .margin(Margin::symmetric(8, 5)),
+                    );
+                    if edit.changed() {
+                        *name_edited = !name.is_empty();
+                    }
+                    if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                        confirm = true;
+                    }
+                    ui.add_space(2.0);
+                    if crate::git::folder_name_ok(name) {
+                        ui.label(RichText::new(format!("Clones into {}", dir.join(name.trim()).display())).size(12.0).color(pal().faint));
+                    } else if !url.trim().is_empty() {
+                        ui.label(RichText::new("Enter a folder name").size(12.0).color(pal().danger));
+                    }
+                    dialog_buttons(ui, "Clone", false, &mut confirm, &mut cancel);
+                    confirm &= !url.trim().is_empty() && crate::git::folder_name_ok(name);
+                }
                 Dialog::Create { name, kind, focus, .. } => {
                     let title = if *kind == NewKind::Folder { "New folder" } else { "New file" };
                     let all = name.chars().count();
@@ -695,6 +725,12 @@ impl App {
                         job.pairs = pairs;
                         self.ops.submit(job);
                     }
+                }
+                Some(Dialog::CloneRepo { dir, url, name, .. }) => {
+                    let mut job = crate::ops::Job::new(crate::ops::JobKind::Clone, Vec::new(), Some(dir));
+                    job.name = Some(name.trim().into());
+                    job.url = Some(url.trim().into());
+                    self.ops.submit(job);
                 }
                 Some(Dialog::Rename { path, name, .. }) => self.rename(&path, &name),
                 Some(Dialog::Create {

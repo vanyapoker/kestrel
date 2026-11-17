@@ -40,6 +40,8 @@ pub enum JobKind {
     PasteImage,
     /// Change permissions and/or ownership of `srcs` as described by `Job::change`.
     Properties,
+    /// `git clone` `Job::url` into `dest`, as folder `name`.
+    Clone,
 }
 
 /// Archive format for `Compress`.
@@ -166,6 +168,8 @@ pub struct Job {
     pub undoing: bool,
     /// File name for `Compress`.
     pub name: Option<String>,
+    /// Repository to clone for `Clone`.
+    pub url: Option<String>,
     pub format: Format,
     pub level: Level,
     pub extract_to: ExtractTo,
@@ -186,6 +190,7 @@ impl Job {
             pairs: Vec::new(),
             undoing: false,
             name: None,
+            url: None,
             format: Format::Zip,
             level: Level::Normal,
             extract_to: ExtractTo::Here,
@@ -395,7 +400,7 @@ impl Ops {
     pub fn submit(&self, job: Job) {
         if job.srcs.is_empty()
             && job.image.is_none()
-            && !matches!(job.kind, JobKind::EmptyTrash | JobKind::PasteImage)
+            && !matches!(job.kind, JobKind::EmptyTrash | JobKind::PasteImage | JobKind::Clone)
         {
             return;
         }
@@ -464,6 +469,7 @@ impl Worker {
             JobKind::EmptyTrash => "Emptying the trash".into(),
             JobKind::PasteImage => "Pasting image".into(),
             JobKind::Properties => format!("Changing properties of {what}"),
+            JobKind::Clone => format!("Cloning {}", job.name.as_deref().unwrap_or("repository")),
         };
         *self.progress.lock().expect("lock poisoned") = Some(Progress {
             title,
@@ -646,6 +652,14 @@ impl Worker {
                     done.undo = Some(Undo::TrashCreated(done.created.clone()));
                 }
                 done.summary = format!("Restored {what}");
+            }
+            JobKind::Clone => {
+                let (Some(url), Some(dest), Some(name)) =
+                    (job.url.as_deref(), job.dest.as_deref(), job.name.as_deref())
+                else {
+                    panic!("clone needs dest, name and url");
+                };
+                self.clone_repo(url, dest, name, &mut done);
             }
             JobKind::EmptyTrash => {
                 match trash::os_limited::list().and_then(trash::os_limited::purge_all) {
@@ -894,6 +908,97 @@ impl Worker {
                 .unwrap_or("failed")
                 .trim()
                 .to_string())
+        }
+    }
+
+    /// Runs `git clone`, showing its progress phase in the title.
+    fn clone_repo(&mut self, url: &str, dest: &Path, name: &str, done: &mut Done) {
+        let target = dest.join(name);
+        if target.symlink_metadata().is_ok() {
+            done.errors.push(format!("\"{name}\" already exists"));
+            return;
+        }
+        let mut child = match Command::new("git")
+            .args(["clone", "--progress", "--"])
+            .arg(url)
+            .arg(&target)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                done.errors.push(format!("git: {e}"));
+                return;
+            }
+        };
+        let (tx, rx) = channel::<String>();
+        let mut stderr = child.stderr.take();
+        let reader = std::thread::spawn(move || {
+            let Some(e) = stderr.as_mut() else { return };
+            let (mut buf, mut line) = ([0u8; 4096], Vec::new());
+            while let Ok(n) = e.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                for &b in &buf[..n] {
+                    if b == b'\r' || b == b'\n' {
+                        if !line.is_empty() {
+                            let _ = tx.send(String::from_utf8_lossy(&line).into_owned());
+                            line.clear();
+                        }
+                    } else {
+                        line.push(b);
+                    }
+                }
+            }
+            if !line.is_empty() {
+                let _ = tx.send(String::from_utf8_lossy(&line).into_owned());
+            }
+        });
+        let mut last = String::new();
+        let drain = |this: &mut Self, rx: &Receiver<String>, last: &mut String| {
+            for line in rx.try_iter() {
+                match crate::git::progress_step(&line) {
+                    Some(step) => this.update(|p| p.title = format!("Cloning {name} · {step}")),
+                    None => *last = line,
+                }
+            }
+        };
+        let status = loop {
+            if self.cancelled() {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                let _ = fs::remove_dir_all(&target);
+                done.cancelled = true;
+                return;
+            }
+            drain(self, &rx, &mut last);
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => std::thread::sleep(Duration::from_millis(30)),
+                Err(e) => {
+                    done.errors.push(format!("git: {e}"));
+                    return;
+                }
+            }
+        };
+        let _ = reader.join();
+        drain(self, &rx, &mut last);
+        if status.success() {
+            done.created.push(target);
+            done.summary = format!("Cloned \"{name}\"");
+        } else {
+            let _ = fs::remove_dir_all(&target);
+            let last = last.trim().trim_start_matches("fatal: ");
+            done.errors.push(if last.is_empty() {
+                "Clone failed".into()
+            } else {
+                format!("Clone failed: {last}")
+            });
         }
     }
 

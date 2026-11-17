@@ -36,6 +36,9 @@ pub struct Palette {
     pub code: Color32,
     pub document: Color32,
     pub executable: Color32,
+    pub git_added: Color32,
+    pub git_modified: Color32,
+    pub git_untracked: Color32,
     /// Syntax colors: comment, keyword, string, number, function, type.
     pub syntax: [Color32; 6],
 }
@@ -69,6 +72,9 @@ impl Palette {
             code: rgb(0x61, 0xaf, 0xef),
             document: rgb(0xe5, 0xc0, 0x7b),
             executable: rgb(0x98, 0xc3, 0x79),
+            git_added: rgb(0x98, 0xc3, 0x79),
+            git_modified: rgb(0xe5, 0xc0, 0x7b),
+            git_untracked: rgb(0x56, 0xb6, 0xc2),
             syntax: [
                 rgb(0x65, 0x73, 0x7e),
                 rgb(0xb4, 0x8e, 0xad),
@@ -132,6 +138,9 @@ impl Palette {
             code: get("blue", accent),
             document: yellow,
             executable: get("green", accent),
+            git_added: get("green", accent),
+            git_modified: yellow,
+            git_untracked: get("cyan", accent),
             syntax: [
                 comment,
                 get("magenta", accent),

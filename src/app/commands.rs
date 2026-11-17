@@ -95,6 +95,7 @@ impl App {
         let sort = |key: SortKey| (tab.sort == key).then_some((order, true));
         match cmd {
             Cmd::ToggleHidden => toggle(self.show_hidden),
+            Cmd::ToggleGitMarks => toggle(self.git_marks),
             Cmd::TogglePreview => toggle(self.show_preview),
             Cmd::ToggleSplit => toggle(self.panes.len() > 1),
             Cmd::ToggleColumns => toggle(tab.mode == ViewMode::Columns),

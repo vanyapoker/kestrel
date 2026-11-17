@@ -1746,7 +1746,7 @@ fn empty_space_menu_offers_actions_without_a_selection_and_help_lists_them() {
     );
     assert!(d.texts.iter().any(|(t, _)| t == "Edit custom actions…"));
     // A click elsewhere closes the menu.
-    d.move_to(Pos2::new(600.0, 500.0));
+    d.move_to(Pos2::new(200.0, 300.0));
     d.button(true);
     d.button(false);
     d.frame(Vec::new());
@@ -4071,5 +4071,105 @@ fn navigation_hotkeys_work_without_toolbar_arrow_buttons() {
     d.modifiers = Modifiers::NONE;
     d.frame(vec![press(Key::Backspace, Modifiers::NONE)]);
     assert_eq!(d.app.tab().path, dir);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .args(["-c", "user.name=k", "-c", "user.email=k@k", "-c", "commit.gpgsign=false"])
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+fn right_click(d: &mut Driver, pos: Pos2) {
+    d.move_to(pos);
+    for pressed in [true, false] {
+        d.frame(vec![Event::PointerButton {
+            pos,
+            button: PointerButton::Secondary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        }]);
+    }
+}
+
+#[test]
+fn git_marks_show_status() {
+    use crate::git::Mark;
+    let dir = sandbox("git-marks");
+    fs::create_dir_all(dir.join("sub")).unwrap();
+    fs::write(dir.join(".gitignore"), "*.log\n").unwrap();
+    fs::write(dir.join("tracked.txt"), "1").unwrap();
+    fs::write(dir.join("sub/inner.txt"), "1").unwrap();
+    git(&dir, &["init", "-q"]);
+    git(&dir, &["add", ".gitignore", "tracked.txt", "sub"]);
+    git(&dir, &["commit", "-q", "-m", "init"]);
+    fs::write(dir.join("tracked.txt"), "2").unwrap();
+    fs::write(dir.join("sub/inner.txt"), "2").unwrap();
+    fs::write(dir.join("new.txt"), "n").unwrap();
+    fs::write(dir.join("ignored.log"), "i").unwrap();
+
+    let mut d = Driver::new(dir.clone());
+    d.until("marks", |a| a.tab().git.is_some());
+    d.frame(Vec::new());
+    let marks = d.app.tab().git.clone().unwrap();
+    assert_eq!(marks.get(&dir.join("tracked.txt")), Some(&Mark::Modified));
+    assert_eq!(marks.get(&dir.join("sub")), Some(&Mark::Modified));
+    assert_eq!(marks.get(&dir.join("new.txt")), Some(&Mark::Untracked));
+    assert_eq!(marks.get(&dir.join("ignored.log")), Some(&Mark::Ignored));
+    assert!(!marks.contains_key(&dir.join(".gitignore")));
+    assert!(d.texts.iter().any(|(t, _)| t == "M"));
+    assert!(d.texts.iter().any(|(t, _)| t == "U"));
+
+    d.app.run_cmd(Cmd::ToggleGitMarks);
+    d.frame(Vec::new());
+    assert!(d.app.tab().git.is_none());
+    assert!(!d.texts.iter().any(|(t, _)| t == "U"));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn git_menu_initializes_repository() {
+    let dir = sandbox("git-init");
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| a.row_rects.contains_key(&dir.join("b.txt")));
+    right_click(&mut d, Pos2::new(600.0, 700.0));
+    d.frame(Vec::new());
+    d.click_text("Git");
+    d.frame(Vec::new());
+    assert!(d.texts.iter().any(|(t, _)| t == "Clone repository here…"));
+    d.click_text("Initialize git repository");
+    d.until("init", |_| dir.join(".git").is_dir());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn git_clone_dialog_clones_and_opens() {
+    let dir = sandbox("git-clone");
+    let origin = dir.join("origin");
+    fs::create_dir_all(&origin).unwrap();
+    fs::write(origin.join("readme.txt"), "hi").unwrap();
+    git(&origin, &["init", "-q"]);
+    git(&origin, &["add", "."]);
+    git(&origin, &["commit", "-q", "-m", "init"]);
+
+    let mut d = Driver::new(dir.clone());
+    d.until("listing", |a| a.row_rects.contains_key(&dir.join("a.txt")));
+    d.app.run_cmd(Cmd::CloneRepo);
+    d.frame(Vec::new());
+    assert!(matches!(d.app.dialog, Some(Dialog::CloneRepo { .. })));
+    if let Some(Dialog::CloneRepo { url, name, .. }) = &mut d.app.dialog {
+        *url = origin.display().to_string();
+        *name = "copy".into();
+    }
+    d.frame(Vec::new());
+    d.click_text("Clone");
+    d.until("cloned", |a| a.tab().path == dir.join("copy"));
+    assert!(dir.join("copy/readme.txt").exists());
     fs::remove_dir_all(dir).unwrap();
 }

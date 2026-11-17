@@ -134,6 +134,8 @@ pub struct Tab {
     pub grid_cols: usize,
     pub disk: Option<(u64, u64)>,
     pub search: Option<Search>,
+    /// Git status of this folder's children; `None` outside a repository or when marks are off.
+    pub git: Option<std::sync::Arc<crate::git::Marks>>,
     /// Debounced reload requested by the file watcher.
     pub reload_at: Option<Instant>,
 }
@@ -172,6 +174,7 @@ impl Tab {
             grid_cols: 1,
             disk: None,
             search: None,
+            git: None,
             reload_at: None,
         }
     }

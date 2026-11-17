@@ -1534,6 +1534,10 @@ fn background_menu(ui: &mut Ui, p: usize, tab: &Tab, rect: Rect, actions: &mut V
             ui.separator();
         }
         item(ui, "Open terminal here", "Ctrl+Alt+T", Cmd::OpenTerminal);
+        let mut git_actions = Vec::new();
+        if tab.search.is_none() {
+            git_menu(ui, p, &tab.path, None, true, &mut git_actions);
+        }
         item(ui, "Select all", "Ctrl+A", Cmd::SelectAll);
         let custom = ui
             .ctx()
@@ -1553,6 +1557,7 @@ fn background_menu(ui: &mut Ui, p: usize, tab: &Tab, rect: Rect, actions: &mut V
             custom_action_items(ui, p, &custom, &mut run)
         });
         actions.extend(run);
+        actions.extend(git_actions);
     });
 }
 
@@ -1716,6 +1721,12 @@ fn row_interactions(
             tab.path.clone()
         };
         item(ui, "Open terminal here", "", Action::OpenTerminal(term));
+        let mut git_actions = Vec::new();
+        if e.is_dir {
+            git_menu(ui, p, &e.path, None, false, &mut git_actions);
+        } else if let Some(dir) = e.path.parent() {
+            git_menu(ui, p, dir, Some(&e.path), false, &mut git_actions);
+        }
         ui.separator();
         if !crate::fsops::in_trash(&tab.path) {
             item(ui, "Move to trash", "Delete", Action::Cmd(Cmd::Trash));
@@ -1728,6 +1739,94 @@ fn row_interactions(
         );
         actions.extend(open_with);
         actions.extend(run_custom);
+        actions.extend(git_actions);
+    });
+}
+
+#[derive(Clone)]
+struct GitMenu {
+    git: bool,
+    lazygit: bool,
+    root: Option<PathBuf>,
+}
+
+/// Tool and repository lookup for the Git submenu; the menu body runs every frame,
+/// so one result is reused for a moment.
+fn git_menu_info(ui: &Ui, dir: &Path) -> GitMenu {
+    type Cache = (PathBuf, Instant, GitMenu);
+    let id = egui::Id::new("git_menu_cache");
+    let cached = ui
+        .ctx()
+        .data(|d| d.get_temp::<Cache>(id))
+        .filter(|(path, at, _)| path == dir && at.elapsed() < std::time::Duration::from_secs(2));
+    if let Some((_, _, info)) = cached {
+        return info;
+    }
+    let info = GitMenu {
+        git: crate::git::on_path("git"),
+        lazygit: crate::git::on_path("lazygit"),
+        root: crate::git::repo_root(dir),
+    };
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(id, (dir.to_path_buf(), Instant::now(), info.clone())));
+    info
+}
+
+/// "Git" submenu: lazygit inside a repository, init outside, and clone.
+fn git_menu(
+    ui: &mut Ui,
+    p: usize,
+    dir: &Path,
+    file: Option<&Path>,
+    shortcut: bool,
+    actions: &mut Vec<Action>,
+) {
+    let info = git_menu_info(ui, dir);
+    if !info.git {
+        return;
+    }
+    ui.menu_button("Git", |ui| {
+        ui.set_min_width(190.0);
+        let mut drawn = false;
+        match &info.root {
+            Some(root) if info.lazygit => {
+                let (label, keys) = match file {
+                    Some(_) => ("Lazygit: file history", ""),
+                    None => ("Open lazygit", if shortcut { "Ctrl+Alt+G" } else { "" }),
+                };
+                if ui
+                    .add(egui::Button::new(label).shortcut_text(keys))
+                    .clicked()
+                {
+                    actions.push(Action::FocusPane(p));
+                    actions.push(Action::Lazygit {
+                        root: root.clone(),
+                        filter: file
+                            .and_then(|f| f.strip_prefix(root).ok())
+                            .map(Path::to_path_buf),
+                    });
+                    ui.close();
+                }
+                drawn = true;
+            }
+            Some(_) => {}
+            None => {
+                if ui.button("Initialize git repository").clicked() {
+                    actions.push(Action::FocusPane(p));
+                    actions.push(Action::GitInit(dir.to_path_buf()));
+                    ui.close();
+                }
+                drawn = true;
+            }
+        }
+        if drawn {
+            ui.separator();
+        }
+        if ui.button("Clone repository here…").clicked() {
+            actions.push(Action::FocusPane(p));
+            actions.push(Action::CloneDialog(dir.to_path_buf()));
+            ui.close();
+        }
     });
 }
 
@@ -1825,7 +1924,64 @@ struct RowPaint<'a> {
     query: &'a crate::search::Query,
 }
 
-fn paint_row(painter: &Painter, rect: Rect, style: &RowPaint, e: &Entry, faded: bool) {
+/// How a name is dressed beyond its type: cut-faded and git-marked.
+#[derive(Clone, Copy, Default)]
+struct NameLook {
+    faded: bool,
+    mark: Option<crate::git::Mark>,
+}
+
+fn git_color(m: crate::git::Mark) -> Color32 {
+    use crate::git::Mark;
+    match m {
+        Mark::Ignored => pal().dim,
+        Mark::Untracked => pal().git_untracked,
+        Mark::Added => pal().git_added,
+        Mark::Modified => pal().git_modified,
+        Mark::Conflict => pal().danger,
+    }
+}
+
+fn name_color(e: &Entry, mark: Option<crate::git::Mark>) -> Color32 {
+    match mark {
+        Some(m) => git_color(m),
+        None if e.hidden => pal().dim,
+        None => pal().text,
+    }
+}
+
+/// Room kept right of a name for its git letter.
+const GIT_LETTER_W: f32 = 14.0;
+
+fn git_reserve(mark: Option<crate::git::Mark>) -> f32 {
+    if mark.and_then(crate::git::Mark::letter).is_some() {
+        GIT_LETTER_W
+    } else {
+        0.0
+    }
+}
+
+fn paint_git_letter(
+    painter: &Painter,
+    name_rect: Rect,
+    right: f32,
+    mark: Option<crate::git::Mark>,
+    alpha: f32,
+) {
+    if let Some(m) = mark
+        && let Some(l) = m.letter()
+    {
+        painter.text(
+            Pos2::new((name_rect.right() + 6.0).min(right - 10.0), name_rect.center().y),
+            Align2::LEFT_CENTER,
+            l,
+            FontId::monospace(11.0),
+            git_color(m).gamma_multiply(alpha),
+        );
+    }
+}
+
+fn paint_row(painter: &Painter, rect: Rect, style: &RowPaint, e: &Entry, look: NameLook) {
     let RowPaint {
         cols,
         sizes,
@@ -1833,7 +1989,7 @@ fn paint_row(painter: &Painter, rect: Rect, style: &RowPaint, e: &Entry, faded: 
         query,
     } = *style;
     let cy = rect.center().y;
-    let alpha = if faded { 0.45 } else { 1.0 };
+    let alpha = if look.faded { 0.45 } else { 1.0 };
     let cat = util::category(&e.ext, e.is_dir);
     draw_entry_icon(
         painter,
@@ -1842,9 +1998,9 @@ fn paint_row(painter: &Painter, rect: Rect, style: &RowPaint, e: &Entry, faded: 
         &e.path,
         cat,
     );
-    let name_color = if e.hidden { pal().dim } else { pal().text };
+    let name_color = name_color(e, look.mark);
     let name_clip = painter.with_clip_rect(Rect::from_x_y_ranges(
-        cols.name.0..=cols.name.1,
+        cols.name.0..=cols.name.1 - git_reserve(look.mark),
         rect.y_range(),
     ));
     let name_rect = paint_name(
@@ -1855,6 +2011,7 @@ fn paint_row(painter: &Painter, rect: Rect, style: &RowPaint, e: &Entry, faded: 
         FontId::proportional(BODY),
         name_color.gamma_multiply(alpha),
     );
+    paint_git_letter(painter, name_rect, cols.name.1, look.mark, alpha);
     if e.is_link {
         painter.text(
             Pos2::new(cols.name.0 - 6.0, cy + 6.0),
@@ -1926,11 +2083,11 @@ fn paint_cell(
     painter: &Painter,
     cell: Rect,
     e: &Entry,
-    faded: bool,
+    look: NameLook,
     query: &crate::search::Query,
     folder: Option<&str>,
 ) {
-    let alpha = if faded { 0.45 } else { 1.0 };
+    let alpha = if look.faded { 0.45 } else { 1.0 };
     let cy = cell.center().y;
     draw_entry_icon(
         painter,
@@ -1939,10 +2096,12 @@ fn paint_cell(
         &e.path,
         util::category(&e.ext, e.is_dir),
     );
-    let color = if e.hidden { pal().dim } else { pal().text };
-    let clip = painter.with_clip_rect(cell.shrink2(vec2(6.0, 0.0)).intersect(painter.clip_rect()));
+    let color = name_color(e, look.mark);
+    let mut clip_rect = cell.shrink2(vec2(6.0, 0.0));
+    clip_rect.max.x -= git_reserve(look.mark);
+    let clip = painter.with_clip_rect(clip_rect.intersect(painter.clip_rect()));
     let name_y = if folder.is_some() { cy - 8.0 } else { cy };
-    paint_name(
+    let name_rect = paint_name(
         &clip,
         Pos2::new(cell.left() + 30.0, name_y),
         &e.name,
@@ -1950,6 +2109,7 @@ fn paint_cell(
         FontId::proportional(BODY),
         color.gamma_multiply(alpha),
     );
+    paint_git_letter(painter, name_rect, cell.right() - 6.0, look.mark, alpha);
     if let Some(folder) = folder {
         let font = FontId::proportional(11.5);
         let text = fit_folder(painter, folder, &font, cell.right() - cell.left() - 36.0);
@@ -1999,11 +2159,11 @@ fn paint_tile(
     thumbs: &mut Thumbs,
     tile: Rect,
     e: &Entry,
-    faded: bool,
+    look: NameLook,
     query: &crate::search::Query,
     folder: Option<&str>,
 ) {
-    let alpha = if faded { 0.45 } else { 1.0 };
+    let alpha = if look.faded { 0.45 } else { 1.0 };
     let label_h = 48.0 + if folder.is_some() { FOLDER_LINE } else { 0.0 };
     let side = tile.width().min(tile.height() - label_h) - 16.0;
     let thumb_area = Rect::from_center_size(
@@ -2025,8 +2185,21 @@ fn paint_tile(
         let cat = util::category(&e.ext, e.is_dir);
         draw_entry_icon(painter, thumb_area.center(), side / 24.0, &e.path, cat);
     }
-    let color = if e.hidden { pal().dim } else { pal().text }.gamma_multiply(alpha);
+    let color = name_color(e, look.mark).gamma_multiply(alpha);
     let mut job = name_job(&e.name, query, FontId::proportional(12.5), color);
+    if let Some(m) = look.mark
+        && let Some(l) = m.letter()
+    {
+        job.append(
+            &format!(" {l}"),
+            0.0,
+            egui::TextFormat {
+                font_id: FontId::monospace(10.5),
+                color: git_color(m).gamma_multiply(alpha),
+                ..Default::default()
+            },
+        );
+    }
     job.wrap.max_width = tile.width() - 12.0;
     job.wrap.max_rows = 2;
     job.wrap.break_anywhere = true;

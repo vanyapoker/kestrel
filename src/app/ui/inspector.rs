@@ -9,7 +9,7 @@ use eframe::egui::{
 use std::path::PathBuf;
 
 use super::{
-    INSPECTOR_TILE, paint_tile, preview_archive, preview_code_cached, preview_image, preview_table,
+    INSPECTOR_TILE, NameLook, paint_tile, preview_archive, preview_code_cached, preview_image, preview_table,
 };
 
 impl App {
@@ -359,7 +359,7 @@ impl App {
                                                 &mut self.thumbs,
                                                 rect,
                                                 entry,
-                                                false,
+                                                NameLook::default(),
                                                 &query,
                                                 None,
                                             );

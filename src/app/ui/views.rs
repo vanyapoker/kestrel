@@ -10,7 +10,7 @@ use eframe::egui::{
 };
 
 use super::{
-    Columns, FOLDER_LINE, ROW_H, RowEnv, RowPaint, background_drop, background_menu, chevron,
+    Columns, NameLook, git_reserve, name_color, paint_git_letter, FOLDER_LINE, ROW_H, RowEnv, RowPaint, background_drop, background_menu, chevron,
     drag_autoscroll, drop_hover, empty_state, paint_cell, paint_name, paint_row, paint_tile,
     record_folder, row_interactions, rubber_band, scroll_area, sort_arrow,
 };
@@ -97,6 +97,7 @@ impl App {
                                 // Virtualized row geometry and keyboard scrolling use the same stride.
                                 ui.spacing_mut().item_spacing.y = 0.0;
                                 let query = directory.query();
+                                let git = directory.git.clone().filter(|_| directory.search.is_none());
                                 let modifiers = ui.input(|i| (i.modifiers.ctrl, i.modifiers.shift));
                                 let mut over_item = false;
                                 // Column positions can change when ancestors are prepended. The
@@ -157,20 +158,24 @@ impl App {
                                                 &e.path,
                                                 util::category(&e.ext, e.is_dir),
                                             );
-                                            let painter = ui
-                                                .painter()
-                                                .with_clip_rect(rect.shrink2(vec2(30.0, 0.0)));
-                                            paint_name(
+                                            let mark = git.as_deref().and_then(|g| g.get(&e.path).copied());
+                                            let mut clip = rect.shrink2(vec2(30.0, 0.0));
+                                            clip.max.x -= git_reserve(mark);
+                                            let painter = ui.painter().with_clip_rect(clip);
+                                            let name_rect = paint_name(
                                                 &painter,
                                                 rect.left_center() + vec2(30.0, 0.0),
                                                 &e.name,
                                                 &query,
                                                 FontId::proportional(BODY),
-                                                if faded || e.hidden {
-                                                    pal().dim
-                                                } else {
-                                                    pal().text
-                                                },
+                                                if faded { pal().dim } else { name_color(e, mark) },
+                                            );
+                                            paint_git_letter(
+                                                ui.painter(),
+                                                name_rect,
+                                                rect.right() - 30.0,
+                                                mark,
+                                                1.0,
                                             );
                                             if e.is_dir {
                                                 chevron(
@@ -287,6 +292,7 @@ impl App {
         background_menu(ui, p, tab, full, actions);
         let cols = Columns::new(full.left(), full.right());
         let query = tab.query();
+        let git = tab.git.clone().filter(|_| tab.search.is_none());
         let in_search = tab.search.is_some();
 
         // Header.
@@ -407,7 +413,11 @@ impl App {
                     sizing,
                     query: &query,
                 };
-                paint_row(painter, rect, &style, e, faded);
+                let look = NameLook {
+                    faded,
+                    mark: git.as_deref().and_then(|g| g.get(&e.path).copied()),
+                };
+                paint_row(painter, rect, &style, e, look);
                 #[cfg(test)]
                 row_rects.insert(e.path.clone(), rect);
 
@@ -453,6 +463,7 @@ impl App {
         background_menu(ui, p, tab, full, actions);
         let mode = tab.mode;
         let query = tab.query();
+        let git = tab.git.clone().filter(|_| tab.search.is_none());
         // Search results also show their folder: one more line under each name.
         let root = tab.search.as_ref().map(|s| {
             s.root.file_name().map_or_else(
@@ -552,11 +563,15 @@ impl App {
                             Some("") | None => root,
                             Some(rel) => rel,
                         });
+                        let look = NameLook {
+                            faded,
+                            mark: git.as_deref().and_then(|g| g.get(&e.path).copied()),
+                        };
                         match mode {
                             ViewMode::Icons(_) => {
-                                paint_tile(painter, thumbs, tile, e, faded, &query, folder)
+                                paint_tile(painter, thumbs, tile, e, look, &query, folder)
                             }
-                            _ => paint_cell(painter, tile, e, faded, &query, folder),
+                            _ => paint_cell(painter, tile, e, look, &query, folder),
                         }
                         let resp = if root.is_some() {
                             resp.on_hover_text(e.path.display().to_string())

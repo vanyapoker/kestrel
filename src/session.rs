@@ -28,6 +28,7 @@ pub struct Session {
     pub show_hidden: bool,
     pub show_preview: bool,
     pub show_sidebar: bool,
+    pub git_marks: bool,
     pub collapsed: Vec<String>,
     pub sidebar_width: Option<f32>,
     pub preview_width: Option<f32>,
@@ -45,6 +46,7 @@ impl Default for Session {
             show_hidden: false,
             show_preview: true,
             show_sidebar: true,
+            git_marks: true,
             collapsed: Vec::new(),
             sidebar_width: None,
             preview_width: None,
@@ -122,6 +124,7 @@ impl Session {
             flag(self.show_preview),
             flag(self.show_sidebar)
         );
+        out += &format!("git_marks {}\n", flag(self.git_marks));
         for c in &self.collapsed {
             out += &format!("collapsed {c}\n");
         }
@@ -173,6 +176,7 @@ pub fn parse(text: &str) -> Session {
             "hidden" => s.show_hidden = on,
             "preview" => s.show_preview = on,
             "sidebar" => s.show_sidebar = on,
+            "git_marks" => s.git_marks = on,
             "collapsed" if !rest.is_empty() => s.collapsed.push(rest.to_string()),
             "sidebar_width" => s.sidebar_width = rest.parse().ok(),
             "preview_width" => s.preview_width = rest.parse().ok(),
@@ -274,6 +278,7 @@ mod tests {
             show_hidden: true,
             show_preview: false,
             show_sidebar: true,
+            git_marks: false,
             collapsed: vec!["DEVICES".into()],
             sidebar_width: Some(210.0),
             preview_width: Some(400.0),

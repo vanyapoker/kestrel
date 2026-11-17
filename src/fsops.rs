@@ -503,7 +503,7 @@ pub fn open_default(path: &Path) {
 }
 
 /// Waits for a launched program on a throwaway thread so it never lingers as a zombie.
-fn reap(mut child: std::process::Child) {
+pub(crate) fn reap(mut child: std::process::Child) {
     std::thread::spawn(move || {
         let _ = child.wait();
     });

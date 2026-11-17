@@ -64,6 +64,7 @@ Update by installing the next release.
 | Delete / Shift+Delete | Trash / permanently delete |
 | Shift+drag / Ctrl+drag | Always move / always copy dropped files |
 | Alt+C / Ctrl+Alt+T | Copy path / open terminal here |
+| Ctrl+Alt+G | Open lazygit for the current repository (also: git status marks, clone from the palette) |
 | F5 | Refresh |
 
 Use Shift+arrows or Ctrl/Shift+click for multiple selection, or drag a box on empty
